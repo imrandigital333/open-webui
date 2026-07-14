@@ -7,13 +7,14 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import orchestrator
+from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-app = FastAPI(title="AI Troubleshooter", version="1.0.0")
+app = FastAPI(title="AI Troubleshooter", version="2.0.0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -21,6 +22,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 class SessionRequest(BaseModel):
     server: str = Field(..., description="Server name from the inventory")
     problem: str = Field(..., min_length=10, description="Problem statement")
+    # Evidence layers (datasource names) to investigate; empty = server only
+    layers: list[str] = Field(default_factory=list)
+    depth: str = Field("standard", pattern="^(quick|standard|deep)$")
     # Optional sudo password for the remote SSH user. Held in memory for this
     # one investigation only — never stored, logged, or shown to the AI model.
     sudo_password: str | None = Field(None, repr=False)
@@ -37,14 +41,36 @@ async def get_inventory():
     return {"servers": [s.to_public_dict() for s in servers.values()]}
 
 
+@app.get("/api/datasources")
+async def get_datasources():
+    sources = load_datasources()
+    out = []
+    for ds in sources.values():
+        pub = to_public_dict(ds)
+        missing = missing_env_vars(ds)
+        pub["ready"] = not missing
+        pub["missing_env"] = missing
+        out.append(pub)
+    return {"datasources": out}
+
+
 @app.post("/api/sessions")
 async def create_session(req: SessionRequest):
     servers = load_inventory()
     server = servers.get(req.server)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
+    sources = load_datasources()
+    unknown = [name for name in req.layers if name not in sources]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown datasources: {', '.join(unknown)}")
+    layer_sources = [sources[name] for name in req.layers]
     state = orchestrator.start_session(
-        server, req.problem.strip(), sudo_password=req.sudo_password or None
+        server,
+        req.problem.strip(),
+        sudo_password=req.sudo_password or None,
+        layer_sources=layer_sources,
+        depth=req.depth,
     )
     return state.to_dict()
 
@@ -57,17 +83,21 @@ async def list_sessions():
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
-    state = orchestrator.SESSIONS.get(session_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    state = _get_state(session_id)
     return state.to_dict(include_events=True)
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+async def cancel_session(session_id: str):
+    state = _get_state(session_id)
+    if not state.cancel():
+        raise HTTPException(status_code=409, detail="Session is not running")
+    return {"ok": True}
 
 
 @app.get("/api/sessions/{session_id}/events")
 async def stream_events(session_id: str):
-    state = orchestrator.SESSIONS.get(session_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    state = _get_state(session_id)
 
     async def generate():
         async for event in state.follow():
@@ -78,3 +108,52 @@ async def stream_events(session_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/sessions/{session_id}/files")
+async def list_files(session_id: str):
+    state = _get_state(session_id)
+    workdir = state.workdir.resolve()
+    files = []
+    if workdir.exists():
+        for path in sorted(workdir.rglob("*")):
+            if path.is_file():
+                rel = path.relative_to(workdir).as_posix()
+                if rel.startswith(("remote", ".")):  # skip wrapper scripts
+                    continue
+                files.append({"path": rel, "size": path.stat().st_size})
+    return {"files": files}
+
+
+@app.get("/api/sessions/{session_id}/files/{file_path:path}")
+async def get_file(session_id: str, file_path: str):
+    state = _get_state(session_id)
+    workdir = state.workdir.resolve()
+    target = (workdir / file_path).resolve()
+    if not target.is_relative_to(workdir) or target.name.startswith("remote"):
+        raise HTTPException(status_code=403, detail="Forbidden path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if target.stat().st_size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large to view; read it on the server")
+    return PlainTextResponse(target.read_text(errors="replace"))
+
+
+@app.get("/api/sessions/{session_id}/report.md")
+async def download_report(session_id: str):
+    state = _get_state(session_id)
+    path = state.workdir / "report.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No report.md for this session")
+    return FileResponse(
+        path,
+        media_type="text/markdown",
+        filename=f"incident-report-{state.server}-{session_id}.md",
+    )
+
+
+def _get_state(session_id: str) -> orchestrator.SessionState:
+    state = orchestrator.SESSIONS.get(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return state

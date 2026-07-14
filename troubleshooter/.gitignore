@@ -1,4 +1,5 @@
 inventory.yaml
+datasources.yaml
 data/
 venv/
 __pycache__/

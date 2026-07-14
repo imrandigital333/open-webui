@@ -6,239 +6,444 @@
 <title>AI Troubleshooter</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d3646;
-    --text: #e6edf3; --muted: #8b98a9; --accent: #4c8dff; --ok: #3fb950;
-    --warn: #d29922; --err: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #0b0f16; --panel: #121826; --panel2: #1a2233; --border: #263043;
+    --text: #e7edf5; --muted: #8b98ac; --accent: #4c8dff; --accent2: #7aa8ff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --purple: #a371f7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  header { padding: 14px 22px; border-bottom: 1px solid var(--border);
-           display: flex; align-items: center; gap: 10px; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
-  main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px 22px;
-         max-width: 1500px; margin: 0 auto; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
-       color: var(--muted); margin: 0 0 12px; }
-  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  header { padding: 12px 24px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 12px; background: var(--panel); }
+  header .logo { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+                 background: linear-gradient(135deg, var(--accent), var(--purple)); font-weight: 800; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .right { margin-left: auto; font-size: 12px; color: var(--muted); }
+  main { display: grid; grid-template-columns: 360px 1fr; gap: 16px; padding: 16px 24px;
+         max-width: 1600px; margin: 0 auto; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--muted); margin: 0 0 12px; font-weight: 700; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; font-weight: 600; }
   select, textarea, input, button {
     width: 100%; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font: inherit;
   }
-  textarea { min-height: 110px; resize: vertical; }
+  select:focus, textarea:focus, input:focus { outline: 1px solid var(--accent); }
+  textarea { min-height: 100px; resize: vertical; }
+  button { cursor: pointer; }
   button.primary { margin-top: 14px; background: var(--accent); border-color: var(--accent);
-                   color: #fff; font-weight: 600; cursor: pointer; }
+                   color: #fff; font-weight: 650; }
   button.primary:disabled { opacity: .5; cursor: not-allowed; }
-  .server-meta { font-size: 12px; color: var(--muted); margin-top: 6px; white-space: pre-line; }
+  button.ghost { width: auto; padding: 6px 12px; font-size: 12px; background: transparent; }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent2); }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
   .tag { display: inline-block; background: var(--panel2); border: 1px solid var(--border);
-         border-radius: 999px; padding: 1px 8px; font-size: 11px; margin: 2px 3px 0 0; color: var(--muted); }
-  #sessions .item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+         border-radius: 999px; padding: 1px 9px; font-size: 11px; margin: 2px 3px 0 0; color: var(--muted); }
+  /* layers */
+  .layer-group { margin-top: 6px; }
+  .layer-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--muted); margin: 8px 0 4px; }
+  .layer { display: flex; gap: 9px; align-items: flex-start; padding: 7px 9px;
+           border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+  .layer:hover { border-color: var(--accent); }
+  .layer input { width: auto; margin-top: 3px; accent-color: var(--accent); }
+  .layer .name { font-weight: 600; font-size: 13px; }
+  .layer .desc { font-size: 11.5px; color: var(--muted); }
+  .layer .notready { color: var(--warn); font-size: 11px; }
+  .link { color: var(--accent2); font-size: 12px; cursor: pointer; background: none; border: none;
+          width: auto; padding: 0; }
+  /* depth */
+  .seg { display: flex; gap: 0; margin-top: 4px; border: 1px solid var(--border);
+         border-radius: 8px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; background: var(--panel2); color: var(--muted);
+                font-size: 12.5px; padding: 8px 0; }
+  .seg button.active { background: var(--accent); color: #fff; font-weight: 650; }
+  /* sessions */
+  #sessionSearch { margin-bottom: 8px; }
+  #sessions .item { padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
                     margin-bottom: 8px; cursor: pointer; }
-  #sessions .item:hover { border-color: var(--accent); }
+  #sessions .item:hover, #sessions .item.active { border-color: var(--accent); }
   #sessions .item .p { color: var(--muted); font-size: 12px; overflow: hidden;
                        text-overflow: ellipsis; white-space: nowrap; }
+  #sessions .item .meta { font-size: 11px; color: var(--muted); }
   .status { font-size: 11px; font-weight: 700; text-transform: uppercase; }
   .status.running { color: var(--warn); } .status.completed { color: var(--ok); }
-  .status.failed { color: var(--err); }
-  #timeline { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .status.failed { color: var(--err); } .status.cancelled { color: var(--muted); }
+  /* right side */
+  .session-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .session-head .title { font-weight: 650; }
+  .session-head .actions { margin-left: auto; display: flex; gap: 8px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+  .tabs button { width: auto; background: none; border: none; border-bottom: 2px solid transparent;
+                 border-radius: 0; color: var(--muted); padding: 8px 14px; font-size: 13px; font-weight: 600; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tabs .count { background: var(--panel2); border-radius: 999px; padding: 0 7px; font-size: 11px; }
+  #timeline { max-height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   .ev { display: flex; gap: 10px; align-items: flex-start; }
-  .ev .badge { flex: 0 0 auto; font: 11px/1 var(--mono); padding: 4px 7px; border-radius: 6px;
-               margin-top: 2px; border: 1px solid var(--border); color: var(--muted); }
-  .ev.tool .badge { color: var(--accent); border-color: #2b4a7a; }
+  .ev .badge { flex: 0 0 92px; text-align: center; font: 11px/1 var(--mono); padding: 4px 6px;
+               border-radius: 6px; margin-top: 2px; border: 1px solid var(--border); color: var(--muted);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev.tool .badge { color: var(--accent2); border-color: #2b4a7a; }
   .ev.text .badge { color: var(--ok); border-color: #2b5a37; }
   .ev.fail .badge { color: var(--err); border-color: #6e2c2c; }
-  .ev .body { white-space: pre-wrap; word-break: break-word; }
+  .ev .body { white-space: pre-wrap; word-break: break-word; min-width: 0; }
   .ev.tool .body { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
-  #report { display: none; }
-  .kv { margin: 10px 0; }
-  .kv .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-  .kv .v { margin-top: 3px; white-space: pre-wrap; }
-  .conf { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .ev .body.clamp { max-height: 66px; overflow: hidden; }
+  .ev .more { color: var(--accent2); font-size: 11px; cursor: pointer; }
+  /* report */
+  .kv { margin: 12px 0; }
+  .kv .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+           font-weight: 700; }
+  .kv .v { margin-top: 4px; white-space: pre-wrap; }
+  .conf { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px;
+          font-weight: 700; margin-left: 6px; }
   .conf.high { background: #1c3524; color: var(--ok); }
   .conf.medium { background: #3a2f14; color: var(--warn); }
   .conf.low { background: #3d1d1d; color: var(--err); }
+  .layerpill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px;
+               font-weight: 700; background: #241d3d; color: var(--purple); margin-left: 6px; }
   ol, ul { margin: 4px 0 0 18px; padding: 0; }
-  li { margin: 3px 0; }
+  li { margin: 4px 0; }
   .evidence { font-family: var(--mono); font-size: 12.5px; background: var(--panel2);
               border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
-  .evidence .src { color: var(--accent); }
+  .evidence .src { color: var(--accent2); }
+  table.layers { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px; }
+  table.layers th, table.layers td { text-align: left; padding: 6px 8px;
+              border-bottom: 1px solid var(--border); }
+  table.layers th { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .verdict-clean { color: var(--ok); } .verdict-suspicious { color: var(--warn); }
+  .verdict-rootcause { color: var(--err); font-weight: 700; } .verdict-unreachable { color: var(--muted); }
+  /* evidence tab */
+  #fileList { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+  #fileList .f { display: flex; gap: 8px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+                 font-family: var(--mono); font-size: 12.5px; }
+  #fileList .f:hover, #fileList .f.active { background: var(--panel2); }
+  #fileList .size { margin-left: auto; color: var(--muted); }
+  #fileView { margin-top: 10px; background: var(--panel2); border: 1px solid var(--border);
+              border-radius: 8px; padding: 10px 12px; max-height: 380px; overflow: auto;
+              font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .empty { color: var(--muted); font-size: 13px; }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
-             border-top-color: var(--warn); border-radius: 50%; animation: spin 0.9s linear infinite;
+             border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite;
              vertical-align: -2px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <div class="dot"></div>
-  <h1>AI Troubleshooter</h1>
-  <span style="color:var(--muted);font-size:12px">powered by Claude Code agents</span>
+  <div class="logo">◎</div>
+  <div>
+    <h1>AI Troubleshooter</h1>
+    <div class="sub">multi-layer root cause analysis · powered by Claude Code agents</div>
+  </div>
+  <div class="right" id="dsHealth"></div>
 </header>
 <main>
   <div>
     <div class="panel">
       <h2>New investigation</h2>
-      <label for="server">Server (from inventory)</label>
+      <label for="server">Affected server</label>
       <select id="server"></select>
-      <div class="server-meta" id="serverMeta"></div>
+      <div class="hint" id="serverMeta"></div>
+
       <label for="problem">Problem statement</label>
-      <textarea id="problem" placeholder="e.g. Since ~14:30 UTC the app returns intermittent 502 errors and response times spiked. No deploys today."></textarea>
+      <textarea id="problem" placeholder="e.g. Since ~14:30 IST users report intermittent 502s on the booking app; response times spiked. No known deploys."></textarea>
+
+      <label>Evidence layers
+        <button class="link" id="layersAll" style="float:right">all</button>
+        <button class="link" id="layersNone" style="float:right;margin-right:10px">none</button>
+      </label>
+      <div class="layer-group" id="layers"><div class="empty">No data sources configured — see datasources.example.yaml</div></div>
+
+      <label>Investigation depth</label>
+      <div class="seg" id="depth">
+        <button data-d="quick">Quick</button>
+        <button data-d="standard" class="active">Standard</button>
+        <button data-d="deep">Deep</button>
+      </div>
+
       <label for="sudoPass">Sudo password <span style="font-weight:normal">(optional)</span></label>
       <input type="password" id="sudoPass" autocomplete="off"
-             placeholder="Only if logs need sudo on the target server">
-      <div class="server-meta">Used once for this investigation to read protected
-        logs via <code>sudo</code>. Kept in server memory only — never stored,
-        logged, or shown to the AI model.</div>
-      <button class="primary" id="startBtn">Start troubleshooting</button>
+             placeholder="Only if protected logs need sudo on the target">
+      <div class="hint">Used once for this investigation. Kept in server memory only —
+        never stored, logged, or shown to the AI model.</div>
+
+      <button class="primary" id="startBtn">Start investigation</button>
     </div>
+
     <div class="panel" style="margin-top:16px">
       <h2>Sessions</h2>
+      <input id="sessionSearch" placeholder="Filter by server, text, status…">
       <div id="sessions"><div class="empty">No sessions yet.</div></div>
     </div>
   </div>
 
   <div>
     <div class="panel">
-      <h2 id="timelineTitle">Agent activity</h2>
-      <div id="timeline"><div class="empty">Select a server, describe the problem, and start an investigation. The agents will pull the relevant logs over SSH, analyze them, and report the root cause and fix here.</div></div>
-    </div>
-    <div class="panel" id="report" style="margin-top:16px">
-      <h2>Incident report</h2>
-      <div id="reportBody"></div>
+      <div class="session-head" id="sessionHead" style="display:none">
+        <span class="title" id="shTitle"></span>
+        <span class="status" id="shStatus"></span>
+        <span id="shPills"></span>
+        <span class="actions">
+          <button class="ghost" id="dlReport" style="display:none">Download report</button>
+          <button class="ghost danger" id="cancelBtn" style="display:none">Cancel</button>
+        </span>
+      </div>
+      <div class="tabs" id="tabs" style="display:none">
+        <button data-tab="activity" class="active">Activity</button>
+        <button data-tab="report">Report</button>
+        <button data-tab="evidence">Evidence <span class="count" id="fileCount">0</span></button>
+      </div>
+      <div id="tab-activity">
+        <div id="timeline"><div class="empty">Pick the affected server, choose which layers to
+          investigate (monitoring, virtualization, ITSM changes, network, …), describe the problem
+          and start. The agents will pull evidence from every selected layer, correlate it,
+          and report the root cause with a recommended fix.</div></div>
+      </div>
+      <div id="tab-report" style="display:none"><div id="reportBody" class="empty">No report yet.</div></div>
+      <div id="tab-evidence" style="display:none">
+        <div id="fileList" class="empty">No files yet.</div>
+        <div id="fileView" style="display:none"></div>
+      </div>
     </div>
   </div>
 </main>
 
 <script>
-let inventory = [];
-let currentSession = null;
-let eventSource = null;
+let inventory = [], datasources = [], sessionsCache = [];
+let currentSession = null, eventSource = null, selectedDepth = 'standard';
 
 const $ = (id) => document.getElementById(id);
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+/* ---------- bootstrap ---------- */
 async function loadInventory() {
-  const res = await fetch('/api/inventory');
-  inventory = (await res.json()).servers;
-  const sel = $('server');
-  sel.innerHTML = inventory.map(s => `<option value="${s.name}">${s.name} — ${s.host}</option>`).join('');
-  sel.onchange = renderServerMeta;
+  inventory = (await (await fetch('/api/inventory')).json()).servers;
+  $('server').innerHTML = inventory.map(s =>
+    `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
+  $('server').onchange = renderServerMeta;
   renderServerMeta();
 }
 
 function renderServerMeta() {
   const s = inventory.find(x => x.name === $('server').value);
-  if (!s) { $('serverMeta').innerHTML = ''; return; }
-  $('serverMeta').innerHTML =
-    `${escapeHtml(s.description || '')}\n` +
-    (s.os ? `OS: ${escapeHtml(s.os)}\n` : '') +
-    (s.services?.length ? `Services: ${escapeHtml(s.services.join(', '))}\n` : '') +
-    (s.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+  $('serverMeta').innerHTML = s ? escapeHtml(s.description || '') +
+    (s.tags || []).map(t => ` <span class="tag">${escapeHtml(t)}</span>`).join('') : '';
 }
 
-function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, c =>
-    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function loadDatasources() {
+  datasources = (await (await fetch('/api/datasources')).json()).datasources;
+  const ready = datasources.filter(d => d.ready).length;
+  $('dsHealth').textContent = datasources.length
+    ? `${ready}/${datasources.length} data sources ready` : 'no data sources configured';
+  if (!datasources.length) return;
+  const kinds = {};
+  datasources.forEach(d => (kinds[d.layer] = kinds[d.layer] || []).push(d));
+  $('layers').innerHTML = Object.entries(kinds).map(([kind, list]) =>
+    `<div class="layer-kind">${escapeHtml(kind)}</div>` + list.map(d => `
+      <label class="layer">
+        <input type="checkbox" value="${escapeHtml(d.name)}" ${d.ready ? 'checked' : ''}>
+        <span><span class="name">${escapeHtml(d.name)}</span>
+          ${d.ready ? '' : `<span class="notready">⚠ missing env: ${escapeHtml(d.missing_env.join(', '))}</span>`}
+          <div class="desc">${escapeHtml(d.description)}</div></span>
+      </label>`).join('')).join('');
 }
 
+$('layersAll').onclick = (e) => { e.preventDefault();
+  document.querySelectorAll('#layers input').forEach(c => c.checked = true); };
+$('layersNone').onclick = (e) => { e.preventDefault();
+  document.querySelectorAll('#layers input').forEach(c => c.checked = false); };
+document.querySelectorAll('#depth button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#depth button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); selectedDepth = b.dataset.d;
+});
+
+/* ---------- start ---------- */
 async function startSession() {
   const problem = $('problem').value.trim();
   if (problem.length < 10) { alert('Please describe the problem (at least a sentence).'); return; }
+  const layers = [...document.querySelectorAll('#layers input:checked')].map(c => c.value);
   $('startBtn').disabled = true;
   try {
     const res = await fetch('/api/sessions', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        server: $('server').value,
-        problem,
-        sudo_password: $('sudoPass').value || null,
-      }),
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ server: $('server').value, problem, layers,
+                             depth: selectedDepth, sudo_password: $('sudoPass').value || null }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
     $('sudoPass').value = '';
     const session = await res.json();
     await refreshSessions();
-    openSession(session.id, true);
-  } catch (e) {
-    alert('Failed to start session: ' + e.message);
-  } finally {
-    $('startBtn').disabled = false;
-  }
+    openSession(session.id);
+  } catch (e) { alert('Failed to start: ' + e.message); }
+  finally { $('startBtn').disabled = false; }
 }
 
+/* ---------- sessions list ---------- */
 async function refreshSessions() {
-  const res = await fetch('/api/sessions');
-  const { sessions } = await res.json();
-  const box = $('sessions');
-  if (!sessions.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
-  box.innerHTML = sessions.map(s => `
-    <div class="item" onclick="openSession('${s.id}', false)">
+  sessionsCache = (await (await fetch('/api/sessions')).json()).sessions;
+  renderSessions();
+}
+
+function renderSessions() {
+  const q = $('sessionSearch').value.toLowerCase();
+  const list = sessionsCache.filter(s =>
+    !q || `${s.server} ${s.problem} ${s.status}`.toLowerCase().includes(q));
+  $('sessions').innerHTML = list.length ? list.map(s => `
+    <div class="item ${s.id === currentSession ? 'active' : ''}" onclick="openSession('${s.id}')">
       <div><strong>${escapeHtml(s.server)}</strong>
         <span class="status ${s.status}" style="float:right">
           ${s.status === 'running' ? '<span class="spinner"></span>' : ''}${s.status}</span></div>
       <div class="p">${escapeHtml(s.problem)}</div>
-    </div>`).join('');
+      <div class="meta">${new Date(s.created_at * 1000).toLocaleString()} · ${escapeHtml(s.depth)}
+        · ${s.layers.length ? escapeHtml(s.layers.join(', ')) : 'server only'}</div>
+    </div>`).join('') : '<div class="empty">No matching sessions.</div>';
+}
+$('sessionSearch').oninput = renderSessions;
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(tab) {
+  document.querySelectorAll('#tabs button').forEach(x =>
+    x.classList.toggle('active', x.dataset.tab === tab));
+  ['activity', 'report', 'evidence'].forEach(t =>
+    $('tab-' + t).style.display = t === tab ? '' : 'none');
+  if (tab === 'evidence' && currentSession) loadFiles(currentSession);
 }
 
+/* ---------- timeline ---------- */
 function addEvent(ev) {
   const tl = $('timeline');
   let cls = 'ev', badge = ev.type, body = '';
   if (ev.type === 'agent_text') { cls += ' text'; badge = 'claude'; body = ev.text; }
   else if (ev.type === 'tool_use') { cls += ' tool'; badge = ev.tool; body = ev.input; }
-  else if (ev.type === 'started') { badge = 'start'; body = `Investigating ${ev.server} — evidence saved under ${ev.workdir}`; }
+  else if (ev.type === 'started') {
+    badge = 'start';
+    body = `Investigating ${ev.server} (${ev.depth}) — layers: ${(ev.layers || []).join(', ') || 'server only'}`;
+  }
   else if (ev.type === 'failed') { cls += ' fail'; badge = 'error'; body = ev.error; }
-  else if (ev.type === 'completed') { badge = 'done'; body = 'Investigation complete — report below.'; }
+  else if (ev.type === 'completed') { badge = 'done'; body = 'Investigation complete — see the Report tab.'; }
   else return;
   const div = document.createElement('div');
   div.className = cls;
-  div.innerHTML = `<span class="badge">${escapeHtml(badge)}</span><div class="body">${escapeHtml(body)}</div>`;
+  const long = body && body.length > 400;
+  div.innerHTML = `<span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>
+    <div style="min-width:0"><div class="body ${long ? 'clamp' : ''}">${escapeHtml(body)}</div>
+    ${long ? '<span class="more">show more</span>' : ''}</div>`;
+  if (long) div.querySelector('.more').onclick = (e) => {
+    const b = div.querySelector('.body');
+    b.classList.toggle('clamp');
+    e.target.textContent = b.classList.contains('clamp') ? 'show more' : 'show less';
+  };
   tl.appendChild(div);
   tl.scrollTop = tl.scrollHeight;
 }
 
+/* ---------- report ---------- */
 function renderReport(report) {
-  if (!report) return;
+  if (!report || !Object.keys(report).length) return;
   const conf = (report.confidence || 'low').toLowerCase();
-  const list = (items) => (items || []).map(i => `<li>${escapeHtml(typeof i === 'string' ? i : JSON.stringify(i))}</li>`).join('');
+  const list = (items) => (items || []).map(i =>
+    `<li>${escapeHtml(typeof i === 'string' ? i : JSON.stringify(i))}</li>`).join('');
   const evidence = (report.evidence || []).map(e =>
-    `<div class="evidence"><span class="src">${escapeHtml(e.source || '')}</span><br>${escapeHtml(e.finding || (typeof e === 'string' ? e : JSON.stringify(e)))}</div>`).join('');
+    `<div class="evidence"><span class="src">${escapeHtml(e.source || '')}</span><br>${
+      escapeHtml(e.finding || (typeof e === 'string' ? e : JSON.stringify(e)))}</div>`).join('');
+  const layersRows = (report.layers_checked || []).map(l => {
+    const v = String(l.verdict || '').toLowerCase().replace(/\s+/g, '');
+    return `<tr><td>${escapeHtml(l.layer)}</td>
+      <td class="verdict-${escapeHtml(v)}">${escapeHtml(l.verdict || '')}</td>
+      <td>${escapeHtml(l.note || '')}</td></tr>`;
+  }).join('');
+  $('reportBody').classList.remove('empty');
   $('reportBody').innerHTML = `
     <div class="kv"><div class="k">Summary</div><div class="v">${escapeHtml(report.summary || '—')}</div></div>
     <div class="kv"><div class="k">Probable root cause
-      <span class="conf ${conf}">${escapeHtml(conf)} confidence</span></div>
+      <span class="conf ${conf}">${escapeHtml(conf)} confidence</span>
+      ${report.root_cause_layer ? `<span class="layerpill">${escapeHtml(report.root_cause_layer)}</span>` : ''}</div>
       <div class="v"><strong>${escapeHtml(report.probable_root_cause || '—')}</strong></div></div>
+    ${layersRows ? `<div class="kv"><div class="k">Layers checked</div>
+      <table class="layers"><tr><th>Layer</th><th>Verdict</th><th>Note</th></tr>${layersRows}</table></div>` : ''}
     ${evidence ? `<div class="kv"><div class="k">Evidence</div>${evidence}</div>` : ''}
     ${report.impact ? `<div class="kv"><div class="k">Impact</div><div class="v">${escapeHtml(report.impact)}</div></div>` : ''}
     ${report.recommended_fix?.length ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
     ${report.preventive_measures?.length ? `<div class="kv"><div class="k">Preventive measures</div><ul>${list(report.preventive_measures)}</ul></div>` : ''}
     ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}`;
-  $('report').style.display = 'block';
 }
 
-async function openSession(id, isNew) {
+/* ---------- evidence files ---------- */
+async function loadFiles(id) {
+  const { files } = await (await fetch(`/api/sessions/${id}/files`)).json();
+  $('fileCount').textContent = files.length;
+  const box = $('fileList');
+  box.classList.toggle('empty', !files.length);
+  box.innerHTML = files.length ? files.map(f =>
+    `<div class="f" data-p="${escapeHtml(f.path)}"><span>${escapeHtml(f.path)}</span>
+     <span class="size">${(f.size / 1024).toFixed(1)} KB</span></div>`).join('')
+    : 'No evidence files yet.';
+  box.querySelectorAll('.f').forEach(el => el.onclick = async () => {
+    box.querySelectorAll('.f').forEach(x => x.classList.remove('active'));
+    el.classList.add('active');
+    const text = await (await fetch(`/api/sessions/${id}/files/${encodeURIComponent(el.dataset.p)}`)).text();
+    $('fileView').style.display = '';
+    $('fileView').textContent = text;
+  });
+}
+
+/* ---------- session open / head ---------- */
+function renderHead(s) {
+  $('sessionHead').style.display = '';
+  $('tabs').style.display = '';
+  $('shTitle').textContent = `${s.server} · ${s.id}`;
+  $('shStatus').className = `status ${s.status}`;
+  $('shStatus').innerHTML = (s.status === 'running' ? '<span class="spinner"></span>' : '') + s.status;
+  $('shPills').innerHTML = `<span class="tag">${escapeHtml(s.depth)}</span>` +
+    (s.layers || []).map(l => `<span class="tag">${escapeHtml(l)}</span>`).join('');
+  $('cancelBtn').style.display = s.status === 'running' ? '' : 'none';
+  $('dlReport').style.display = (s.status === 'completed' || s.report) ? '' : 'none';
+}
+
+$('cancelBtn').onclick = async () => {
+  if (!currentSession || !confirm('Cancel this investigation?')) return;
+  await fetch(`/api/sessions/${currentSession}/cancel`, { method: 'POST' });
+};
+$('dlReport').onclick = () => {
+  if (currentSession) window.open(`/api/sessions/${currentSession}/report.md`, '_blank');
+};
+
+async function openSession(id) {
   currentSession = id;
+  renderSessions();
   if (eventSource) { eventSource.close(); eventSource = null; }
   $('timeline').innerHTML = '';
-  $('report').style.display = 'none';
-  $('reportBody').innerHTML = '';
-  $('timelineTitle').textContent = `Agent activity — session ${id}`;
+  $('reportBody').innerHTML = 'No report yet.'; $('reportBody').classList.add('empty');
+  $('fileView').style.display = 'none';
+  showTab('activity');
 
-  const res = await fetch(`/api/sessions/${id}`);
-  const session = await res.json();
+  const session = await (await fetch(`/api/sessions/${id}`)).json();
+  renderHead(session);
+  loadFiles(id);
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
-    eventSource.onmessage = (msg) => {
+    eventSource.onmessage = async (msg) => {
       const ev = JSON.parse(msg.data);
       addEvent(ev);
-      if (ev.type === 'completed') { renderReport(ev.report); refreshSessions(); eventSource.close(); }
-      if (ev.type === 'failed') { if (ev.report) renderReport(ev.report); refreshSessions(); eventSource.close(); }
+      if (ev.type === 'completed' || ev.type === 'failed') {
+        if (ev.report) renderReport(ev.report);
+        eventSource.close();
+        await refreshSessions();
+        const fresh = sessionsCache.find(x => x.id === id);
+        if (fresh) renderHead(fresh);
+        if (ev.type === 'completed') showTab('report');
+        loadFiles(id);
+      }
     };
-    eventSource.onerror = () => { /* stream closes when the session ends */ };
   } else {
     (session.events || []).forEach(addEvent);
     renderReport(session.report);
@@ -246,8 +451,7 @@ async function openSession(id, isNew) {
 }
 
 $('startBtn').onclick = startSession;
-loadInventory();
-refreshSessions();
+loadInventory(); loadDatasources(); refreshSessions();
 setInterval(refreshSessions, 15000);
 </script>
 </body>

@@ -1,17 +1,23 @@
-# AI Troubleshooter — agentic server troubleshooting UI on Claude Code
+# AI Troubleshooter — multi-layer agentic root cause analysis on Claude Code
 
-A small web app for an Ubuntu jump/ops server where **Claude Code is already
-installed and logged in** (e.g. with an enterprise plan). It gives operators a
-UI to:
+A web app for an Ubuntu jump/ops server where **Claude Code is already
+installed and logged in** (e.g. with an enterprise plan). It investigates
+incidents the way a senior SRE does — never stopping at server logs:
 
-1. **Pick a server** from a YAML inventory.
-2. **Describe the problem** ("502s since 14:30", "disk alerts on db-01", ...).
-3. Watch **predefined agents** (a *log-collector* and a *log-analyzer* driven
-   by Claude Code) SSH into the affected server, pull the relevant logs and
-   diagnostics, and correlate them.
-4. Get a structured **incident report**: probable root cause, confidence,
-   evidence (with the exact log lines), impact, a step-by-step recommended
-   fix, and preventive measures.
+1. **Pick the affected server** from a YAML inventory.
+2. **Select the evidence layers** to investigate: monitoring (Zabbix),
+   virtualization (VMware vCenter), ITSM / recent changes (SummitAI or any
+   REST API), network log collectors (SSH) — all configurable in
+   `datasources.yaml`.
+3. **Choose a depth** (quick / standard / deep) and **describe the problem**
+   ("502s since 14:30", "disk alerts on db-01", ...).
+4. Watch **predefined agents** (a *log-collector* and a *log-analyzer* driven
+   by Claude Code) pull evidence from every selected layer, correlate
+   timestamps across all of it — server logs vs. monitoring alerts vs. change
+   records vs. VM events vs. network logs — and separate cause from symptom.
+5. Get a structured **incident report**: probable root cause **and the layer
+   it lives in**, confidence, per-layer verdicts, evidence with exact log
+   lines, impact, a step-by-step fix, and preventive measures.
 
 The backend drives Claude Code through the **Claude Agent SDK for Python**
 (`claude-agent-sdk`), so it reuses the machine's existing Claude Code
@@ -19,18 +25,19 @@ authentication — no `ANTHROPIC_API_KEY` is required when the service account
 is logged in via `claude`.
 
 ```
-Browser UI  ──►  FastAPI backend  ──►  Claude Agent SDK  ──►  Claude Code
-   ▲  live SSE stream                     │
-   └──────────────────────────────────────┤ subagents:
-                                          │  • log-collector  (ssh → ./logs/)
-                                          │  • log-analyzer   (local analysis)
-                                          ▼
-                              read-only SSH to the selected server
+Browser UI ──► FastAPI backend ──► Claude Agent SDK ──► Claude Code agents
+  ▲ live SSE stream                                        │
+  └────────────────────────────────────────────────────────┤
+        ┌──────────────┬──────────────┬────────────────────┼──────────────┐
+        ▼              ▼              ▼                    ▼              ▼
+   target server   Zabbix API    vCenter API        ITSM/REST API    network log
+   (read-only      (problems,    (VM events,        (recent changes, hosts (SSH,
+   SSH wrappers)   metrics)      host health)       incidents)       read-only)
 ```
 
-The agents are **strictly read-only on the remote hosts**: they only run
-log-reading and diagnostic commands, save all evidence locally under the
-session directory, and *suggest* fixes — they never apply them.
+The agents are **strictly read-only everywhere**: they only run log-reading
+and diagnostic commands / GET-style API queries, save all evidence locally
+under the session directory, and *suggest* fixes — they never apply them.
 
 ---
 
@@ -81,12 +88,44 @@ your inventory hosts.
 | Environment variable | Default | Purpose |
 |---|---|---|
 | `TROUBLESHOOTER_INVENTORY` | `./inventory.yaml` (falls back to the example) | Path to the server inventory |
+| `TROUBLESHOOTER_DATASOURCES` | `./datasources.yaml` (falls back to the example) | Path to the evidence-layer config |
 | `TROUBLESHOOTER_DATA` | `./data/sessions` | Where session evidence + reports are stored |
 | `TROUBLESHOOTER_MODEL` | Claude Code's configured default | Optional model override (e.g. `claude-opus-4-8`) |
-| `TROUBLESHOOTER_MAX_TURNS` | `80` | Safety cap on agent turns per investigation |
+| `TROUBLESHOOTER_MAX_TURNS` | unset | Optional hard cap on agent turns (caps all depths) |
 
 The inventory format is documented inline in `inventory.example.yaml` —
 including per-server `log_hints` that tell the agents where to look first.
+
+### Evidence layers (`datasources.yaml`)
+
+Copy `datasources.example.yaml` to `datasources.yaml` and configure your
+layers. Supported connector types:
+
+| Type | For | Auth |
+|---|---|---|
+| `zabbix` | Zabbix 6.0+ (problems, events, hosts, items, metric history, raw API) | API token via `token_env` |
+| `vmware` | vCenter Automation REST API (VM state, host health, events) | username/password via `username_env`/`password_env` |
+| `rest` | Any REST API — SummitAI ITSM, ELK/Graylog, NetBox, custom apps | static header via `auth_header` + `auth_value: "Bearer ${VAR}"` |
+| `ssh` | Network/syslog log collector hosts | SSH key, like inventory servers |
+
+**Secrets never live in YAML files** — the config names environment
+variables; set the actual values in the systemd unit (or an
+`EnvironmentFile=/opt/ai-troubleshooter/secrets.env` with mode 600):
+
+```ini
+Environment=ZABBIX_API_TOKEN=...
+Environment=VCENTER_USERNAME=svc-claude-ro
+Environment=VCENTER_PASSWORD=...
+Environment=SUMMIT_API_TOKEN=...
+```
+
+Use **read-only accounts** for every layer (Zabbix user with read
+permissions, vCenter read-only role, ITSM report user). The UI shows each
+source as ready / missing-credentials on load.
+
+Each source's `agent_hints` are free text handed to the agent — use them to
+encode tribal knowledge ("host names match inventory", "check change windows
+first", "device logs under /var/log/network/<device>/").
 
 ## How a session works
 
@@ -108,10 +147,15 @@ including per-server `log_hints` that tell the agents where to look first.
 | Endpoint | Description |
 |---|---|
 | `GET /api/inventory` | Servers available for troubleshooting |
-| `POST /api/sessions` | `{"server": "web-01", "problem": "..."}` → starts an investigation |
+| `GET /api/datasources` | Configured evidence layers + credential readiness |
+| `POST /api/sessions` | `{"server", "problem", "layers": [...], "depth", "sudo_password"?}` → starts an investigation |
 | `GET /api/sessions` | All sessions with status |
 | `GET /api/sessions/{id}` | Session detail incl. events and report |
 | `GET /api/sessions/{id}/events` | SSE stream of live agent activity |
+| `POST /api/sessions/{id}/cancel` | Cancel a running investigation |
+| `GET /api/sessions/{id}/files` | Collected evidence files |
+| `GET /api/sessions/{id}/files/{path}` | View one evidence file |
+| `GET /api/sessions/{id}/report.md` | Download the incident report |
 
 ## Sudo on the target servers
 

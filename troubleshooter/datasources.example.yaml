@@ -1,0 +1,67 @@
+# Evidence-layer data sources for the AI Troubleshooter.
+#
+# Copy to datasources.yaml (or point TROUBLESHOOTER_DATASOURCES at your copy).
+# Each entry becomes a selectable "layer" in the UI; during an investigation
+# the agent queries the selected sources through the bundled collector CLI
+# and correlates their evidence with the server logs.
+#
+# SECRETS ARE NEVER WRITTEN HERE. Fields ending in _env name an environment
+# variable that must be set for the service (systemd Environment= or an
+# EnvironmentFile). The AI model only ever sees the variable NAME.
+#
+# Supported types:
+#   zabbix  - Zabbix JSON-RPC API (6.0+; token auth)
+#   vmware  - vCenter Automation REST API (session auth)
+#   rest    - any REST API with a static auth header (ITSM tools like
+#             SummitAI, ELK/Graylog, netbox, custom apps...)
+#   ssh     - a host reachable over SSH (syslog collectors, network log
+#             servers, jump boxes) — read-only, like inventory servers
+
+datasources:
+  - name: zabbix
+    type: zabbix
+    layer: monitoring
+    description: "Zabbix — active problems, trigger history, item metrics for all prod hosts"
+    url: https://zabbix.example.com/api_jsonrpc.php
+    token_env: ZABBIX_API_TOKEN
+    verify_tls: true
+    # Free-text guidance handed to the agent about what this source is good for
+    agent_hints:
+      - "Check active problems first, then metric history (CPU, memory, disk, ping loss) around the incident window."
+      - "Host names in Zabbix match the inventory names."
+
+  - name: summit-ai
+    type: rest
+    layer: itsm
+    description: "SummitAI ITSM — recent change requests and incidents (always check for changes just before the incident)"
+    url: https://summit.example.com
+    auth_header: Authorization
+    # ${VAR} is expanded from the environment at request time, never shown to the model
+    auth_value: "Bearer ${SUMMIT_API_TOKEN}"
+    verify_tls: true
+    agent_hints:
+      - "Recent changes are the #1 suspect: list change requests updated in the last 48h and correlate their implementation windows with the incident start."
+      - "Endpoints (adjust to your SummitAI tenant): POST /REST/Summit_RESTWCF.svc/RESTService/CommonWS_JsonObjCall"
+
+  - name: vcenter
+    type: vmware
+    layer: virtualization
+    description: "VMware vCenter — VM power state, host health, recent VM/host events (vMotion, HA restarts, datastore issues)"
+    url: https://vcenter.example.com
+    username_env: VCENTER_USERNAME
+    password_env: VCENTER_PASSWORD
+    verify_tls: false
+    agent_hints:
+      - "Check the VM backing the affected server: power state, host it runs on, recent events (migrations, snapshots, HA restarts)."
+      - "Useful paths: get /api/vcenter/vm?names=<vm-name> ; get /api/vcenter/host"
+
+  - name: network-logs
+    type: ssh
+    layer: network
+    description: "Central syslog collector for switches, firewalls and load balancers (/var/log/network/)"
+    host: 10.0.0.50
+    user: claude-ro
+    # ssh_key: /home/aitrouble/.ssh/claude-ro
+    port: 22
+    agent_hints:
+      - "Device logs are under /var/log/network/<device>/. Grep for the affected server's IP and for interface flaps / BGP / spanning-tree events in the incident window."

@@ -22,7 +22,11 @@ SESSIONS_DIR = Path(os.environ.get("TROUBLESHOOTER_DATA", BASE_DIR / "data" / "s
 REPORT_SCHEMA = """{
   "summary": "one-paragraph plain-language summary of what happened",
   "probable_root_cause": "the single most likely root cause",
+  "root_cause_layer": "server | application | virtualization | network | monitoring | change/itsm | external | unknown",
   "confidence": "high | medium | low",
+  "layers_checked": [
+    {"layer": "layer or datasource name", "verdict": "clean | suspicious | root cause | unreachable", "note": "one line"}
+  ],
   "evidence": [
     {"source": "file or command the evidence came from", "finding": "what it shows"}
   ],
@@ -33,17 +37,50 @@ REPORT_SCHEMA = """{
 }"""
 
 
+DEPTH_TURNS = {"quick": 25, "standard": 60, "deep": 120}
+
+DEPTH_GUIDANCE = {
+    "quick": (
+        "QUICK triage: you are time-boxed. Check only the 2-3 most likely "
+        "evidence sources for this problem, collect small targeted extracts, "
+        "and give your best assessment. Mark anything unchecked in "
+        "needs_followup."
+    ),
+    "standard": (
+        "STANDARD investigation: check every selected evidence layer at least "
+        "briefly, go deep on the ones that show anomalies, and correlate "
+        "across layers before concluding."
+    ),
+    "deep": (
+        "DEEP investigation: be exhaustive. Query every selected layer, widen "
+        "time windows if the incident start is unclear, cross-check every "
+        "hypothesis against at least two independent sources, and explicitly "
+        "rule out each layer you clear (say what you checked and why it's "
+        "clean)."
+    ),
+}
+
+
 @dataclass
 class SessionState:
     id: str
     server: str
     problem: str
     created_at: float
-    status: str = "running"  # running | completed | failed
+    status: str = "running"  # running | completed | failed | cancelled
+    layers: list[str] = field(default_factory=list)
+    depth: str = "standard"
     events: list[dict] = field(default_factory=list)
     report: dict | None = None
     error: str | None = None
     _cond: asyncio.Condition = field(default_factory=asyncio.Condition)
+    _task: asyncio.Task | None = None
+
+    def cancel(self) -> bool:
+        if self.status == "running" and self._task is not None:
+            self._task.cancel()
+            return True
+        return False
 
     @property
     def workdir(self) -> Path:
@@ -78,6 +115,8 @@ class SessionState:
             "problem": self.problem,
             "created_at": self.created_at,
             "status": self.status,
+            "layers": self.layers,
+            "depth": self.depth,
             "report": self.report,
             "error": self.error,
         }
@@ -89,9 +128,65 @@ class SessionState:
 SESSIONS: dict[str, SessionState] = {}
 
 
-def build_prompt(server: Server, problem: str, sudo_available: bool = False) -> str:
+def _layer_usage(ds: dict) -> str:
+    name, ds_type = ds["name"], ds["type"]
+    if ds_type == "zabbix":
+        return (
+            f"Query with: `python3 -m collectors {name} problems --host <host> --since 6h`, "
+            f"`... events --since 6h`, `... hosts --search <name>`, "
+            f"`... items --host <host> --search cpu`, `... history --itemid <id> --since 4h`, "
+            f"`... raw --method <api.method> --params-json '{{...}}'`"
+        )
+    if ds_type in ("vmware", "rest"):
+        return (
+            f"Query with: `python3 -m collectors {name} get <api-path> [--param k=v]` "
+            f"(and `post <api-path> --data '<json>'` where the API requires POST)"
+        )
+    if ds_type == "ssh":
+        return f"Query with the wrapper script: `./remote-{name} '<read-only command>'`"
+    return ""
+
+
+def build_layers_section(layer_sources: list[dict]) -> str:
+    if not layer_sources:
+        return (
+            "\n## Additional evidence layers\nNone selected — this investigation "
+            "is scoped to the target server only.\n"
+        )
+    parts = ["\n## Additional evidence layers",
+             "The operator selected these evidence sources. Check EVERY one of "
+             "them (an SRE never stops at server logs — recent changes, "
+             "monitoring history, the virtualization layer and the network can "
+             "all hold the real cause). Save each query's output under ./logs/ "
+             "with a descriptive name, e.g. `python3 -m collectors zabbix "
+             "problems --host web-01 > logs/zabbix_problems.json`."]
+    for ds in layer_sources:
+        hints = "".join(f"\n  - {h}" for h in ds.get("agent_hints", []))
+        parts.append(
+            f"\n### {ds['name']}  (layer: {ds.get('layer', 'other')}, type: {ds['type']})\n"
+            f"- {ds.get('description', 'no description')}\n"
+            f"- {_layer_usage(ds)}"
+            + (f"\n- Hints:{hints}" if hints else "")
+        )
+    parts.append(
+        "\nRun `python3 -m collectors list` to re-check what is available. "
+        "Credentials are handled inside the collectors — never print "
+        "environment variables or ask for tokens."
+    )
+    return "\n".join(parts) + "\n"
+
+
+def build_prompt(
+    server: Server,
+    problem: str,
+    sudo_available: bool = False,
+    layer_sources: list[dict] | None = None,
+    depth: str = "standard",
+) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
+    layers_section = build_layers_section(layer_sources or [])
+    depth_guidance = DEPTH_GUIDANCE.get(depth, DEPTH_GUIDANCE["standard"])
     if sudo_available:
         access = """- Run every remote command through the wrapper script in your working directory:
   `./remote '<remote command>'`
@@ -115,9 +210,12 @@ def build_prompt(server: Server, problem: str, sudo_available: bool = False) -> 
 {access}
 - Known log locations / hints:
 {hints}
-
+{layers_section}
 ## Problem statement (from the operator)
 {problem}
+
+## Investigation depth
+{depth_guidance}
 
 ## Hard rules
 - READ-ONLY on the remote server. You may run diagnostic and log-reading
@@ -130,15 +228,21 @@ def build_prompt(server: Server, problem: str, sudo_available: bool = False) -> 
   guessing.
 
 ## Workflow
-1. TRIAGE: from the problem statement, decide which services, logs and system
-   metrics are relevant. Post a short plan.
+1. TRIAGE: from the problem statement, decide which services, logs, metrics
+   AND evidence layers are relevant. Post a short plan listing what you will
+   check in each selected layer.
 2. COLLECT: use the log-collector subagent (or do it directly) to pull the
-   relevant logs and diagnostics over SSH into ./logs/. Prefer targeted
-   extracts (last few hours, grep for errors, around the incident time) over
-   whole multi-GB files. Use `tail -n`, `grep`, `journalctl --since` etc.
-3. ANALYZE: use the log-analyzer subagent to correlate timestamps across the
-   collected files, identify the failure chain, and separate root cause from
-   symptoms.
+   relevant server logs and diagnostics over SSH into ./logs/, and query every
+   selected evidence layer via the collectors CLI / layer wrappers, saving all
+   outputs into ./logs/. Prefer targeted extracts (last few hours, grep for
+   errors, around the incident time) over whole multi-GB files. Use `tail -n`,
+   `grep`, `journalctl --since` etc.
+3. ANALYZE: use the log-analyzer subagent to correlate timestamps ACROSS ALL
+   collected files — server logs, monitoring alerts, change records,
+   virtualization events, network logs — identify the failure chain, and
+   separate root cause from symptoms. Pay special attention to changes or
+   events that immediately precede the incident start. State clearly which
+   layer the root cause lives in.
 4. REPORT: write two files in the working directory:
    - `report.md` — a readable incident report for the operator.
    - `report.json` — EXACTLY this JSON structure (valid JSON, no markdown
@@ -155,8 +259,9 @@ def _agent_definitions():
     return {
         "log-collector": AgentDefinition(
             description=(
-                "Collects logs and diagnostics from a remote server over SSH. "
-                "Use for pulling log files, journalctl output, and system state "
+                "Collects evidence: server logs and diagnostics over SSH, plus "
+                "monitoring/virtualization/ITSM/network data via the collectors "
+                "CLI (python3 -m collectors ...). Use for pulling everything "
                 "into the local ./logs/ directory."
             ),
             prompt=(
@@ -237,7 +342,54 @@ printf '%s\\n' "$TS_SUDO_PASS" | exec "${{SSH[@]}}" "sudo -S -p '' -- bash -c $(
         path.chmod(0o700)
 
 
-async def run_session(state: SessionState, server: Server, sudo_password: str | None = None) -> None:
+def _write_datasources_json(workdir: Path, layer_sources: list[dict]) -> None:
+    """Config for the collectors CLI. Contains env var NAMES, never secrets."""
+    api_sources = [ds for ds in layer_sources if ds.get("type") != "ssh"]
+    (workdir / "datasources.json").write_text(
+        json.dumps({"datasources": api_sources}, indent=2)
+    )
+
+
+def _write_layer_wrappers(workdir: Path, layer_sources: list[dict]) -> None:
+    """One ./remote-<name> wrapper per ssh-type evidence source."""
+    for ds in layer_sources:
+        if ds.get("type") != "ssh":
+            continue
+        srv = Server(
+            name=ds["name"],
+            host=ds["host"],
+            user=ds["user"],
+            port=int(ds.get("port", 22)),
+            ssh_key=ds.get("ssh_key"),
+        )
+        ssh_parts = [
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "StrictHostKeyChecking=accept-new",
+        ]
+        if srv.ssh_key:
+            ssh_parts += ["-i", srv.ssh_key]
+        if srv.port != 22:
+            ssh_parts += ["-p", str(srv.port)]
+        ssh_parts.append(f"{srv.user}@{srv.host}")
+        ssh_array = " ".join(f"'{p}'" for p in ssh_parts)
+        script = f"""#!/usr/bin/env bash
+# Read-only diagnostics on evidence source {srv.name}. Usage: ./remote-{srv.name} '<command>'
+set -o pipefail
+CMD="${{1:?usage: ./remote-{srv.name} '<command>'}}"
+SSH=({ssh_array})
+exec "${{SSH[@]}}" "bash -c $(printf '%q' "$CMD")"
+"""
+        path = workdir / f"remote-{srv.name}"
+        path.write_text(script)
+        path.chmod(0o700)
+
+
+async def run_session(
+    state: SessionState,
+    server: Server,
+    sudo_password: str | None = None,
+    layer_sources: list[dict] | None = None,
+) -> None:
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
         from claude_agent_sdk.types import (
@@ -258,10 +410,24 @@ async def run_session(state: SessionState, server: Server, sudo_password: str | 
     workdir = state.workdir
     (workdir / "logs").mkdir(parents=True, exist_ok=True)
     sudo_available = bool(sudo_password)
+    layer_sources = layer_sources or []
     _write_wrappers(workdir, server, with_sudo=sudo_available)
+    _write_layer_wrappers(workdir, layer_sources)
+    _write_datasources_json(workdir, layer_sources)
+
+    # PYTHONPATH lets the agent run `python3 -m collectors ...` from the
+    # session dir; secrets stay in this process's env (inherited), referenced
+    # by name only.
+    env: dict[str, str] = {"PYTHONPATH": str(BASE_DIR)}
+    if sudo_available:
+        env["TS_SUDO_PASS"] = sudo_password
+
+    max_turns = DEPTH_TURNS.get(state.depth, DEPTH_TURNS["standard"])
+    if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
+        max_turns = min(max_turns, int(os.environ["TROUBLESHOOTER_MAX_TURNS"]))
 
     options = ClaudeAgentOptions(
-        env={"TS_SUDO_PASS": sudo_password} if sudo_available else {},
+        env=env,
         cwd=str(workdir),
         system_prompt=(
             "You are an autonomous infrastructure troubleshooting agent running in "
@@ -272,17 +438,29 @@ async def run_session(state: SessionState, server: Server, sudo_password: str | 
         disallowed_tools=["WebSearch", "WebFetch"],
         permission_mode="acceptEdits",
         agents=_agent_definitions(),
-        max_turns=int(os.environ.get("TROUBLESHOOTER_MAX_TURNS", "80")),
+        max_turns=max_turns,
         model=os.environ.get("TROUBLESHOOTER_MODEL") or None,
     )
 
     await state.emit(
         "started",
-        {"server": server.name, "workdir": str(workdir), "sudo": sudo_available},
+        {
+            "server": server.name,
+            "workdir": str(workdir),
+            "sudo": sudo_available,
+            "layers": [ds["name"] for ds in layer_sources],
+            "depth": state.depth,
+        },
     )
 
     try:
-        prompt = build_prompt(server, state.problem, sudo_available=sudo_available)
+        prompt = build_prompt(
+            server,
+            state.problem,
+            sudo_available=sudo_available,
+            layer_sources=layer_sources,
+            depth=state.depth,
+        )
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
@@ -304,6 +482,14 @@ async def run_session(state: SessionState, server: Server, sudo_password: str | 
                         state.report = report
                     await state.emit("failed", {"error": state.error, "report": report})
                     return
+    except asyncio.CancelledError:
+        state.status = "cancelled"
+        state.error = "Cancelled by the operator"
+        report = _load_report(workdir, allow_empty=True)
+        if report:
+            state.report = report
+        await state.emit("failed", {"error": state.error, "report": report})
+        return
     except Exception as exc:  # noqa: BLE001 - surface any agent failure to the UI
         state.status = "failed"
         state.error = f"{type(exc).__name__}: {exc}"
@@ -346,7 +532,13 @@ def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
     return report
 
 
-def start_session(server: Server, problem: str, sudo_password: str | None = None) -> SessionState:
+def start_session(
+    server: Server,
+    problem: str,
+    sudo_password: str | None = None,
+    layer_sources: list[dict] | None = None,
+    depth: str = "standard",
+) -> SessionState:
     # The sudo password is deliberately NOT stored on SessionState (it would
     # leak into /api/sessions responses and events); it lives only in the
     # closure of this one run and the agent subprocess environment.
@@ -355,8 +547,12 @@ def start_session(server: Server, problem: str, sudo_password: str | None = None
         server=server.name,
         problem=problem,
         created_at=time.time(),
+        layers=[ds["name"] for ds in (layer_sources or [])],
+        depth=depth if depth in DEPTH_TURNS else "standard",
     )
     SESSIONS[state.id] = state
     state.workdir.mkdir(parents=True, exist_ok=True)
-    asyncio.get_running_loop().create_task(run_session(state, server, sudo_password))
+    state._task = asyncio.get_running_loop().create_task(
+        run_session(state, server, sudo_password, layer_sources)
+    )
     return state
