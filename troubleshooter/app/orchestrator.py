@@ -470,6 +470,16 @@ async def run_session(
             layer_sources=layer_sources,
             depth=state.depth,
         )
+        # Debug artifacts: exactly what this run was asked to do (no secrets)
+        (workdir / "prompt.txt").write_text(prompt)
+        (workdir / "meta.json").write_text(json.dumps({
+            "session": state.id,
+            "server": server.name,
+            "depth": state.depth,
+            "max_turns": max_turns,
+            "layers": [ds["name"] for ds in layer_sources],
+            "sudo": sudo_available,
+        }, indent=2))
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:

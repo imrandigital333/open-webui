@@ -14,9 +14,27 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-app = FastAPI(title="AI Troubleshooter", version="2.0.0")
+APP_VERSION = "2.1.0"
+
+app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _git_commit() -> str:
+    try:
+        import subprocess
+
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+GIT_COMMIT = _git_commit()
 
 
 class SessionRequest(BaseModel):
@@ -32,7 +50,16 @@ class SessionRequest(BaseModel):
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # no-store: a stale cached UI silently reintroduces old behavior
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/version")
+async def version():
+    return {"version": APP_VERSION, "commit": GIT_COMMIT}
 
 
 @app.get("/api/inventory")

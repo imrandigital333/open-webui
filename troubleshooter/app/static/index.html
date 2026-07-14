@@ -141,7 +141,7 @@
     <h1>AI Troubleshooter</h1>
     <div class="sub">multi-layer root cause analysis · powered by Claude Code agents</div>
   </div>
-  <div class="right" id="dsHealth"></div>
+  <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
 </header>
 <main>
   <div>
@@ -451,6 +451,8 @@ async function openSession(id) {
 }
 
 $('startBtn').onclick = startSession;
+fetch('/api/version').then(r => r.json()).then(v =>
+  $('version').textContent = ` · v${v.version} (${v.commit})`);
 loadInventory(); loadDatasources(); refreshSessions();
 setInterval(refreshSessions, 15000);
 </script>
