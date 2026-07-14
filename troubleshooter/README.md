@@ -159,27 +159,18 @@ first", "device logs under /var/log/network/<device>/").
 
 ## Sudo on the target servers
 
-If protected logs on a target need `sudo`, you have two options:
+There is deliberately **no sudo password option in the UI**. If protected
+logs on a target need elevated read access, grant the diagnostics user
+passwordless, command-scoped sudo on that target — no password ever enters
+the system and sudo stays limited to read commands:
 
-1. **Preferred — passwordless, command-scoped sudo.** On each target, allow
-   the diagnostics user to run only read commands without a password:
+```
+# /etc/sudoers.d/claude-ro
+claude-ro ALL=(root) NOPASSWD: /usr/bin/journalctl, /usr/bin/tail, /usr/bin/cat, /usr/bin/grep, /usr/bin/ls, /usr/bin/du
+```
 
-   ```
-   # /etc/sudoers.d/claude-ro
-   claude-ro ALL=(root) NOPASSWD: /usr/bin/journalctl, /usr/bin/tail, /usr/bin/cat, /usr/bin/grep, /usr/bin/ls, /usr/bin/du
-   ```
-
-   No password ever enters the UI, and sudo stays limited to those binaries.
-
-2. **UI sudo password (optional field on the investigation form).** The
-   password is used once for that investigation. Handling is deliberately
-   conservative: it is never written to disk, never stored on the session,
-   never logged, and never placed in the AI prompt — the agent runs commands
-   through a generated `./remote-sudo` wrapper that reads the password from an
-   environment variable of the session subprocess. Residual risk: any process
-   environment can in principle be echoed, so the agent is instructed never to
-   print it — if that risk is unacceptable, use option 1. Serve the UI over
-   HTTPS (reverse proxy) so the password is encrypted in transit.
+(Adding the user to the `adm` and `systemd-journal` groups already covers
+most log files on Ubuntu without any sudo.)
 
 ## Security notes
 

@@ -167,12 +167,6 @@
         <button data-d="deep">Deep</button>
       </div>
 
-      <label for="sudoPass">Sudo password <span style="font-weight:normal">(optional)</span></label>
-      <input type="password" id="sudoPass" autocomplete="off"
-             placeholder="Only if protected logs need sudo on the target">
-      <div class="hint">Used once for this investigation. Kept in server memory only —
-        never stored, logged, or shown to the AI model.</div>
-
       <button class="primary" id="startBtn">Start investigation</button>
     </div>
 
@@ -274,10 +268,9 @@ async function startSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ server: $('server').value, problem, layers,
-                             depth: selectedDepth, sudo_password: $('sudoPass').value || null }),
+                             depth: selectedDepth }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-    $('sudoPass').value = '';
     const session = await res.json();
     await refreshSessions();
     openSession(session.id);

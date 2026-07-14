@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -43,9 +43,6 @@ class SessionRequest(BaseModel):
     # Evidence layers (datasource names) to investigate; empty = server only
     layers: list[str] = Field(default_factory=list)
     depth: str = Field("standard", pattern="^(quick|standard|deep)$")
-    # Optional sudo password for the remote SSH user. Held in memory for this
-    # one investigation only — never stored, logged, or shown to the AI model.
-    sudo_password: str | None = Field(None, repr=False)
 
 
 @app.get("/")
@@ -95,7 +92,6 @@ async def create_session(req: SessionRequest):
     state = orchestrator.start_session(
         server,
         req.problem.strip(),
-        sudo_password=req.sudo_password or None,
         layer_sources=layer_sources,
         depth=req.depth,
     )
