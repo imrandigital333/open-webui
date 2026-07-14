@@ -1,0 +1,22 @@
+[Unit]
+Description=AI Troubleshooter (Claude Code agentic troubleshooting UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated service account that (a) is logged in to Claude Code and
+# (b) holds the read-only SSH keys for the inventory hosts.
+User=aitrouble
+Group=aitrouble
+WorkingDirectory=/opt/ai-troubleshooter/troubleshooter
+Environment=TROUBLESHOOTER_INVENTORY=/opt/ai-troubleshooter/inventory.yaml
+Environment=TROUBLESHOOTER_DATA=/opt/ai-troubleshooter/data/sessions
+# Optional: pin a model instead of the Claude Code default
+# Environment=TROUBLESHOOTER_MODEL=claude-opus-4-8
+ExecStart=/opt/ai-troubleshooter/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

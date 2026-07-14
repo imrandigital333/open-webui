@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Troubleshooter</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d3646;
+    --text: #e6edf3; --muted: #8b98a9; --accent: #4c8dff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { padding: 14px 22px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px 22px;
+         max-width: 1500px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  select, textarea, button {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font: inherit;
+  }
+  textarea { min-height: 110px; resize: vertical; }
+  button.primary { margin-top: 14px; background: var(--accent); border-color: var(--accent);
+                   color: #fff; font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .server-meta { font-size: 12px; color: var(--muted); margin-top: 6px; white-space: pre-line; }
+  .tag { display: inline-block; background: var(--panel2); border: 1px solid var(--border);
+         border-radius: 999px; padding: 1px 8px; font-size: 11px; margin: 2px 3px 0 0; color: var(--muted); }
+  #sessions .item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+                    margin-bottom: 8px; cursor: pointer; }
+  #sessions .item:hover { border-color: var(--accent); }
+  #sessions .item .p { color: var(--muted); font-size: 12px; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
+  .status { font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .status.running { color: var(--warn); } .status.completed { color: var(--ok); }
+  .status.failed { color: var(--err); }
+  #timeline { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .ev { display: flex; gap: 10px; align-items: flex-start; }
+  .ev .badge { flex: 0 0 auto; font: 11px/1 var(--mono); padding: 4px 7px; border-radius: 6px;
+               margin-top: 2px; border: 1px solid var(--border); color: var(--muted); }
+  .ev.tool .badge { color: var(--accent); border-color: #2b4a7a; }
+  .ev.text .badge { color: var(--ok); border-color: #2b5a37; }
+  .ev.fail .badge { color: var(--err); border-color: #6e2c2c; }
+  .ev .body { white-space: pre-wrap; word-break: break-word; }
+  .ev.tool .body { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  #report { display: none; }
+  .kv { margin: 10px 0; }
+  .kv .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .kv .v { margin-top: 3px; white-space: pre-wrap; }
+  .conf { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .conf.high { background: #1c3524; color: var(--ok); }
+  .conf.medium { background: #3a2f14; color: var(--warn); }
+  .conf.low { background: #3d1d1d; color: var(--err); }
+  ol, ul { margin: 4px 0 0 18px; padding: 0; }
+  li { margin: 3px 0; }
+  .evidence { font-family: var(--mono); font-size: 12.5px; background: var(--panel2);
+              border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+  .evidence .src { color: var(--accent); }
+  .empty { color: var(--muted); font-size: 13px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
+             border-top-color: var(--warn); border-radius: 50%; animation: spin 0.9s linear infinite;
+             vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="dot"></div>
+  <h1>AI Troubleshooter</h1>
+  <span style="color:var(--muted);font-size:12px">powered by Claude Code agents</span>
+</header>
+<main>
+  <div>
+    <div class="panel">
+      <h2>New investigation</h2>
+      <label for="server">Server (from inventory)</label>
+      <select id="server"></select>
+      <div class="server-meta" id="serverMeta"></div>
+      <label for="problem">Problem statement</label>
+      <textarea id="problem" placeholder="e.g. Since ~14:30 UTC the app returns intermittent 502 errors and response times spiked. No deploys today."></textarea>
+      <button class="primary" id="startBtn">Start troubleshooting</button>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Sessions</h2>
+      <div id="sessions"><div class="empty">No sessions yet.</div></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2 id="timelineTitle">Agent activity</h2>
+      <div id="timeline"><div class="empty">Select a server, describe the problem, and start an investigation. The agents will pull the relevant logs over SSH, analyze them, and report the root cause and fix here.</div></div>
+    </div>
+    <div class="panel" id="report" style="margin-top:16px">
+      <h2>Incident report</h2>
+      <div id="reportBody"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+let inventory = [];
+let currentSession = null;
+let eventSource = null;
+
+const $ = (id) => document.getElementById(id);
+
+async function loadInventory() {
+  const res = await fetch('/api/inventory');
+  inventory = (await res.json()).servers;
+  const sel = $('server');
+  sel.innerHTML = inventory.map(s => `<option value="${s.name}">${s.name} — ${s.host}</option>`).join('');
+  sel.onchange = renderServerMeta;
+  renderServerMeta();
+}
+
+function renderServerMeta() {
+  const s = inventory.find(x => x.name === $('server').value);
+  if (!s) { $('serverMeta').innerHTML = ''; return; }
+  $('serverMeta').innerHTML =
+    `${escapeHtml(s.description || '')}\n` +
+    (s.os ? `OS: ${escapeHtml(s.os)}\n` : '') +
+    (s.services?.length ? `Services: ${escapeHtml(s.services.join(', '))}\n` : '') +
+    (s.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function startSession() {
+  const problem = $('problem').value.trim();
+  if (problem.length < 10) { alert('Please describe the problem (at least a sentence).'); return; }
+  $('startBtn').disabled = true;
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ server: $('server').value, problem }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const session = await res.json();
+    await refreshSessions();
+    openSession(session.id, true);
+  } catch (e) {
+    alert('Failed to start session: ' + e.message);
+  } finally {
+    $('startBtn').disabled = false;
+  }
+}
+
+async function refreshSessions() {
+  const res = await fetch('/api/sessions');
+  const { sessions } = await res.json();
+  const box = $('sessions');
+  if (!sessions.length) { box.innerHTML = '<div class="empty">No sessions yet.</div>'; return; }
+  box.innerHTML = sessions.map(s => `
+    <div class="item" onclick="openSession('${s.id}', false)">
+      <div><strong>${escapeHtml(s.server)}</strong>
+        <span class="status ${s.status}" style="float:right">
+          ${s.status === 'running' ? '<span class="spinner"></span>' : ''}${s.status}</span></div>
+      <div class="p">${escapeHtml(s.problem)}</div>
+    </div>`).join('');
+}
+
+function addEvent(ev) {
+  const tl = $('timeline');
+  let cls = 'ev', badge = ev.type, body = '';
+  if (ev.type === 'agent_text') { cls += ' text'; badge = 'claude'; body = ev.text; }
+  else if (ev.type === 'tool_use') { cls += ' tool'; badge = ev.tool; body = ev.input; }
+  else if (ev.type === 'started') { badge = 'start'; body = `Investigating ${ev.server} — evidence saved under ${ev.workdir}`; }
+  else if (ev.type === 'failed') { cls += ' fail'; badge = 'error'; body = ev.error; }
+  else if (ev.type === 'completed') { badge = 'done'; body = 'Investigation complete — report below.'; }
+  else return;
+  const div = document.createElement('div');
+  div.className = cls;
+  div.innerHTML = `<span class="badge">${escapeHtml(badge)}</span><div class="body">${escapeHtml(body)}</div>`;
+  tl.appendChild(div);
+  tl.scrollTop = tl.scrollHeight;
+}
+
+function renderReport(report) {
+  if (!report) return;
+  const conf = (report.confidence || 'low').toLowerCase();
+  const list = (items) => (items || []).map(i => `<li>${escapeHtml(typeof i === 'string' ? i : JSON.stringify(i))}</li>`).join('');
+  const evidence = (report.evidence || []).map(e =>
+    `<div class="evidence"><span class="src">${escapeHtml(e.source || '')}</span><br>${escapeHtml(e.finding || (typeof e === 'string' ? e : JSON.stringify(e)))}</div>`).join('');
+  $('reportBody').innerHTML = `
+    <div class="kv"><div class="k">Summary</div><div class="v">${escapeHtml(report.summary || '—')}</div></div>
+    <div class="kv"><div class="k">Probable root cause
+      <span class="conf ${conf}">${escapeHtml(conf)} confidence</span></div>
+      <div class="v"><strong>${escapeHtml(report.probable_root_cause || '—')}</strong></div></div>
+    ${evidence ? `<div class="kv"><div class="k">Evidence</div>${evidence}</div>` : ''}
+    ${report.impact ? `<div class="kv"><div class="k">Impact</div><div class="v">${escapeHtml(report.impact)}</div></div>` : ''}
+    ${report.recommended_fix?.length ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
+    ${report.preventive_measures?.length ? `<div class="kv"><div class="k">Preventive measures</div><ul>${list(report.preventive_measures)}</ul></div>` : ''}
+    ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}`;
+  $('report').style.display = 'block';
+}
+
+async function openSession(id, isNew) {
+  currentSession = id;
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  $('timeline').innerHTML = '';
+  $('report').style.display = 'none';
+  $('reportBody').innerHTML = '';
+  $('timelineTitle').textContent = `Agent activity — session ${id}`;
+
+  const res = await fetch(`/api/sessions/${id}`);
+  const session = await res.json();
+
+  if (session.status === 'running') {
+    eventSource = new EventSource(`/api/sessions/${id}/events`);
+    eventSource.onmessage = (msg) => {
+      const ev = JSON.parse(msg.data);
+      addEvent(ev);
+      if (ev.type === 'completed') { renderReport(ev.report); refreshSessions(); eventSource.close(); }
+      if (ev.type === 'failed') { if (ev.report) renderReport(ev.report); refreshSessions(); eventSource.close(); }
+    };
+    eventSource.onerror = () => { /* stream closes when the session ends */ };
+  } else {
+    (session.events || []).forEach(addEvent);
+    renderReport(session.report);
+  }
+}
+
+$('startBtn').onclick = startSession;
+loadInventory();
+refreshSessions();
+setInterval(refreshSessions, 15000);
+</script>
+</body>
+</html>

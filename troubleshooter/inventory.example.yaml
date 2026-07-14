@@ -1,0 +1,52 @@
+# Server inventory for the AI Troubleshooter.
+#
+# Copy this file to inventory.yaml (or point TROUBLESHOOTER_INVENTORY at your
+# own copy) and list every server the troubleshooter is allowed to reach.
+#
+# Each server must be reachable over SSH *from the machine running this app*
+# using key-based auth (no password prompts). Use a dedicated, read-only
+# service account on the target hosts — the agent only ever needs to read
+# logs and run diagnostic commands, never to change anything.
+
+servers:
+  - name: web-01
+    host: 10.0.1.11
+    port: 22
+    user: claude-ro
+    # Optional: path to a private key. Omit to use the default ssh-agent /
+    # ~/.ssh identities of the account running this service.
+    ssh_key: /opt/ai-troubleshooter/keys/claude-ro
+    description: "Nginx reverse proxy + frontend"
+    os: ubuntu-22.04
+    tags: [web, nginx, production]
+    # Hints for the agent — services worth checking and where their logs live.
+    services: [nginx]
+    log_hints:
+      - /var/log/nginx/error.log
+      - /var/log/nginx/access.log
+      - /var/log/syslog
+
+  - name: app-01
+    host: 10.0.1.21
+    port: 22
+    user: claude-ro
+    description: "Application server (gunicorn + celery workers)"
+    os: ubuntu-22.04
+    tags: [app, python, production]
+    services: [gunicorn, celery, redis-server]
+    log_hints:
+      - /var/log/myapp/
+      - "journalctl -u gunicorn"
+      - "journalctl -u celery"
+
+  - name: db-01
+    host: 10.0.1.31
+    port: 22
+    user: claude-ro
+    description: "PostgreSQL 15 primary"
+    os: ubuntu-22.04
+    tags: [database, postgres, production]
+    services: [postgresql]
+    log_hints:
+      - /var/log/postgresql/
+      - /var/log/syslog

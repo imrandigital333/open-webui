@@ -1,0 +1,4 @@
+inventory.yaml
+data/
+venv/
+__pycache__/
