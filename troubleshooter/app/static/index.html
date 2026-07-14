@@ -248,7 +248,7 @@ async function loadDatasources() {
   $('layers').innerHTML = Object.entries(kinds).map(([kind, list]) =>
     `<div class="layer-kind">${escapeHtml(kind)}</div>` + list.map(d => `
       <label class="layer">
-        <input type="checkbox" value="${escapeHtml(d.name)}" ${d.ready ? 'checked' : ''}>
+        <input type="checkbox" value="${escapeHtml(d.name)}" ${d.ready ? '' : 'disabled'}>
         <span><span class="name">${escapeHtml(d.name)}</span>
           ${d.ready ? '' : `<span class="notready">⚠ missing env: ${escapeHtml(d.missing_env.join(', '))}</span>`}
           <div class="desc">${escapeHtml(d.description)}</div></span>
@@ -256,7 +256,7 @@ async function loadDatasources() {
 }
 
 $('layersAll').onclick = (e) => { e.preventDefault();
-  document.querySelectorAll('#layers input').forEach(c => c.checked = true); };
+  document.querySelectorAll('#layers input:not(:disabled)').forEach(c => c.checked = true); };
 $('layersNone').onclick = (e) => { e.preventDefault();
   document.querySelectorAll('#layers input').forEach(c => c.checked = false); };
 document.querySelectorAll('#depth button').forEach(b => b.onclick = () => {

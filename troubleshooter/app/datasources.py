@@ -14,10 +14,10 @@ def datasources_path() -> Path:
     env = os.environ.get("TROUBLESHOOTER_DATASOURCES")
     if env:
         return Path(env)
-    candidate = BASE_DIR / "datasources.yaml"
-    if candidate.exists():
-        return candidate
-    return BASE_DIR / "datasources.example.yaml"
+    # No fallback to the example file: its placeholder hosts would be offered
+    # as real layers and the agent would waste its turn budget timing out
+    # against them. No datasources.yaml simply means no extra layers.
+    return BASE_DIR / "datasources.yaml"
 
 
 def load_datasources() -> dict[str, dict]:

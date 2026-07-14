@@ -37,7 +37,7 @@ REPORT_SCHEMA = """{
 }"""
 
 
-DEPTH_TURNS = {"quick": 25, "standard": 60, "deep": 120}
+DEPTH_TURNS = {"quick": 35, "standard": 90, "deep": 160}
 
 DEPTH_GUIDANCE = {
     "quick": (
@@ -154,12 +154,18 @@ def build_layers_section(layer_sources: list[dict]) -> str:
             "is scoped to the target server only.\n"
         )
     parts = ["\n## Additional evidence layers",
-             "The operator selected these evidence sources. Check EVERY one of "
-             "them (an SRE never stops at server logs — recent changes, "
-             "monitoring history, the virtualization layer and the network can "
-             "all hold the real cause). Save each query's output under ./logs/ "
-             "with a descriptive name, e.g. `python3 -m collectors zabbix "
-             "problems --host web-01 > logs/zabbix_problems.json`."]
+             "The operator selected these extra evidence sources (recent "
+             "changes, monitoring history, the virtualization layer and the "
+             "network can all hold the real cause). Save each query's output "
+             "under ./logs/ with a descriptive name, e.g. `python3 -m "
+             "collectors zabbix problems --host web-01 > logs/zabbix_problems.json`.\n"
+             "IMPORTANT — protect your turn budget: the affected server itself "
+             "is always the PRIMARY evidence; complete that investigation "
+             "first. Then query layers in order of relevance to the problem. "
+             "If a layer query fails twice (auth error, timeout, unreachable "
+             "host), STOP trying that layer, record it as 'unreachable' in "
+             "layers_checked, and move on — never let a broken source consume "
+             "the investigation."]
     for ds in layer_sources:
         hints = "".join(f"\n  - {h}" for h in ds.get("agent_hints", []))
         parts.append(
@@ -231,12 +237,15 @@ def build_prompt(
 1. TRIAGE: from the problem statement, decide which services, logs, metrics
    AND evidence layers are relevant. Post a short plan listing what you will
    check in each selected layer.
-2. COLLECT: use the log-collector subagent (or do it directly) to pull the
-   relevant server logs and diagnostics over SSH into ./logs/, and query every
-   selected evidence layer via the collectors CLI / layer wrappers, saving all
-   outputs into ./logs/. Prefer targeted extracts (last few hours, grep for
-   errors, around the incident time) over whole multi-GB files. Use `tail -n`,
-   `grep`, `journalctl --since` etc.
+2. COLLECT — server first: use the log-collector subagent (or do it directly)
+   to pull the relevant server logs and diagnostics over SSH into ./logs/.
+   This is the primary evidence — finish it before touching other layers.
+   Prefer targeted extracts (last few hours, grep for errors, around the
+   incident time) over whole multi-GB files. Use `tail -n`, `grep`,
+   `journalctl --since` etc.
+   Then enrich from the selected evidence layers via the collectors CLI /
+   layer wrappers (fail fast on broken sources — two failed attempts max per
+   layer), saving all outputs into ./logs/.
 3. ANALYZE: use the log-analyzer subagent to correlate timestamps ACROSS ALL
    collected files — server logs, monitoring alerts, change records,
    virtualization events, network logs — identify the failure chain, and
@@ -474,7 +483,14 @@ async def run_session(
             elif isinstance(message, ResultMessage):
                 if message.is_error:
                     state.status = "failed"
-                    state.error = message.result or message.subtype
+                    if message.subtype == "error_max_turns":
+                        state.error = (
+                            "Ran out of investigation turns before finishing. "
+                            "Re-run with Deep depth, or deselect evidence "
+                            "layers that aren't relevant to this problem."
+                        )
+                    else:
+                        state.error = message.result or message.subtype
                     # Surface whatever report was written before the run died
                     # (e.g. when the max-turns cap hits after the report step).
                     report = _load_report(workdir, allow_empty=True)
