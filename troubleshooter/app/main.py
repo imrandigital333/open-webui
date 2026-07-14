@@ -21,6 +21,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 class SessionRequest(BaseModel):
     server: str = Field(..., description="Server name from the inventory")
     problem: str = Field(..., min_length=10, description="Problem statement")
+    # Optional sudo password for the remote SSH user. Held in memory for this
+    # one investigation only — never stored, logged, or shown to the AI model.
+    sudo_password: str | None = Field(None, repr=False)
 
 
 @app.get("/")
@@ -40,7 +43,9 @@ async def create_session(req: SessionRequest):
     server = servers.get(req.server)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
-    state = orchestrator.start_session(server, req.problem.strip())
+    state = orchestrator.start_session(
+        server, req.problem.strip(), sudo_password=req.sudo_password or None
+    )
     return state.to_dict()
 
 

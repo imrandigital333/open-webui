@@ -23,7 +23,7 @@
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
        color: var(--muted); margin: 0 0 12px; }
   label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
-  select, textarea, button {
+  select, textarea, input, button {
     width: 100%; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font: inherit;
   }
@@ -87,6 +87,12 @@
       <div class="server-meta" id="serverMeta"></div>
       <label for="problem">Problem statement</label>
       <textarea id="problem" placeholder="e.g. Since ~14:30 UTC the app returns intermittent 502 errors and response times spiked. No deploys today."></textarea>
+      <label for="sudoPass">Sudo password <span style="font-weight:normal">(optional)</span></label>
+      <input type="password" id="sudoPass" autocomplete="off"
+             placeholder="Only if logs need sudo on the target server">
+      <div class="server-meta">Used once for this investigation to read protected
+        logs via <code>sudo</code>. Kept in server memory only — never stored,
+        logged, or shown to the AI model.</div>
       <button class="primary" id="startBtn">Start troubleshooting</button>
     </div>
     <div class="panel" style="margin-top:16px">
@@ -146,9 +152,14 @@ async function startSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ server: $('server').value, problem }),
+      body: JSON.stringify({
+        server: $('server').value,
+        problem,
+        sudo_password: $('sudoPass').value || null,
+      }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    $('sudoPass').value = '';
     const session = await res.json();
     await refreshSessions();
     openSession(session.id, true);

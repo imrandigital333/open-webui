@@ -89,17 +89,30 @@ class SessionState:
 SESSIONS: dict[str, SessionState] = {}
 
 
-def build_prompt(server: Server, problem: str) -> str:
+def build_prompt(server: Server, problem: str, sudo_available: bool = False) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
+    if sudo_available:
+        access = """- Run every remote command through the wrapper script in your working directory:
+  `./remote '<remote command>'`
+- If (and only if) a command fails with "Permission denied" or needs elevated
+  privileges to read a log, retry it through the sudo wrapper:
+  `./remote-sudo '<remote command>'`
+  Sudo authentication is handled inside the wrapper. Never print, read, or
+  reference the TS_SUDO_PASS environment variable, and do not cat or modify
+  the wrapper scripts. Sudo does NOT relax the read-only rule below."""
+    else:
+        access = """- Run every remote command through the wrapper script in your working directory:
+  `./remote '<remote command>'`
+- sudo is NOT available on this server; if a log needs elevated privileges,
+  note it in the report under needs_followup instead of trying workarounds."""
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
 - Key services: {services}
-- Connect with EXACTLY this command prefix for every remote command:
-  `{server.ssh_command()} '<remote command>'`
+{access}
 - Known log locations / hints:
 {hints}
 
@@ -147,8 +160,11 @@ def _agent_definitions():
                 "into the local ./logs/ directory."
             ),
             prompt=(
-                "You collect evidence from a remote Linux server over SSH using the "
-                "exact ssh command prefix given in the task. You are strictly "
+                "You collect evidence from a remote Linux server using the ./remote "
+                "wrapper script from the working directory (and ./remote-sudo when "
+                "the task says sudo is available and a file needs elevated read "
+                "access). Never print or inspect the TS_SUDO_PASS environment "
+                "variable or the wrapper scripts themselves. You are strictly "
                 "read-only on the remote host: only run commands that read logs or "
                 "system state. Save every output into the local ./logs/ directory "
                 "with descriptive filenames (e.g. logs/nginx_error_last2h.log, "
@@ -176,7 +192,52 @@ def _agent_definitions():
     }
 
 
-async def run_session(state: SessionState, server: Server) -> None:
+def _write_wrappers(workdir: Path, server: Server, with_sudo: bool) -> None:
+    """Write per-session SSH wrapper scripts.
+
+    The agent only ever calls ./remote / ./remote-sudo. The sudo password is
+    NOT stored in the scripts or anywhere on disk — ./remote-sudo reads it
+    from the TS_SUDO_PASS environment variable, which the backend injects
+    into the Claude Code subprocess for this session only.
+    """
+    ssh_parts = [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=accept-new",
+    ]
+    if server.ssh_key:
+        ssh_parts += ["-i", server.ssh_key]
+    if server.port != 22:
+        ssh_parts += ["-p", str(server.port)]
+    ssh_parts.append(f"{server.user}@{server.host}")
+    ssh_array = " ".join(f"'{p}'" for p in ssh_parts)
+
+    remote = f"""#!/usr/bin/env bash
+# Run a read-only diagnostic command on {server.name}. Usage: ./remote '<command>'
+set -o pipefail
+CMD="${{1:?usage: ./remote '<command>'}}"
+SSH=({ssh_array})
+exec "${{SSH[@]}}" "bash -c $(printf '%q' "$CMD")"
+"""
+    path = workdir / "remote"
+    path.write_text(remote)
+    path.chmod(0o700)
+
+    if with_sudo:
+        remote_sudo = f"""#!/usr/bin/env bash
+# Run a read-only diagnostic command on {server.name} under sudo.
+# Usage: ./remote-sudo '<command>'  (password comes from TS_SUDO_PASS, never stored)
+set -o pipefail
+CMD="${{1:?usage: ./remote-sudo '<command>'}}"
+if [ -z "$TS_SUDO_PASS" ]; then echo "no sudo password configured for this session" >&2; exit 1; fi
+SSH=({ssh_array})
+printf '%s\\n' "$TS_SUDO_PASS" | exec "${{SSH[@]}}" "sudo -S -p '' -- bash -c $(printf '%q' "$CMD")"
+"""
+        path = workdir / "remote-sudo"
+        path.write_text(remote_sudo)
+        path.chmod(0o700)
+
+
+async def run_session(state: SessionState, server: Server, sudo_password: str | None = None) -> None:
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
         from claude_agent_sdk.types import (
@@ -196,8 +257,11 @@ async def run_session(state: SessionState, server: Server) -> None:
 
     workdir = state.workdir
     (workdir / "logs").mkdir(parents=True, exist_ok=True)
+    sudo_available = bool(sudo_password)
+    _write_wrappers(workdir, server, with_sudo=sudo_available)
 
     options = ClaudeAgentOptions(
+        env={"TS_SUDO_PASS": sudo_password} if sudo_available else {},
         cwd=str(workdir),
         system_prompt=(
             "You are an autonomous infrastructure troubleshooting agent running in "
@@ -212,10 +276,14 @@ async def run_session(state: SessionState, server: Server) -> None:
         model=os.environ.get("TROUBLESHOOTER_MODEL") or None,
     )
 
-    await state.emit("started", {"server": server.name, "workdir": str(workdir)})
+    await state.emit(
+        "started",
+        {"server": server.name, "workdir": str(workdir), "sudo": sudo_available},
+    )
 
     try:
-        async for message in query(prompt=build_prompt(server, state.problem), options=options):
+        prompt = build_prompt(server, state.problem, sudo_available=sudo_available)
+        async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
@@ -278,7 +346,10 @@ def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
     return report
 
 
-def start_session(server: Server, problem: str) -> SessionState:
+def start_session(server: Server, problem: str, sudo_password: str | None = None) -> SessionState:
+    # The sudo password is deliberately NOT stored on SessionState (it would
+    # leak into /api/sessions responses and events); it lives only in the
+    # closure of this one run and the agent subprocess environment.
     state = SessionState(
         id=uuid.uuid4().hex[:12],
         server=server.name,
@@ -287,5 +358,5 @@ def start_session(server: Server, problem: str) -> SessionState:
     )
     SESSIONS[state.id] = state
     state.workdir.mkdir(parents=True, exist_ok=True)
-    asyncio.get_running_loop().create_task(run_session(state, server))
+    asyncio.get_running_loop().create_task(run_session(state, server, sudo_password))
     return state
