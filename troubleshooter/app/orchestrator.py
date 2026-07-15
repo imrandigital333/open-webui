@@ -223,22 +223,40 @@ def build_prompt(
 1. TRIAGE: from the problem statement, decide which services, logs, metrics
    AND evidence layers are relevant. Post a short plan listing what you will
    check in each selected layer.
-2. COLLECT — server first: use the log-collector subagent (or do it directly)
+2. PINPOINT THE FAILURE TIME — do this BEFORE pulling any logs. The incident
+   may be hours or days old; the operator's timing information may be vague
+   or wrong. Establish when the affected service actually stopped working:
+   - `systemctl status <service>` (the "Active: ... since <timestamp>" line)
+     and `systemctl show <service> -p ActiveState,InactiveEnterTimestamp,ExecMainStartTimestamp,NRestarts`
+   - the LAST lines of the service's own log (when did it stop writing?)
+   - `journalctl -u <service> -n 50` and file mtimes
+     (`ls -l --time-style=full-iso /var/log/...`)
+   - process start times (`ps -eo pid,lstart,cmd | grep <svc>`), `uptime`
+   State the failure timestamp explicitly before moving on.
+3. COLLECT — server first: use the log-collector subagent (or do it directly)
    to pull the relevant server logs and diagnostics over SSH into ./logs/.
+   ANCHOR EVERY EXTRACT TO THE FAILURE TIMESTAMP FROM STEP 2, NEVER TO THE
+   CURRENT TIME: the window that matters runs from ~60 minutes BEFORE the
+   failure to ~15 minutes after it (the cause precedes the failure; what
+   happened afterwards is mostly symptoms and noise).
+   - `journalctl --since '<failure minus 60min>' --until '<failure plus 15min>'`
+   - grep plain log files by the timestamp prefixes of that window
+   - `tail -n` alone is NOT sufficient — after collecting, CHECK the first
+     and last timestamps of each extract actually cover the failure window,
+     and re-collect with a wider window or timestamp grep if they don't.
    This is the primary evidence — finish it before touching other layers.
-   Prefer targeted extracts (last few hours, grep for errors, around the
-   incident time) over whole multi-GB files. Use `tail -n`, `grep`,
-   `journalctl --since` etc.
+   Prefer targeted extracts over whole multi-GB files.
    Then enrich from the selected evidence layers via the collectors CLI /
    layer wrappers (fail fast on broken sources — two failed attempts max per
-   layer), saving all outputs into ./logs/.
-3. ANALYZE: use the log-analyzer subagent to correlate timestamps ACROSS ALL
+   layer), querying the SAME time window around the failure, saving all
+   outputs into ./logs/.
+4. ANALYZE: use the log-analyzer subagent to correlate timestamps ACROSS ALL
    collected files — server logs, monitoring alerts, change records,
    virtualization events, network logs — identify the failure chain, and
    separate root cause from symptoms. Pay special attention to changes or
-   events that immediately precede the incident start. State clearly which
-   layer the root cause lives in.
-4. REPORT: write two files in the working directory:
+   events in the 60 minutes immediately preceding the failure timestamp.
+   State clearly which layer the root cause lives in.
+5. REPORT: write two files in the working directory:
    - `report.md` — a readable incident report for the operator.
    - `report.json` — EXACTLY this JSON structure (valid JSON, no markdown
      fences, no comments):
@@ -266,8 +284,13 @@ def _agent_definitions():
                 "system state. Save every output into the local ./logs/ directory "
                 "with descriptive filenames (e.g. logs/nginx_error_last2h.log, "
                 "logs/journal_gunicorn.log, logs/df_h.txt). Pull targeted extracts, "
-                "not entire huge files. When done, list what you collected and any "
-                "commands that failed."
+                "not entire huge files. CRITICAL: anchor extracts to the incident/"
+                "failure timestamp given in the task, never to the current time — "
+                "use `journalctl --since/--until` bracketing that timestamp and "
+                "grep files by its timestamp prefix; then verify each extract's "
+                "first/last lines actually cover the failure window and re-collect "
+                "wider if not (`tail -n` alone often misses old incidents). When "
+                "done, list what you collected and any commands that failed."
             ),
             tools=["Bash", "Write", "Read"],
         ),

@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
