@@ -96,6 +96,11 @@ Rules — this saves significant time and tokens:
    and `chmod +x` it. Do NOT store one-off greps or host-specific commands.
 4. If an existing library script has a bug or gap you had to work around,
    fix it in place (keep the header).
+5. IMPORTANT LIMIT: library sweep scripts collect CURRENT/recent state
+   (e.g. last couple of hours of logs). They are a starting point, NEVER a
+   substitute for the failure-time-anchored log collection in the workflow —
+   for any incident older than the sweep's window you must still bracket
+   the logs around the actual failure timestamp yourself.
 """
 
 
@@ -131,12 +136,14 @@ Maintain a machine-readable health snapshot of the target server in
 """
 
 
-def build_healthcheck_prompt(server: Server) -> str:
+def build_healthcheck_prompt(server: Server, workdir: Path | None = None) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided)"
     services = ", ".join(server.services) or "(unknown)"
+    wd_section = workdir_section(workdir) if workdir else ""
     return f"""You are an SRE running a PROACTIVE HEALTH CHECK on a server — there is no
 reported incident. Assess its health quickly and thoroughly.
 
+{wd_section}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
@@ -321,12 +328,29 @@ def build_layers_section(layer_sources: list[dict]) -> str:
     return "\n".join(parts) + "\n"
 
 
+def workdir_section(workdir: Path) -> str:
+    return f"""## Working directory — read carefully
+Your working directory is: {workdir}
+Every relative path in this brief (./logs/, ./health.json, report.md,
+report.json, datasources.json) means inside THAT directory. Do not cd away
+from it; when in doubt use the absolute paths. The deliverables MUST end up
+at exactly:
+  {workdir}/health.json
+  {workdir}/report.md
+  {workdir}/report.json
+  {workdir}/logs/<evidence files>
+A report or health file written anywhere else is LOST — the operator's
+dashboard only reads these exact paths.
+"""
+
+
 def build_prompt(
     server: Server,
     problem: str,
     layer_sources: list[dict] | None = None,
     depth: str = "standard",
     incident_time: str | None = None,
+    workdir: Path | None = None,
 ) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
@@ -349,8 +373,10 @@ def build_prompt(
             "\nThe operator did not provide a start time — determining WHEN the "
             "problem began is part of your job (PINPOINT step)."
         )
+    wd_section = workdir_section(workdir) if workdir else ""
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
+{wd_section}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
@@ -647,7 +673,7 @@ async def run_session(
 
     try:
         if state.mode == "healthcheck":
-            prompt = build_healthcheck_prompt(server)
+            prompt = build_healthcheck_prompt(server, workdir=workdir)
         else:
             prompt = build_prompt(
                 server,
@@ -655,6 +681,7 @@ async def run_session(
                 layer_sources=layer_sources,
                 depth=state.depth,
                 incident_time=state.incident_time,
+                workdir=workdir,
             )
         # Debug artifacts: exactly what this run was asked to do (no secrets)
         (workdir / "prompt.txt").write_text(prompt)

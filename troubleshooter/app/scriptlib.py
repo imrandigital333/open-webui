@@ -34,6 +34,9 @@ echo "=== firewall ==="; ufw status 2>/dev/null || iptables -S 2>/dev/null | hea
 echo "=== pending_updates ==="; apt list --upgradable 2>/dev/null | head -15 || yum check-update 2>/dev/null | head -15 || echo "unavailable";
 echo "=== recent_log_errors ==="; (journalctl -p err --since "-2 hours" --no-pager 2>/dev/null | tail -30) || (grep -iE "error|crit|fail|oom" /var/log/syslog 2>/dev/null | tail -30) || (grep -iE "error|crit|fail|oom" /var/log/messages 2>/dev/null | tail -30) || echo "no readable logs";
 echo "=== dmesg_tail ==="; dmesg 2>/dev/null | tail -15 || echo "unavailable"'
+echo "=== NOTE ==="
+echo "log sections above cover the RECENT window only. For incidents older than ~2h,"
+echo "collect logs bracketing the actual failure timestamp separately."
 '''
 
 
