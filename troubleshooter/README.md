@@ -92,6 +92,31 @@ your inventory hosts.
 | `TROUBLESHOOTER_DATA` | `./data/sessions` | Where session evidence + reports are stored |
 | `TROUBLESHOOTER_MODEL` | Claude Code's configured default | Optional model override (e.g. `claude-opus-4-8`) |
 | `TROUBLESHOOTER_MAX_TURNS` | unset | Optional hard cap on agent turns (caps all depths) |
+| `TROUBLESHOOTER_DB` | `sqlite:///<app>/data/troubleshooter.db` | Database URL (SQLite or PostgreSQL) |
+| `TROUBLESHOOTER_RETENTION_DAYS` | `90` | Purge sessions (DB rows + evidence dirs) older than this; `0` disables |
+| `TROUBLESHOOTER_SCRIPTLIB` | `<app>/data/scriptlib` | Location of the agent script library |
+
+### Database
+
+Sessions, events, per-server health history, and the audit log persist in a
+database (the session list survives restarts). Default is zero-ops SQLite.
+For production, use PostgreSQL:
+
+```bash
+sudo -u postgres psql -c "CREATE USER aitrouble_app WITH PASSWORD '...';"
+sudo -u postgres psql -c "CREATE DATABASE aitroubleshooter OWNER aitrouble_app;"
+/opt/ai-troubleshooter/venv/bin/pip install "psycopg[binary]"
+# systemd unit:
+# Environment=TROUBLESHOOTER_DB=postgresql+psycopg://aitrouble_app:***@localhost/aitroubleshooter
+```
+
+Tables are created automatically on startup. A daily retention job purges
+sessions older than `TROUBLESHOOTER_RETENTION_DAYS` (database rows **and**
+the on-disk evidence directories). Every session start/cancel, inventory
+change, and script deletion is written to the `audit_log` table with the
+operator identity taken from the `X-Remote-User` / `X-Forwarded-User` header
+your SSO reverse proxy sets (falling back to client IP) — browse it at
+`GET /api/audit`.
 
 The inventory format is documented inline in `inventory.example.yaml` —
 including per-server `log_hints` that tell the agents where to look first.

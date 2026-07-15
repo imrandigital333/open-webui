@@ -3,14 +3,17 @@
 Run with:  uvicorn app.main:app --host 0.0.0.0 --port 8090
 """
 
+import asyncio
+import contextlib
 import json
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import orchestrator
+from . import db, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -20,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -41,6 +44,33 @@ def _git_commit() -> str:
 
 
 GIT_COMMIT = _git_commit()
+
+RETENTION_DAYS = int(os.environ.get("TROUBLESHOOTER_RETENTION_DAYS", "90"))
+
+
+def _actor(request: Request) -> str:
+    """Operator identity from the SSO/reverse proxy, if one is in front."""
+    return (
+        request.headers.get("X-Remote-User")
+        or request.headers.get("X-Forwarded-User")
+        or (request.client.host if request.client else "anonymous")
+    )
+
+
+@app.on_event("startup")
+async def _startup():
+    await asyncio.to_thread(db.init_db)
+
+    async def retention_loop():
+        while True:
+            if RETENTION_DAYS > 0:
+                with contextlib.suppress(Exception):
+                    result = await asyncio.to_thread(db.purge_older_than, RETENTION_DAYS)
+                    if result["sessions_purged"]:
+                        await asyncio.to_thread(db.audit, "system", "retention_purge", result)
+            await asyncio.sleep(24 * 3600)
+
+    asyncio.get_running_loop().create_task(retention_loop())
 
 
 class SessionRequest(BaseModel):
@@ -129,7 +159,7 @@ async def get_datasources():
 
 
 @app.post("/api/sessions")
-async def create_session(req: SessionRequest):
+async def create_session(req: SessionRequest, request: Request):
     servers = load_inventory()
     server = servers.get(req.server)
     if server is None:
@@ -148,6 +178,10 @@ async def create_session(req: SessionRequest):
         depth=req.depth,
         incident_time=(req.incident_time or "").strip() or None,
         mode=req.mode,
+    )
+    await asyncio.to_thread(
+        db.audit, _actor(request), "session_started",
+        {"session": state.id, "server": req.server, "mode": req.mode},
     )
     return state.to_dict()
 
@@ -178,22 +212,33 @@ async def fleet():
 
 
 @app.get("/api/sessions")
-async def list_sessions():
-    sessions = sorted(orchestrator.SESSIONS.values(), key=lambda s: s.created_at, reverse=True)
-    return {"sessions": [s.to_dict() for s in sessions]}
+async def list_sessions(server: str | None = None, limit: int = 200):
+    rows = await asyncio.to_thread(db.list_sessions, min(limit, 500), server)
+    # overlay live in-memory state (fresher status/phase for running sessions)
+    live = {s.id: s.to_dict() for s in orchestrator.SESSIONS.values()}
+    merged = [live.pop(r["id"], r) for r in rows]
+    merged.extend(live.values())  # sessions not yet visible in the DB
+    merged.sort(key=lambda s: s["created_at"], reverse=True)
+    return {"sessions": merged}
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
-    state = _get_state(session_id)
-    return state.to_dict(include_events=True)
+    state = orchestrator.SESSIONS.get(session_id)
+    if state is not None:
+        return state.to_dict(include_events=True)
+    row = await asyncio.to_thread(db.get_session, session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return row
 
 
 @app.post("/api/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str):
+async def cancel_session(session_id: str, request: Request):
     state = _get_state(session_id)
     if not state.cancel():
         raise HTTPException(status_code=409, detail="Session is not running")
+    await asyncio.to_thread(db.audit, _actor(request), "session_cancelled", {"session": session_id})
     return {"ok": True}
 
 
@@ -212,10 +257,22 @@ async def stream_events(session_id: str):
     )
 
 
+def _session_workdir(session_id: str) -> Path:
+    """Session working directory — valid for live AND historical sessions."""
+    state = orchestrator.SESSIONS.get(session_id)
+    if state is not None:
+        return state.workdir
+    if not session_id.isalnum() or len(session_id) > 32:
+        raise HTTPException(status_code=404, detail="Session not found")
+    workdir = orchestrator.SESSIONS_DIR / session_id
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail="Session files not found (purged?)")
+    return workdir
+
+
 @app.get("/api/sessions/{session_id}/health")
 async def get_health(session_id: str):
-    state = _get_state(session_id)
-    path = state.workdir / "health.json"
+    path = _session_workdir(session_id) / "health.json"
     if not path.exists():
         return {"health": None}
     try:
@@ -226,8 +283,7 @@ async def get_health(session_id: str):
 
 @app.get("/api/sessions/{session_id}/files")
 async def list_files(session_id: str):
-    state = _get_state(session_id)
-    workdir = state.workdir.resolve()
+    workdir = _session_workdir(session_id).resolve()
     files = []
     if workdir.exists():
         for path in sorted(workdir.rglob("*")):
@@ -241,8 +297,7 @@ async def list_files(session_id: str):
 
 @app.get("/api/sessions/{session_id}/files/{file_path:path}")
 async def get_file(session_id: str, file_path: str):
-    state = _get_state(session_id)
-    workdir = state.workdir.resolve()
+    workdir = _session_workdir(session_id).resolve()
     target = (workdir / file_path).resolve()
     if not target.is_relative_to(workdir) or target.name.startswith("remote"):
         raise HTTPException(status_code=403, detail="Forbidden path")
@@ -255,14 +310,13 @@ async def get_file(session_id: str, file_path: str):
 
 @app.get("/api/sessions/{session_id}/report.md")
 async def download_report(session_id: str):
-    state = _get_state(session_id)
-    path = state.workdir / "report.md"
+    path = _session_workdir(session_id) / "report.md"
     if not path.exists():
         raise HTTPException(status_code=404, detail="No report.md for this session")
     return FileResponse(
         path,
         media_type="text/markdown",
-        filename=f"incident-report-{state.server}-{session_id}.md",
+        filename=f"incident-report-{session_id}.md",
     )
 
 
@@ -297,23 +351,29 @@ async def admin_inventory():
 
 
 @app.put("/api/admin/inventory/{name}")
-async def upsert_server(name: str, entry: ServerEntry):
+async def upsert_server(name: str, entry: ServerEntry, request: Request):
     servers = load_raw_inventory()
     # remove the entry being edited (by its original name) and any entry that
     # collides with the (possibly renamed) new name
     servers = [s for s in servers if s.get("name") not in (name, entry.name)]
     servers.append(entry.to_yaml_dict())
     save_inventory(servers)
+    await asyncio.to_thread(
+        db.audit, _actor(request), "inventory_upsert",
+        {"name": entry.name, "renamed_from": name if name != entry.name else None,
+         "host": entry.host},
+    )
     return {"ok": True, "servers": servers}
 
 
 @app.delete("/api/admin/inventory/{name}")
-async def delete_server(name: str):
+async def delete_server(name: str, request: Request):
     servers = load_raw_inventory()
     remaining = [s for s in servers if s.get("name") != name]
     if len(remaining) == len(servers):
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     save_inventory(remaining)
+    await asyncio.to_thread(db.audit, _actor(request), "inventory_delete", {"name": name})
     return {"ok": True}
 
 
@@ -360,14 +420,25 @@ async def get_script(filename: str):
 
 
 @app.delete("/api/scripts/{filename}")
-async def delete_script(filename: str):
+async def delete_script(filename: str, request: Request):
     target = (SCRIPTLIB_DIR / filename).resolve()
     if not target.is_relative_to(SCRIPTLIB_DIR.resolve()) or not filename.endswith(".sh"):
         raise HTTPException(status_code=403, detail="Forbidden")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Script not found")
     target.unlink()
+    await asyncio.to_thread(db.audit, _actor(request), "script_deleted", {"file": filename})
     return {"ok": True}
+
+
+@app.get("/api/audit")
+async def get_audit(limit: int = 200):
+    return {"audit": await asyncio.to_thread(db.list_audit, min(limit, 1000))}
+
+
+@app.get("/api/servers/{name}/health-history")
+async def get_health_history(name: str, limit: int = 30):
+    return {"history": await asyncio.to_thread(db.health_history, name, min(limit, 100))}
 
 
 def _get_state(session_id: str) -> orchestrator.SessionState:

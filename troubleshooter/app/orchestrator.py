@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import db
 from .inventory import BASE_DIR, Server
 from .scriptlib import SCRIPTLIB_DIR, ensure_scriptlib
 
@@ -219,6 +220,10 @@ class SessionState:
         async with self._cond:
             self.events.append(event)
             self._cond.notify_all()
+        try:
+            await asyncio.to_thread(db.add_event, self.id, event)
+        except Exception:  # noqa: BLE001 - a DB hiccup must not kill the session
+            pass
 
     async def follow(self):
         """Yield stored events, then live events until the session finishes."""
@@ -679,6 +684,10 @@ async def run_session(
                         if m:
                             state.phase = m.group(1).lower()
                             await state.emit("phase", {"phase": state.phase})
+                            try:
+                                await asyncio.to_thread(db.session_phase, state.id, state.phase)
+                            except Exception:  # noqa: BLE001
+                                pass
                             text = phase_re.sub("", text).strip()
                         if text:
                             await state.emit("agent_text", {"text": text})
@@ -729,6 +738,13 @@ async def run_session(
         final_health = _read_health()
         if final_health:
             await state.emit("health", {"health": final_health})
+            try:
+                await asyncio.to_thread(
+                    db.add_health_snapshot, state.id, state.server,
+                    final_health.get("checks") or {},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         _write_outcome(state)
 
     state.report = _load_report(workdir)
@@ -769,9 +785,13 @@ def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
 
 
 def _write_outcome(state: SessionState) -> None:
-    """Persist the run outcome to disk so fleet stats survive restarts."""
+    """Persist the run outcome (disk + database)."""
     if state.status == "running":
         return
+    try:
+        db.session_finished(state.to_dict())
+    except Exception:  # noqa: BLE001
+        pass
     try:
         (state.workdir / "outcome.json").write_text(json.dumps({
             "session": state.id,
@@ -868,6 +888,10 @@ def start_session(
     )
     SESSIONS[state.id] = state
     state.workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        db.session_started(state.to_dict())
+    except Exception:  # noqa: BLE001 - a DB outage must not block investigations
+        pass
     state._task = asyncio.get_running_loop().create_task(
         run_session(state, server, layer_sources)
     )
