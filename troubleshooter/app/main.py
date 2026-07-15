@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -39,7 +39,9 @@ GIT_COMMIT = _git_commit()
 
 class SessionRequest(BaseModel):
     server: str = Field(..., description="Server name from the inventory")
-    problem: str = Field(..., min_length=10, description="Problem statement")
+    # investigate = full incident RCA; healthcheck = fast proactive sweep
+    mode: str = Field("investigate", pattern="^(investigate|healthcheck)$")
+    problem: str = Field("", max_length=4000, description="Problem statement")
     # Evidence layers (datasource names) to investigate; empty = server only
     layers: list[str] = Field(default_factory=list)
     depth: str = Field("standard", pattern="^(quick|standard|deep)$")
@@ -126,19 +128,47 @@ async def create_session(req: SessionRequest):
     server = servers.get(req.server)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
+    if req.mode == "investigate" and len(req.problem.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Please describe the problem (at least a sentence)")
     sources = load_datasources()
     unknown = [name for name in req.layers if name not in sources]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown datasources: {', '.join(unknown)}")
-    layer_sources = [sources[name] for name in req.layers]
+    layer_sources = [sources[name] for name in req.layers] if req.mode == "investigate" else []
     state = orchestrator.start_session(
         server,
-        req.problem.strip(),
+        req.problem.strip() or "Proactive health check (no reported incident).",
         layer_sources=layer_sources,
         depth=req.depth,
         incident_time=(req.incident_time or "").strip() or None,
+        mode=req.mode,
     )
     return state.to_dict()
+
+
+@app.get("/api/fleet")
+async def fleet():
+    data = orchestrator.scan_fleet()
+    servers = load_inventory()
+    sources = load_datasources()
+    out = []
+    for s in servers.values():
+        last = data["latest"].get(s.name)
+        overall = None
+        counts = None
+        if last and last.get("checks"):
+            counts = {"ok": 0, "warning": 0, "critical": 0, "unknown": 0}
+            for v in last["checks"].values():
+                st = (v.get("status") or "unknown").lower()
+                counts[st if st in counts else "unknown"] += 1
+            overall = ("critical" if counts["critical"] else
+                       "warning" if counts["warning"] else
+                       "ok" if counts["ok"] else "unknown")
+        out.append({**s.to_public_dict(), "last": last, "overall": overall, "counts": counts})
+    stats = data["stats"]
+    stats["servers"] = len(out)
+    stats["datasources_ready"] = sum(1 for d in sources.values() if not missing_env_vars(d))
+    return {"servers": out, "stats": stats}
 
 
 @app.get("/api/sessions")

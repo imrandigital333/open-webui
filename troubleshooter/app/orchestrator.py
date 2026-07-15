@@ -9,6 +9,7 @@ API key is needed on a machine where `claude` is logged in.
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -67,6 +68,91 @@ DEPTH_GUIDANCE = {
 }
 
 
+INVESTIGATE_PHASES = ["triage", "pinpoint", "collect", "analyze", "report"]
+HEALTHCHECK_PHASES = ["connect", "sweep", "report"]
+
+HEALTH_SECTION = """## Live health checklist (./health.json)
+Maintain a machine-readable health snapshot of the target server in
+./health.json so the operator's dashboard updates live:
+- IMMEDIATELY after your first message, write the initial file with every
+  aspect set to {"status": "unknown"}.
+- Rewrite the file as soon as you have assessed an aspect — do NOT batch the
+  updates to the end. Keep it cheap: assess most aspects from one or two
+  combined SSH commands (uptime; top -b -n1 | head; free -m; df -h;
+  systemctl list-units --state=failed; ss -ltn; ufw status or
+  iptables -S | head; apt list --upgradable 2>/dev/null | head).
+- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE
+  (e.g. disk >90% = critical, >80% = warning; failed key service = critical).
+- EXACT format — all ten keys always present:
+{
+  "checks": {
+    "connectivity": {"status": "...", "value": "reachable, ssh ok", "note": "one line"},
+    "uptime":       {"status": "...", "value": "up 41 days", "note": "no unexpected reboot"},
+    "cpu":          {"status": "...", "value": "23%", "note": "load 0.8 on 4 cores"},
+    "memory":       {"status": "...", "value": "78%", "note": "no OOM events"},
+    "storage":      {"status": "...", "value": "91% /var", "note": "worst filesystem"},
+    "services":     {"status": "...", "value": "1 failed", "note": "fakeapp down since 14:31"},
+    "network":      {"status": "...", "value": "ports ok", "note": "expected listeners present"},
+    "firewall":     {"status": "...", "value": "ufw active", "note": "no recent rule changes"},
+    "patching":     {"status": "...", "value": "12 pending", "note": "3 security updates pending"},
+    "logs":         {"status": "...", "value": "error burst", "note": "kernel OOM messages at 14:31"}
+  }
+}
+- Start each value with "NN%" when a percentage applies (cpu, memory, storage)
+  so the dashboard can draw a gauge.
+"""
+
+
+def build_healthcheck_prompt(server: Server) -> str:
+    hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided)"
+    services = ", ".join(server.services) or "(unknown)"
+    return f"""You are an SRE running a PROACTIVE HEALTH CHECK on a server — there is no
+reported incident. Assess its health quickly and thoroughly.
+
+## Target server
+- Name: {server.name} ({server.description or "no description"})
+- OS: {server.os or "unknown"}
+- Key services: {services}
+- Connect with EXACTLY this command prefix for every remote command:
+  `{server.ssh_command()} '<remote command>'`
+- Log locations / hints:
+{hints}
+
+{HEALTH_SECTION}
+## Progress markers
+When you enter a new phase, start the FIRST line of your next message with
+exactly one of: PHASE: CONNECT | PHASE: SWEEP | PHASE: REPORT
+
+## Hard rules
+- READ-ONLY on the remote server: diagnostic and log-reading commands only.
+  Never change any state.
+- Be fast: this is a sweep, not an investigation. Use a few combined SSH
+  commands, and only dig deeper into an aspect that looks unhealthy (e.g.
+  check WHY a service is down, WHAT is filling a disk).
+- Save command outputs under ./logs/ for the operator.
+
+## Workflow
+1. CONNECT: verify reachability, get date/uptime.
+2. SWEEP: run the combined health commands, update ./health.json per aspect
+   as results come in, and briefly investigate anything warning/critical.
+3. REPORT: write two files:
+   - `report.md` — a short health report.
+   - `report.json` — EXACTLY this JSON (valid JSON, no fences):
+{{
+  "summary": "2-4 sentence overall health assessment",
+  "anomalies": [
+    {{"aspect": "which health aspect", "severity": "warning | critical", "finding": "what is wrong, with evidence", "recommendation": "what to do about it"}}
+  ],
+  "logs_reviewed": [
+    {{"source": "log/command", "covers": "time range or 'live'", "note": "one line"}}
+  ]
+}}
+  (empty anomalies array if the server is fully healthy)
+
+Finish only after health.json shows no "unknown" aspects and both report
+files are written."""
+
+
 @dataclass
 class SessionState:
     id: str
@@ -74,9 +160,14 @@ class SessionState:
     problem: str
     created_at: float
     status: str = "running"  # running | completed | failed | cancelled
+    mode: str = "investigate"  # investigate | healthcheck
     layers: list[str] = field(default_factory=list)
     depth: str = "standard"
     incident_time: str | None = None
+    phase: str | None = None
+    duration_ms: int | None = None
+    cost_usd: float | None = None
+    num_turns: int | None = None
     events: list[dict] = field(default_factory=list)
     report: dict | None = None
     error: str | None = None
@@ -122,9 +213,14 @@ class SessionState:
             "problem": self.problem,
             "created_at": self.created_at,
             "status": self.status,
+            "mode": self.mode,
             "layers": self.layers,
             "depth": self.depth,
             "incident_time": self.incident_time,
+            "phase": self.phase,
+            "duration_ms": self.duration_ms,
+            "cost_usd": self.cost_usd,
+            "num_turns": self.num_turns,
             "report": self.report,
             "error": self.error,
         }
@@ -236,35 +332,13 @@ def build_prompt(
 ## Investigation depth
 {depth_guidance}
 
-## Live health checklist (./health.json)
-Alongside the investigation, maintain a machine-readable health snapshot of
-the target server in ./health.json so the operator's dashboard updates live:
-- IMMEDIATELY after posting your triage plan, write the initial file with
-  every aspect set to {{"status": "unknown"}}.
-- Rewrite the file as soon as you have assessed an aspect — do NOT batch the
-  updates to the end. Keep it cheap: assess most aspects from one or two
-  combined SSH commands during your normal collection (uptime; top -b -n1 |
-  head; free -m; df -h; systemctl list-units --state=failed; ss -ltn;
-  ufw status or iptables -S | head; apt list --upgradable 2>/dev/null | head).
-- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE
-  (e.g. disk >90% = critical, >80% = warning; failed key service = critical).
-- EXACT format — all ten keys always present:
-{{
-  "checks": {{
-    "connectivity": {{"status": "...", "value": "reachable, ssh ok", "note": "one line"}},
-    "uptime":       {{"status": "...", "value": "up 41 days", "note": "no unexpected reboot"}},
-    "cpu":          {{"status": "...", "value": "23%", "note": "load 0.8 on 4 cores"}},
-    "memory":       {{"status": "...", "value": "78%", "note": "no OOM events"}},
-    "storage":      {{"status": "...", "value": "91% /var", "note": "worst filesystem"}},
-    "services":     {{"status": "...", "value": "1 failed", "note": "fakeapp down since 14:31"}},
-    "network":      {{"status": "...", "value": "ports ok", "note": "expected listeners present"}},
-    "firewall":     {{"status": "...", "value": "ufw active", "note": "no recent rule changes"}},
-    "patching":     {{"status": "...", "value": "12 pending", "note": "3 security updates pending"}},
-    "logs":         {{"status": "...", "value": "error burst", "note": "kernel OOM messages at 14:31"}}
-  }}
-}}
-- Start each value with "NN%" when a percentage applies (cpu, memory, storage)
-  so the dashboard can draw a gauge.
+{HEALTH_SECTION}
+## Progress markers
+When you enter a new phase of the workflow below, start the FIRST line of
+your next message with exactly one of:
+PHASE: TRIAGE | PHASE: PINPOINT | PHASE: COLLECT | PHASE: ANALYZE | PHASE: REPORT
+(then continue your message on the next line). The operator's dashboard uses
+these to show live progress.
 
 ## Hard rules
 - READ-ONLY on the remote server. You may run diagnostic and log-reading
@@ -457,7 +531,10 @@ async def run_session(
     def _on_stderr(line: str) -> None:
         stderr_file.write(line.rstrip("\n") + "\n")
 
-    max_turns = DEPTH_TURNS.get(state.depth, DEPTH_TURNS["standard"])
+    if state.mode == "healthcheck":
+        max_turns = 25
+    else:
+        max_turns = DEPTH_TURNS.get(state.depth, DEPTH_TURNS["standard"])
     if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
         max_turns = min(max_turns, int(os.environ["TROUBLESHOOTER_MAX_TURNS"]))
 
@@ -531,24 +608,30 @@ async def run_session(
     health_watcher = asyncio.create_task(_health_watcher())
 
     try:
-        prompt = build_prompt(
-            server,
-            state.problem,
-            layer_sources=layer_sources,
-            depth=state.depth,
-            incident_time=state.incident_time,
-        )
+        if state.mode == "healthcheck":
+            prompt = build_healthcheck_prompt(server)
+        else:
+            prompt = build_prompt(
+                server,
+                state.problem,
+                layer_sources=layer_sources,
+                depth=state.depth,
+                incident_time=state.incident_time,
+            )
         # Debug artifacts: exactly what this run was asked to do (no secrets)
         (workdir / "prompt.txt").write_text(prompt)
         (workdir / "meta.json").write_text(json.dumps({
             "session": state.id,
             "server": server.name,
+            "mode": state.mode,
+            "created_at": state.created_at,
             "depth": state.depth,
             "max_turns": max_turns,
             "layers": [ds["name"] for ds in layer_sources],
             "incident_time": state.incident_time,
         }, indent=2))
         deadline = time.monotonic() + timeout_s
+        phase_re = re.compile(r"^\s*PHASE:\s*([A-Za-z]+)\s*$", re.MULTILINE)
         async for message in query(prompt=prompt, options=options):
             got_first_message.set()
             if time.monotonic() > deadline:
@@ -558,13 +641,23 @@ async def run_session(
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
-                        await state.emit("agent_text", {"text": block.text})
+                        text = block.text
+                        m = phase_re.search(text)
+                        if m:
+                            state.phase = m.group(1).lower()
+                            await state.emit("phase", {"phase": state.phase})
+                            text = phase_re.sub("", text).strip()
+                        if text:
+                            await state.emit("agent_text", {"text": text})
                     elif isinstance(block, ToolUseBlock):
                         await state.emit(
                             "tool_use",
                             {"tool": block.name, "input": _summarize_input(block.name, block.input)},
                         )
             elif isinstance(message, ResultMessage):
+                state.duration_ms = message.duration_ms
+                state.cost_usd = message.total_cost_usd
+                state.num_turns = message.num_turns
                 if message.is_error:
                     state.status = "failed"
                     if message.subtype == "error_max_turns":
@@ -603,9 +696,11 @@ async def run_session(
         final_health = _read_health()
         if final_health:
             await state.emit("health", {"health": final_health})
+        _write_outcome(state)
 
     state.report = _load_report(workdir)
     state.status = "completed"
+    _write_outcome(state)
     await state.emit("completed", {"report": state.report})
 
 
@@ -640,18 +735,100 @@ def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
     return report
 
 
+def _write_outcome(state: SessionState) -> None:
+    """Persist the run outcome to disk so fleet stats survive restarts."""
+    if state.status == "running":
+        return
+    try:
+        (state.workdir / "outcome.json").write_text(json.dumps({
+            "session": state.id,
+            "server": state.server,
+            "mode": state.mode,
+            "status": state.status,
+            "created_at": state.created_at,
+            "duration_ms": state.duration_ms,
+            "cost_usd": state.cost_usd,
+            "num_turns": state.num_turns,
+            "confidence": (state.report or {}).get("confidence"),
+            "root_cause_layer": (state.report or {}).get("root_cause_layer"),
+        }, indent=2))
+    except OSError:
+        pass
+
+
+def scan_fleet() -> dict:
+    """Per-server last-known state + global stats, from disk (survives restarts)
+    merged with in-memory running sessions."""
+    latest: dict[str, dict] = {}
+    stats = {"total": 0, "completed": 0, "failed": 0, "running": 0,
+             "high_confidence": 0, "cost_usd": 0.0, "healthchecks": 0}
+    if SESSIONS_DIR.exists():
+        for d in SESSIONS_DIR.iterdir():
+            meta_path = d / "meta.json"
+            if not d.is_dir() or not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            def _load(name: str) -> dict:
+                try:
+                    return json.loads((d / name).read_text())
+                except (OSError, json.JSONDecodeError):
+                    return {}
+
+            outcome = _load("outcome.json")
+            health = _load("health.json")
+            sid = meta.get("session") or d.name
+            live = SESSIONS.get(sid)
+            status = live.status if live else outcome.get("status", "unknown")
+            created = meta.get("created_at") or d.stat().st_mtime
+
+            stats["total"] += 1
+            if status == "running":
+                stats["running"] += 1
+            elif status == "completed":
+                stats["completed"] += 1
+            elif status in ("failed", "cancelled"):
+                stats["failed"] += 1
+            if meta.get("mode") == "healthcheck":
+                stats["healthchecks"] += 1
+            if outcome.get("cost_usd"):
+                stats["cost_usd"] += float(outcome["cost_usd"])
+            if outcome.get("confidence") == "high":
+                stats["high_confidence"] += 1
+
+            server = meta.get("server")
+            if not server:
+                continue
+            entry = {
+                "session": sid,
+                "created_at": created,
+                "mode": meta.get("mode", "investigate"),
+                "status": status,
+                "checks": health.get("checks"),
+            }
+            if server not in latest or created > latest[server]["created_at"]:
+                latest[server] = entry
+    stats["cost_usd"] = round(stats["cost_usd"], 2)
+    return {"latest": latest, "stats": stats}
+
+
 def start_session(
     server: Server,
     problem: str,
     layer_sources: list[dict] | None = None,
     depth: str = "standard",
     incident_time: str | None = None,
+    mode: str = "investigate",
 ) -> SessionState:
     state = SessionState(
         id=uuid.uuid4().hex[:12],
         server=server.name,
         problem=problem,
         created_at=time.time(),
+        mode=mode if mode in ("investigate", "healthcheck") else "investigate",
         layers=[ds["name"] for ds in (layer_sources or [])],
         depth=depth if depth in DEPTH_TURNS else "standard",
         incident_time=incident_time,

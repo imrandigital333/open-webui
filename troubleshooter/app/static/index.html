@@ -127,6 +127,59 @@
               border-radius: 8px; padding: 10px 12px; max-height: 380px; overflow: auto;
               font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .empty { color: var(--muted); font-size: 13px; }
+  /* top nav */
+  .nav { display: flex; gap: 6px; margin-left: 26px; }
+  .nav button { width: auto; background: none; border: 1px solid transparent; color: var(--muted);
+                padding: 6px 16px; border-radius: 8px; font-weight: 650; font-size: 13px; }
+  .nav button.active { background: var(--panel2); color: var(--text); border-color: var(--border); }
+  /* overview */
+  #viewOverview { display: block; max-width: 1600px; margin: 0 auto; padding: 16px 24px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+         padding: 13px 16px; }
+  .kpi .n { font-size: 26px; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
+            letter-spacing: .07em; margin-top: 2px; font-weight: 700; }
+  .kpi .n .u { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .card .top { display: flex; align-items: center; gap: 11px; }
+  .card .ring { flex: 0 0 46px; width: 46px; height: 46px; border-radius: 50%;
+                border: 3px solid var(--border); display: grid; place-items: center;
+                font-size: 16px; font-weight: 800; color: var(--muted); }
+  .card.o-ok .ring { border-color: var(--ok); color: var(--ok); }
+  .card.o-warning .ring { border-color: var(--warn); color: var(--warn); }
+  .card.o-critical .ring { border-color: var(--err); color: var(--err);
+                           box-shadow: 0 0 16px rgba(248,81,73,.25); }
+  .card.o-running .ring { border-color: var(--accent); color: var(--accent);
+                          animation: pulse 1.4s infinite; }
+  .card .sname { font-weight: 700; }
+  .card .host { font-size: 11.5px; color: var(--muted); }
+  .card .aspects { display: flex; gap: 4px; margin: 11px 0 5px; }
+  .aspect-dot { flex: 1; height: 6px; border-radius: 3px; background: var(--border); }
+  .aspect-dot.ok { background: var(--ok); } .aspect-dot.warning { background: var(--warn); }
+  .aspect-dot.critical { background: var(--err); }
+  .card .sline { font-size: 11px; color: var(--muted); margin-bottom: 11px; min-height: 15px; }
+  .card .sline b.w { color: var(--warn); } .card .sline b.c { color: var(--err); }
+  .card .btns { display: flex; gap: 8px; }
+  .card .btns button { font-size: 12px; padding: 7px 0; }
+  /* phase stepper */
+  .stepper { display: flex; align-items: center; margin: 2px 0 14px; }
+  .step { display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+          text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; }
+  .step .b { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border);
+             display: grid; place-items: center; font-size: 10px; background: var(--panel2); }
+  .step.done .b { border-color: var(--ok); color: var(--ok); }
+  .step.done { color: var(--ok); }
+  .step.active .b { border-color: var(--accent); color: var(--accent);
+                    animation: pulse 1.4s infinite; }
+  .step.active { color: var(--accent2); }
+  .step-link { flex: 1; height: 2px; background: var(--border); margin: 0 8px; min-width: 12px; }
+  .step-link.done { background: var(--ok); }
+  .modebadge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+               border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; color: var(--muted); }
+  .shstats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   /* health slide-over */
   #healthPanel { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; z-index: 40;
                  background: var(--panel); border-left: 1px solid var(--border);
@@ -199,9 +252,19 @@
     <h1>AI Troubleshooter</h1>
     <div class="sub">multi-layer root cause analysis · powered by Claude Code agents</div>
   </div>
+  <nav class="nav">
+    <button id="navOverview" class="active">Overview</button>
+    <button id="navWork">Investigations</button>
+  </nav>
   <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
 </header>
-<main>
+
+<div id="viewOverview">
+  <div class="kpis" id="kpis"></div>
+  <div class="fleet" id="fleet"><div class="empty">Loading fleet…</div></div>
+</div>
+
+<main id="viewWork" style="display:none">
   <div>
     <div class="panel">
       <h2>New investigation</h2>
@@ -246,7 +309,9 @@
     <div class="panel">
       <div class="session-head" id="sessionHead" style="display:none">
         <span class="title" id="shTitle"></span>
+        <span class="modebadge" id="shMode"></span>
         <span class="status" id="shStatus"></span>
+        <span class="shstats" id="shStats"></span>
         <span id="shPills"></span>
         <span class="actions">
           <button class="ghost" id="healthBtn">Health view</button>
@@ -254,6 +319,7 @@
           <button class="ghost danger" id="cancelBtn" style="display:none">Cancel</button>
         </span>
       </div>
+      <div class="stepper" id="stepper" style="display:none"></div>
       <div class="tabs" id="tabs" style="display:none">
         <button data-tab="activity" class="active">Activity</button>
         <button data-tab="report">Report</button>
@@ -346,7 +412,7 @@ async function startSession() {
   try {
     const res = await fetch('/api/sessions', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ server: $('server').value, problem, layers,
+      body: JSON.stringify({ server: $('server').value, mode: 'investigate', problem, layers,
                              depth: selectedDepth,
                              incident_time: $('incidentTime').value || null }),
     });
@@ -370,12 +436,13 @@ function renderSessions() {
     !q || `${s.server} ${s.problem} ${s.status}`.toLowerCase().includes(q));
   $('sessions').innerHTML = list.length ? list.map(s => `
     <div class="item ${s.id === currentSession ? 'active' : ''}" onclick="openSession('${s.id}')">
-      <div><strong>${escapeHtml(s.server)}</strong>
+      <div><strong>${s.mode === 'healthcheck' ? '🩺' : '🔍'} ${escapeHtml(s.server)}</strong>
         <span class="status ${s.status}" style="float:right">
           ${s.status === 'running' ? '<span class="spinner"></span>' : ''}${s.status}</span></div>
       <div class="p">${escapeHtml(s.problem)}</div>
-      <div class="meta">${new Date(s.created_at * 1000).toLocaleString()} · ${escapeHtml(s.depth)}
-        · ${s.layers.length ? escapeHtml(s.layers.join(', ')) : 'server only'}</div>
+      <div class="meta">${new Date(s.created_at * 1000).toLocaleString()}
+        ${s.mode === 'healthcheck' ? '' : `· ${escapeHtml(s.depth)}
+        · ${s.layers.length ? escapeHtml(s.layers.join(', ')) : 'server only'}`}</div>
     </div>`).join('') : '<div class="empty">No matching sessions.</div>';
 }
 $('sessionSearch').oninput = renderSessions;
@@ -421,6 +488,7 @@ function addEvent(ev) {
 /* ---------- report ---------- */
 function renderReport(report) {
   if (!report || !Object.keys(report).length) return;
+  if (report.anomalies !== undefined) { renderHealthcheckReport(report); return; }
   const conf = (report.confidence || 'low').toLowerCase();
   const list = (items) => (items || []).map(i =>
     `<li>${escapeHtml(typeof i === 'string' ? i : JSON.stringify(i))}</li>`).join('');
@@ -459,6 +527,26 @@ function renderReport(report) {
     ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}`;
 }
 
+function renderHealthcheckReport(report) {
+  const rows = (report.anomalies || []).map(a => {
+    const sev = (a.severity || '').toLowerCase();
+    return `<tr><td style="text-transform:capitalize">${escapeHtml(a.aspect || '')}</td>
+      <td class="${sev === 'critical' ? 'verdict-rootcause' : 'verdict-suspicious'}">${escapeHtml(a.severity || '')}</td>
+      <td>${escapeHtml(a.finding || '')}</td><td>${escapeHtml(a.recommendation || '')}</td></tr>`;
+  }).join('');
+  const reviewed = (report.logs_reviewed || []).map(r =>
+    `<tr><td style="font-family:var(--mono);font-size:12px">${escapeHtml(r.source || '')}</td>
+      <td style="white-space:nowrap">${escapeHtml(r.covers || '')}</td><td>${escapeHtml(r.note || '')}</td></tr>`).join('');
+  $('reportBody').classList.remove('empty');
+  $('reportBody').innerHTML = `
+    <div class="kv"><div class="k">Health summary</div><div class="v">${escapeHtml(report.summary || '—')}</div></div>
+    <div class="kv"><div class="k">Anomalies</div>
+      ${rows ? `<table class="layers"><tr><th>Aspect</th><th>Severity</th><th>Finding</th><th>Recommendation</th></tr>${rows}</table>`
+             : '<div class="v" style="color:var(--ok)">✓ No anomalies — server is healthy.</div>'}</div>
+    ${reviewed ? `<div class="kv"><div class="k">Checked by the agent</div>
+      <table class="layers"><tr><th>Source</th><th>Covers</th><th>Note</th></tr>${reviewed}</table></div>` : ''}`;
+}
+
 /* ---------- evidence files ---------- */
 async function loadFiles(id) {
   const { files } = await (await fetch(`/api/sessions/${id}/files`)).json();
@@ -476,6 +564,132 @@ async function loadFiles(id) {
     $('fileView').style.display = '';
     $('fileView').textContent = text;
   });
+}
+
+/* ---------- views ---------- */
+function switchView(view) {
+  $('viewOverview').style.display = view === 'overview' ? '' : 'none';
+  $('viewWork').style.display = view === 'work' ? '' : 'none';
+  $('navOverview').classList.toggle('active', view === 'overview');
+  $('navWork').classList.toggle('active', view === 'work');
+  if (view === 'overview') loadFleet();
+}
+$('navOverview').onclick = () => switchView('overview');
+$('navWork').onclick = () => switchView('work');
+
+/* ---------- overview: KPIs + fleet ---------- */
+const OVERALL_ICON = { ok: '✓', warning: '!', critical: '✕', running: '…' };
+async function loadFleet() {
+  const { servers, stats } = await (await fetch('/api/fleet')).json();
+  $('kpis').innerHTML = [
+    [stats.servers, 'Servers'],
+    [stats.datasources_ready, 'Data sources ready'],
+    [stats.total, 'Total runs'],
+    [`<span>${stats.running}</span>`, 'Running now'],
+    [stats.high_confidence, 'High-confidence RCAs'],
+    [`$${(stats.cost_usd || 0).toFixed(2)}<span class="u"> USD</span>`, 'AI spend'],
+  ].map(([n, l]) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+
+  $('fleet').innerHTML = servers.map(s => {
+    const running = s.last?.status === 'running';
+    const overall = running ? 'running' : (s.overall || 'unknown');
+    const c = s.counts;
+    const summary = running
+      ? `<b style="color:var(--accent2)">${s.last.mode === 'healthcheck' ? 'health check' : 'investigation'} running…</b>`
+      : c ? (c.critical ? `<b class="c">${c.critical} critical</b>` : '') +
+            (c.critical && c.warning ? ' · ' : '') +
+            (c.warning ? `<b class="w">${c.warning} warning</b>` : '') +
+            (!c.critical && !c.warning ? 'all checks healthy' : '')
+        : 'never checked';
+    const when = s.last
+      ? `${s.last.mode === 'healthcheck' ? '🩺' : '🔍'} ${new Date(s.last.created_at * 1000).toLocaleString()}`
+      : '';
+    const dots = ASPECTS.map(([k]) => {
+      const st = (s.last?.checks?.[k]?.status || 'unknown').toLowerCase();
+      const v = s.last?.checks?.[k]?.value || '';
+      return `<div class="aspect-dot ${st}" title="${escapeHtml(k)}: ${escapeHtml(st)}${v ? ' — ' + escapeHtml(v) : ''}"></div>`;
+    }).join('');
+    return `<div class="card o-${overall}">
+      <div class="top">
+        <div class="ring" title="overall: ${overall}">${OVERALL_ICON[overall] || '◎'}</div>
+        <div style="min-width:0">
+          <div class="sname">${escapeHtml(s.name)}</div>
+          <div class="host">${escapeHtml(s.host)}${s.description ? ' · ' + escapeHtml(s.description) : ''}</div>
+        </div>
+      </div>
+      <div class="aspects">${dots}</div>
+      <div class="sline">${summary}${when ? `<span style="float:right">${when}</span>` : ''}</div>
+      <div class="btns">
+        ${s.last ? `<button class="ghost" style="flex:1" onclick="viewLast('${escapeHtml(s.last.session)}')">Last report</button>` : ''}
+        <button class="ghost" style="flex:1" onclick="healthCheck('${escapeHtml(s.name)}')" ${running ? 'disabled' : ''}>🩺 Health check</button>
+        <button class="ghost" style="flex:1" onclick="investigate('${escapeHtml(s.name)}')">🔍 Investigate</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty">No servers in the inventory.</div>';
+}
+
+function investigate(name) {
+  switchView('work');
+  $('server').value = name;
+  renderServerMeta();
+  $('problem').focus();
+}
+async function viewLast(sessionId) {
+  switchView('work');
+  try { await openSession(sessionId); }
+  catch { alert('That session is no longer in memory (service restarted). Its files are still on disk under data/sessions/.'); }
+}
+async function healthCheck(name) {
+  const res = await fetch('/api/sessions', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ server: name, mode: 'healthcheck' }),
+  });
+  if (!res.ok) { alert((await res.json()).detail || res.statusText); return; }
+  const session = await res.json();
+  await refreshSessions();
+  switchView('work');
+  openSession(session.id);
+}
+
+/* ---------- phase stepper ---------- */
+const PHASES = {
+  investigate: ['triage', 'pinpoint', 'collect', 'analyze', 'report'],
+  healthcheck: ['connect', 'sweep', 'report'],
+};
+function renderStepper(mode, phase, status) {
+  const steps = PHASES[mode] || PHASES.investigate;
+  const box = $('stepper');
+  box.style.display = '';
+  let current = steps.indexOf(phase);
+  if (status === 'completed') current = steps.length;
+  const html = [];
+  steps.forEach((s, i) => {
+    const cls = i < current ? 'done' : (i === current && status === 'running') ? 'active' : '';
+    html.push(`<span class="step ${cls}"><span class="b">${i < current ? '✓' : i + 1}</span>${s}</span>`);
+    if (i < steps.length - 1) html.push(`<span class="step-link ${i < current ? 'done' : ''}"></span>`);
+  });
+  box.innerHTML = html.join('');
+}
+
+/* ---------- elapsed / stats ---------- */
+let elapsedTimer = null;
+function fmtDur(ms) {
+  const s = Math.floor(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+function renderStats(s) {
+  clearInterval(elapsedTimer);
+  if (s.status === 'running') {
+    const tick = () => $('shStats').textContent = `elapsed ${fmtDur(Date.now() - s.created_at * 1000)}`;
+    tick();
+    elapsedTimer = setInterval(tick, 1000);
+  } else {
+    const bits = [];
+    if (s.duration_ms) bits.push(fmtDur(s.duration_ms));
+    if (s.num_turns) bits.push(`${s.num_turns} turns`);
+    if (s.cost_usd) bits.push(`$${s.cost_usd.toFixed(2)}`);
+    $('shStats').textContent = bits.join(' · ');
+  }
 }
 
 /* ---------- health panel ---------- */
@@ -545,12 +759,16 @@ function renderHead(s) {
   $('sessionHead').style.display = '';
   $('tabs').style.display = '';
   $('shTitle').textContent = `${s.server} · ${s.id}`;
+  $('shMode').textContent = s.mode === 'healthcheck' ? '🩺 health check' : '🔍 investigation';
   $('shStatus').className = `status ${s.status}`;
   $('shStatus').innerHTML = (s.status === 'running' ? '<span class="spinner"></span>' : '') + s.status;
-  $('shPills').innerHTML = `<span class="tag">${escapeHtml(s.depth)}</span>` +
-    (s.layers || []).map(l => `<span class="tag">${escapeHtml(l)}</span>`).join('');
+  $('shPills').innerHTML = (s.mode === 'healthcheck' ? '' :
+    `<span class="tag">${escapeHtml(s.depth)}</span>` +
+    (s.layers || []).map(l => `<span class="tag">${escapeHtml(l)}</span>`).join(''));
   $('cancelBtn').style.display = s.status === 'running' ? '' : 'none';
   $('dlReport').style.display = (s.status === 'completed' || s.report) ? '' : 'none';
+  renderStats(s);
+  renderStepper(s.mode || 'investigate', s.phase, s.status);
 }
 
 $('cancelBtn').onclick = async () => {
@@ -582,6 +800,10 @@ async function openSession(id) {
     eventSource.onmessage = async (msg) => {
       const ev = JSON.parse(msg.data);
       if (ev.type === 'health') { renderHealth(ev.health, true, session.server); return; }
+      if (ev.type === 'phase') {
+        renderStepper(session.mode || 'investigate', ev.phase, 'running');
+        return;
+      }
       addEvent(ev);
       if (ev.type === 'completed' || ev.type === 'failed') {
         if (ev.report) renderReport(ev.report);
@@ -603,8 +825,11 @@ async function openSession(id) {
 $('startBtn').onclick = startSession;
 fetch('/api/version').then(r => r.json()).then(v =>
   $('version').textContent = ` · v${v.version} (${v.commit})`);
-loadInventory(); loadDatasources(); refreshSessions();
-setInterval(refreshSessions, 15000);
+loadInventory(); loadDatasources(); refreshSessions(); loadFleet();
+setInterval(() => {
+  refreshSessions();
+  if ($('viewOverview').style.display !== 'none') loadFleet();
+}, 15000);
 </script>
 </body>
 </html>
