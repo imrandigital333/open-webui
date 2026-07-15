@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .inventory import BASE_DIR, Server
+from .scriptlib import SCRIPTLIB_DIR, ensure_scriptlib
 
 SESSIONS_DIR = Path(os.environ.get("TROUBLESHOOTER_DATA", BASE_DIR / "data" / "sessions"))
 
@@ -71,6 +72,32 @@ DEPTH_GUIDANCE = {
 INVESTIGATE_PHASES = ["triage", "pinpoint", "collect", "analyze", "report"]
 HEALTHCHECK_PHASES = ["connect", "sweep", "report"]
 
+def script_library_section() -> str:
+    lib = ensure_scriptlib()
+    return f"""## Script library (reuse before you write!)
+A persistent library of tested diagnostic scripts lives at:
+  {lib}
+Rules — this saves significant time and tokens:
+1. BEFORE writing any multi-command diagnostic script, list the library
+   (`ls {lib}` and read the `# description:` headers with
+   `head -5 {lib}/*.sh`) and REUSE a script when one fits.
+2. Invocation convention: scripts take the ssh prefix via the SSHP env var:
+   `SSHP="<the exact ssh command prefix for this server>" bash {lib}/<script>.sh [args]`
+3. When you write a NEW diagnostic script during this session that is
+   reusable (parameterized, not tied to one host or one incident), SAVE it
+   to the library as {lib}/<short_name>.sh with EXACTLY this header:
+     #!/usr/bin/env bash
+     # name: <short_name>
+     # description: <one line: what it collects/checks>
+     # usage: SSHP="<ssh prefix>" bash <short_name>.sh [args]
+     # tags: <comma, separated, keywords>
+   Make it generic (use $SSHP, take service names/paths as arguments),
+   and `chmod +x` it. Do NOT store one-off greps or host-specific commands.
+4. If an existing library script has a bug or gap you had to work around,
+   fix it in place (keep the header).
+"""
+
+
 HEALTH_SECTION = """## Live health checklist (./health.json)
 Maintain a machine-readable health snapshot of the target server in
 ./health.json so the operator's dashboard updates live:
@@ -118,10 +145,13 @@ reported incident. Assess its health quickly and thoroughly.
 - Log locations / hints:
 {hints}
 
+{script_library_section()}
 {HEALTH_SECTION}
 ## Progress markers
 When you enter a new phase, start the FIRST line of your next message with
 exactly one of: PHASE: CONNECT | PHASE: SWEEP | PHASE: REPORT
+Tip: the library's health_sweep script collects most aspects in ONE call:
+`SSHP="<ssh prefix>" bash {SCRIPTLIB_DIR}/health_sweep.sh`
 
 ## Hard rules
 - READ-ONLY on the remote server: diagnostic and log-reading commands only.
@@ -332,6 +362,7 @@ def build_prompt(
 ## Investigation depth
 {depth_guidance}
 
+{script_library_section()}
 {HEALTH_SECTION}
 ## Progress markers
 When you enter a new phase of the workflow below, start the FIRST line of
@@ -538,9 +569,11 @@ async def run_session(
     if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
         max_turns = min(max_turns, int(os.environ["TROUBLESHOOTER_MAX_TURNS"]))
 
+    scriptlib = ensure_scriptlib()
     options = ClaudeAgentOptions(
         env=env,
         stderr=_on_stderr,
+        add_dirs=[str(scriptlib)],
         cwd=str(workdir),
         system_prompt=(
             "You are an autonomous infrastructure troubleshooting agent running in "

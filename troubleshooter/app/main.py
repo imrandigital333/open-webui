@@ -12,9 +12,15 @@ from pydantic import BaseModel, Field
 
 from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
-from .inventory import load_inventory
+from .inventory import (
+    load_inventory,
+    load_raw_inventory,
+    save_inventory,
+    writable_inventory_path,
+)
+from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.7.1"
+APP_VERSION = "2.8.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -258,6 +264,110 @@ async def download_report(session_id: str):
         media_type="text/markdown",
         filename=f"incident-report-{state.server}-{session_id}.md",
     )
+
+
+class ServerEntry(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, pattern=r"^[\w.\-]+$")
+    host: str = Field(..., min_length=1, max_length=255)
+    user: str = Field(..., min_length=1, max_length=64)
+    port: int = Field(22, ge=1, le=65535)
+    ssh_key: str | None = Field(None, max_length=512)
+    description: str = Field("", max_length=500)
+    os: str = Field("", max_length=100)
+    tags: list[str] = Field(default_factory=list)
+    services: list[str] = Field(default_factory=list)
+    log_hints: list[str] = Field(default_factory=list)
+
+    def to_yaml_dict(self) -> dict:
+        out = {"name": self.name, "host": self.host, "port": self.port, "user": self.user}
+        if self.ssh_key:
+            out["ssh_key"] = self.ssh_key
+        for key in ("description", "os"):
+            if getattr(self, key):
+                out[key] = getattr(self, key)
+        for key in ("tags", "services", "log_hints"):
+            if getattr(self, key):
+                out[key] = getattr(self, key)
+        return out
+
+
+@app.get("/api/admin/inventory")
+async def admin_inventory():
+    return {"servers": load_raw_inventory(), "path": str(writable_inventory_path())}
+
+
+@app.put("/api/admin/inventory/{name}")
+async def upsert_server(name: str, entry: ServerEntry):
+    servers = load_raw_inventory()
+    # remove the entry being edited (by its original name) and any entry that
+    # collides with the (possibly renamed) new name
+    servers = [s for s in servers if s.get("name") not in (name, entry.name)]
+    servers.append(entry.to_yaml_dict())
+    save_inventory(servers)
+    return {"ok": True, "servers": servers}
+
+
+@app.delete("/api/admin/inventory/{name}")
+async def delete_server(name: str):
+    servers = load_raw_inventory()
+    remaining = [s for s in servers if s.get("name") != name]
+    if len(remaining) == len(servers):
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    save_inventory(remaining)
+    return {"ok": True}
+
+
+@app.post("/api/admin/inventory/{name}/test")
+async def test_server(name: str):
+    """SSH reachability test for one inventory server (10s timeout)."""
+    import asyncio
+
+    servers = load_inventory()
+    server = servers.get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    cmd = server.ssh_command().split() + ["echo CONNECTION_OK && uname -a"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "detail": "Timed out after 15s"}
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)}
+    if proc.returncode == 0 and b"CONNECTION_OK" in out:
+        return {"ok": True, "detail": out.decode(errors="replace").strip()}
+    return {"ok": False, "detail": (err.decode(errors="replace") or out.decode(errors="replace")).strip()[:500]}
+
+
+@app.get("/api/scripts")
+async def get_scripts():
+    return {"scripts": list_scripts(), "path": str(SCRIPTLIB_DIR)}
+
+
+@app.get("/api/scripts/{filename}")
+async def get_script(filename: str):
+    target = (SCRIPTLIB_DIR / filename).resolve()
+    if not target.is_relative_to(SCRIPTLIB_DIR.resolve()) or not filename.endswith(".sh"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Script not found")
+    return PlainTextResponse(target.read_text(errors="replace"))
+
+
+@app.delete("/api/scripts/{filename}")
+async def delete_script(filename: str):
+    target = (SCRIPTLIB_DIR / filename).resolve()
+    if not target.is_relative_to(SCRIPTLIB_DIR.resolve()) or not filename.endswith(".sh"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Script not found")
+    target.unlink()
+    return {"ok": True}
 
 
 def _get_state(session_id: str) -> orchestrator.SessionState:

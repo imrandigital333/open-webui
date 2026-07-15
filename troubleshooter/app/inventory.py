@@ -59,6 +59,33 @@ def inventory_path() -> Path:
     return BASE_DIR / "inventory.example.yaml"
 
 
+def writable_inventory_path() -> Path:
+    """Where UI edits are written. Never the bundled example file."""
+    env = os.environ.get("TROUBLESHOOTER_INVENTORY")
+    return Path(env) if env else BASE_DIR / "inventory.yaml"
+
+
+def load_raw_inventory() -> list[dict]:
+    """The inventory as plain dicts (full detail, for the admin/settings UI)."""
+    path = inventory_path()
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return list(data.get("servers", []))
+
+
+def save_inventory(servers: list[dict]) -> None:
+    """Atomically write the inventory. NOTE: YAML comments are not preserved."""
+    path = writable_inventory_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".yaml.tmp")
+    with open(tmp, "w") as f:
+        f.write("# Managed by the AI Troubleshooter settings UI.\n")
+        yaml.safe_dump({"servers": servers}, f, sort_keys=False, allow_unicode=True)
+    tmp.replace(path)
+
+
 def load_inventory() -> dict[str, Server]:
     path = inventory_path()
     if not path.exists():

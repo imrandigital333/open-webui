@@ -269,6 +269,7 @@
   <nav class="nav">
     <button id="navOverview" class="active">Overview</button>
     <button id="navWork">Investigations</button>
+    <button id="navSettings">Settings</button>
   </nav>
   <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
 </header>
@@ -276,6 +277,56 @@
 <div id="viewOverview">
   <div class="kpis" id="kpis"></div>
   <div class="fleet" id="fleet"><div class="empty">Loading fleet…</div></div>
+</div>
+
+<div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
+  <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
+    <div class="panel">
+      <h2>Server inventory
+        <button class="link" id="addServerBtn" style="float:right">+ add server</button></h2>
+      <div class="hint" id="invPath" style="margin-bottom:10px"></div>
+      <div id="invList"><div class="empty">Loading…</div></div>
+    </div>
+    <div>
+      <div class="panel" id="invFormPanel" style="display:none">
+        <h2 id="invFormTitle">Edit server</h2>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
+          <div><label>Name *</label><input id="f_name" maxlength="100"></div>
+          <div><label>Host / IP *</label><input id="f_host" maxlength="255"></div>
+          <div><label>SSH user *</label><input id="f_user" maxlength="64" placeholder="claude-ro"></div>
+          <div><label>SSH port</label><input id="f_port" type="number" value="22" min="1" max="65535"></div>
+          <div style="grid-column:1/-1"><label>SSH key path <span style="font-weight:normal">(optional — empty uses the service account's default keys)</span></label>
+            <input id="f_ssh_key" maxlength="512" placeholder="/home/aitrouble/.ssh/claude-ro"></div>
+          <div><label>Description</label><input id="f_description" maxlength="500"></div>
+          <div><label>OS</label><input id="f_os" maxlength="100" placeholder="ubuntu-22.04"></div>
+          <div><label>Tags <span style="font-weight:normal">(comma separated)</span></label>
+            <input id="f_tags" placeholder="web, production"></div>
+          <div><label>Key services <span style="font-weight:normal">(comma separated)</span></label>
+            <input id="f_services" placeholder="nginx, postgresql"></div>
+          <div style="grid-column:1/-1"><label>Log hints <span style="font-weight:normal">(one per line — where the agent should look first)</span></label>
+            <textarea id="f_log_hints" style="min-height:70px" placeholder="/var/log/nginx/error.log&#10;journalctl -u myapp"></textarea></div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:14px;">
+          <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
+          <button class="ghost" id="testServerBtn">Test connection</button>
+          <button class="ghost danger" id="deleteServerBtn">Delete</button>
+        </div>
+        <div class="hint" id="invMsg" style="margin-top:8px"></div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <h2>Agent script library <span class="count" id="scriptCount" style="float:right"></span></h2>
+        <div class="hint" id="libPath" style="margin-bottom:10px"></div>
+        <div class="hint" style="margin-bottom:10px">Reusable diagnostic scripts the agents
+          maintain themselves: they check here first, reuse what fits, and save new
+          parameterized scripts back — reducing token usage on every later run. Delete
+          anything you don't want reused.</div>
+        <div id="scriptList"><div class="empty">Loading…</div></div>
+        <pre id="scriptView" style="display:none; margin-top:10px; background:var(--panel2);
+          border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+          max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
 </div>
 
 <main id="viewWork" style="display:none">
@@ -584,15 +635,136 @@ async function loadFiles(id) {
 
 /* ---------- views ---------- */
 function switchView(view) {
-  if (view === 'overview') closeHealth();
+  if (view !== 'work') closeHealth();
   $('viewOverview').style.display = view === 'overview' ? '' : 'none';
   $('viewWork').style.display = view === 'work' ? '' : 'none';
+  $('viewSettings').style.display = view === 'settings' ? '' : 'none';
   $('navOverview').classList.toggle('active', view === 'overview');
   $('navWork').classList.toggle('active', view === 'work');
+  $('navSettings').classList.toggle('active', view === 'settings');
   if (view === 'overview') loadFleet();
+  if (view === 'settings') { loadAdminInventory(); loadScripts(); }
 }
 $('navOverview').onclick = () => switchView('overview');
 $('navWork').onclick = () => switchView('work');
+$('navSettings').onclick = () => switchView('settings');
+
+/* ---------- settings: inventory manager ---------- */
+let adminServers = [];
+let editingName = null;
+
+async function loadAdminInventory() {
+  const data = await (await fetch('/api/admin/inventory')).json();
+  adminServers = data.servers;
+  $('invPath').textContent = `File: ${data.path}`;
+  $('invList').innerHTML = adminServers.length ? adminServers.map(s => `
+    <div class="item" style="padding:9px 11px;border:1px solid var(--border);border-radius:8px;
+         margin-bottom:8px;cursor:pointer" onclick="editServer('${escapeHtml(s.name)}')">
+      <strong>${escapeHtml(s.name)}</strong>
+      <div class="hint">${escapeHtml(s.user || '')}@${escapeHtml(s.host || '')}:${s.port || 22}</div>
+    </div>`).join('') : '<div class="empty">No servers yet — add one.</div>';
+}
+
+function editServer(name) {
+  const s = adminServers.find(x => x.name === name) || {};
+  editingName = name;
+  $('invFormPanel').style.display = '';
+  $('invFormTitle').textContent = name ? `Edit server — ${name}` : 'Add server';
+  $('deleteServerBtn').style.display = name ? '' : 'none';
+  $('testServerBtn').style.display = name ? '' : 'none';
+  $('f_name').value = s.name || '';
+  $('f_host').value = s.host || '';
+  $('f_user').value = s.user || '';
+  $('f_port').value = s.port || 22;
+  $('f_ssh_key').value = s.ssh_key || '';
+  $('f_description').value = s.description || '';
+  $('f_os').value = s.os || '';
+  $('f_tags').value = (s.tags || []).join(', ');
+  $('f_services').value = (s.services || []).join(', ');
+  $('f_log_hints').value = (s.log_hints || []).join('\n');
+  $('invMsg').textContent = '';
+}
+
+$('addServerBtn').onclick = (e) => { e.preventDefault(); editServer(null); };
+
+$('saveServerBtn').onclick = async () => {
+  const csv = (v) => v.split(',').map(x => x.trim()).filter(Boolean);
+  const body = {
+    name: $('f_name').value.trim(),
+    host: $('f_host').value.trim(),
+    user: $('f_user').value.trim(),
+    port: parseInt($('f_port').value, 10) || 22,
+    ssh_key: $('f_ssh_key').value.trim() || null,
+    description: $('f_description').value.trim(),
+    os: $('f_os').value.trim(),
+    tags: csv($('f_tags').value),
+    services: csv($('f_services').value),
+    log_hints: $('f_log_hints').value.split('\n').map(x => x.trim()).filter(Boolean),
+  };
+  if (!body.name || !body.host || !body.user) { $('invMsg').textContent = 'Name, host and SSH user are required.'; return; }
+  const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName || body.name)}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    $('invMsg').textContent = 'Save failed: ' + (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || res.statusText));
+    return;
+  }
+  $('invMsg').textContent = '✓ Saved.';
+  editingName = body.name;
+  $('invFormTitle').textContent = `Edit server — ${body.name}`;
+  $('deleteServerBtn').style.display = ''; $('testServerBtn').style.display = '';
+  await loadAdminInventory();
+  loadInventory(); loadFleet();   // refresh the rest of the app
+};
+
+$('deleteServerBtn').onclick = async () => {
+  if (!editingName || !confirm(`Remove '${editingName}' from the inventory?`)) return;
+  const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName)}`, { method: 'DELETE' });
+  if (res.ok) {
+    $('invFormPanel').style.display = 'none';
+    await loadAdminInventory();
+    loadInventory(); loadFleet();
+  }
+};
+
+$('testServerBtn').onclick = async () => {
+  $('invMsg').textContent = 'Testing connection…';
+  const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName)}/test`, { method: 'POST' });
+  const d = await res.json();
+  $('invMsg').textContent = d.ok ? `✓ Connected: ${d.detail}` : `✕ Failed: ${d.detail}`;
+  $('invMsg').style.color = d.ok ? 'var(--ok)' : 'var(--err)';
+  setTimeout(() => $('invMsg').style.color = '', 4000);
+};
+
+/* ---------- settings: script library ---------- */
+async function loadScripts() {
+  const data = await (await fetch('/api/scripts')).json();
+  $('libPath').textContent = `Location: ${data.path}`;
+  $('scriptCount').textContent = data.scripts.length;
+  $('scriptList').innerHTML = data.scripts.length ? data.scripts.map(s => `
+    <div class="item" style="padding:8px 11px;border:1px solid var(--border);border-radius:8px;
+         margin-bottom:6px;display:flex;gap:10px;align-items:center">
+      <div style="min-width:0;flex:1;cursor:pointer" onclick="viewScript('${escapeHtml(s.file)}')">
+        <strong style="font-family:var(--mono);font-size:12.5px">${escapeHtml(s.name)}</strong>
+        <div class="hint">${escapeHtml(s.description || '')}</div>
+        ${s.tags ? `<div>${s.tags.split(',').map(t => `<span class="tag">${escapeHtml(t.trim())}</span>`).join('')}</div>` : ''}
+      </div>
+      <span class="hint">${(s.size / 1024).toFixed(1)} KB</span>
+      <button class="ghost danger" style="width:auto" onclick="deleteScript('${escapeHtml(s.file)}')">✕</button>
+    </div>`).join('') : '<div class="empty">Library is empty — agents will start populating it.</div>';
+}
+async function viewScript(file) {
+  const text = await (await fetch(`/api/scripts/${encodeURIComponent(file)}`)).text();
+  $('scriptView').style.display = '';
+  $('scriptView').textContent = text;
+}
+async function deleteScript(file) {
+  if (!confirm(`Delete ${file} from the library?`)) return;
+  await fetch(`/api/scripts/${encodeURIComponent(file)}`, { method: 'DELETE' });
+  $('scriptView').style.display = 'none';
+  loadScripts();
+}
 
 /* ---------- overview: KPIs + fleet ---------- */
 const OVERALL_ICON = { ok: '✓', warning: '!', critical: '✕', running: '…' };
