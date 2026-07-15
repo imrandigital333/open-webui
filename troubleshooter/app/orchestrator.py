@@ -236,6 +236,36 @@ def build_prompt(
 ## Investigation depth
 {depth_guidance}
 
+## Live health checklist (./health.json)
+Alongside the investigation, maintain a machine-readable health snapshot of
+the target server in ./health.json so the operator's dashboard updates live:
+- IMMEDIATELY after posting your triage plan, write the initial file with
+  every aspect set to {{"status": "unknown"}}.
+- Rewrite the file as soon as you have assessed an aspect — do NOT batch the
+  updates to the end. Keep it cheap: assess most aspects from one or two
+  combined SSH commands during your normal collection (uptime; top -b -n1 |
+  head; free -m; df -h; systemctl list-units --state=failed; ss -ltn;
+  ufw status or iptables -S | head; apt list --upgradable 2>/dev/null | head).
+- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE
+  (e.g. disk >90% = critical, >80% = warning; failed key service = critical).
+- EXACT format — all ten keys always present:
+{{
+  "checks": {{
+    "connectivity": {{"status": "...", "value": "reachable, ssh ok", "note": "one line"}},
+    "uptime":       {{"status": "...", "value": "up 41 days", "note": "no unexpected reboot"}},
+    "cpu":          {{"status": "...", "value": "23%", "note": "load 0.8 on 4 cores"}},
+    "memory":       {{"status": "...", "value": "78%", "note": "no OOM events"}},
+    "storage":      {{"status": "...", "value": "91% /var", "note": "worst filesystem"}},
+    "services":     {{"status": "...", "value": "1 failed", "note": "fakeapp down since 14:31"}},
+    "network":      {{"status": "...", "value": "ports ok", "note": "expected listeners present"}},
+    "firewall":     {{"status": "...", "value": "ufw active", "note": "no recent rule changes"}},
+    "patching":     {{"status": "...", "value": "12 pending", "note": "3 security updates pending"}},
+    "logs":         {{"status": "...", "value": "error burst", "note": "kernel OOM messages at 14:31"}}
+  }}
+}}
+- Start each value with "NN%" when a percentage applies (cpu, memory, storage)
+  so the dashboard can draw a gauge.
+
 ## Hard rules
 - READ-ONLY on the remote server. You may run diagnostic and log-reading
   commands only (cat, tail, grep, journalctl, systemctl status, df, free,
@@ -476,6 +506,30 @@ async def run_session(
     watchdog = asyncio.create_task(_startup_watchdog())
     timeout_s = int(os.environ.get("TROUBLESHOOTER_SESSION_TIMEOUT", "3600"))
 
+    health_path = workdir / "health.json"
+
+    def _read_health() -> dict | None:
+        try:
+            return json.loads(health_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    async def _health_watcher() -> None:
+        last: str | None = None
+        while True:
+            await asyncio.sleep(2)
+            try:
+                text = health_path.read_text()
+            except OSError:
+                continue
+            if text != last:
+                last = text
+                health = _read_health()
+                if health:
+                    await state.emit("health", {"health": health})
+
+    health_watcher = asyncio.create_task(_health_watcher())
+
     try:
         prompt = build_prompt(
             server,
@@ -543,7 +597,12 @@ async def run_session(
         return
     finally:
         watchdog.cancel()
+        health_watcher.cancel()
         stderr_file.close()
+        # Final health snapshot — the 2s watcher can miss the last write
+        final_health = _read_health()
+        if final_health:
+            await state.emit("health", {"health": final_health})
 
     state.report = _load_report(workdir)
     state.status = "completed"

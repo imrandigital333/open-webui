@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -174,6 +174,18 @@ async def stream_events(session_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/sessions/{session_id}/health")
+async def get_health(session_id: str):
+    state = _get_state(session_id)
+    path = state.workdir / "health.json"
+    if not path.exists():
+        return {"health": None}
+    try:
+        return {"health": json.loads(path.read_text())}
+    except (OSError, json.JSONDecodeError):
+        return {"health": None}
 
 
 @app.get("/api/sessions/{session_id}/files")

@@ -127,6 +127,64 @@
               border-radius: 8px; padding: 10px 12px; max-height: 380px; overflow: auto;
               font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .empty { color: var(--muted); font-size: 13px; }
+  /* health slide-over */
+  #healthPanel { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; z-index: 40;
+                 background: var(--panel); border-left: 1px solid var(--border);
+                 box-shadow: -12px 0 40px rgba(0,0,0,.45); transform: translateX(105%);
+                 transition: transform .25s ease; display: flex; flex-direction: column; }
+  #healthPanel.open { transform: translateX(0); }
+  .hp-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px;
+             border-bottom: 1px solid var(--border); }
+  .hp-head h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--muted); }
+  .hp-head .x { margin-left: auto; width: auto; background: none; border: none;
+                color: var(--muted); font-size: 18px; padding: 0 4px; }
+  .hp-body { overflow-y: auto; padding: 18px 16px; flex: 1; }
+  .hp-server { text-align: center; margin-bottom: 4px; }
+  .hp-ring { width: 92px; height: 92px; margin: 0 auto; border-radius: 50%;
+             display: grid; place-items: center; border: 4px solid var(--border);
+             background: var(--panel2); font-size: 28px; }
+  .hp-server .name { font-weight: 700; margin-top: 8px; }
+  .hp-server .overall { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+                        font-weight: 700; }
+  .hp-server.s-ok .hp-ring { border-color: var(--ok); } .hp-server.s-ok .overall { color: var(--ok); }
+  .hp-server.s-warning .hp-ring { border-color: var(--warn); } .hp-server.s-warning .overall { color: var(--warn); }
+  .hp-server.s-critical .hp-ring { border-color: var(--err); box-shadow: 0 0 24px rgba(248,81,73,.35); }
+  .hp-server.s-critical .overall { color: var(--err); }
+  .hp-server.s-unknown .overall { color: var(--muted); }
+  .hp-trunk { width: 2px; height: 22px; background: var(--border); margin: 6px auto; }
+  .hp-tree { position: relative; margin-left: 26px; }
+  .hp-tree::before { content: ''; position: absolute; left: -14px; top: 0; bottom: 18px;
+                     width: 2px; background: var(--border); }
+  .hp-node { position: relative; display: flex; gap: 10px; align-items: center;
+             background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+             padding: 8px 10px; margin-bottom: 8px; transition: border-color .3s, box-shadow .3s; }
+  .hp-node::before { content: ''; position: absolute; left: -14px; top: 50%; width: 14px;
+                     height: 2px; background: var(--border); }
+  .hp-node .dot { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%;
+                  display: grid; place-items: center; font-size: 10px; font-weight: 700;
+                  background: var(--panel); border: 2px solid var(--border); color: var(--muted); }
+  .hp-node .info { min-width: 0; flex: 1; }
+  .hp-node .label { font-size: 12.5px; font-weight: 650; text-transform: capitalize; }
+  .hp-node .val { font-size: 12px; color: var(--muted); overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+  .hp-node .note { font-size: 11px; color: var(--muted); opacity: .8; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+  .hp-node.st-ok { border-color: #2b5a37; } .hp-node.st-ok .dot { border-color: var(--ok); color: var(--ok); }
+  .hp-node.st-warning { border-color: #6b5618; } .hp-node.st-warning .dot { border-color: var(--warn); color: var(--warn); }
+  .hp-node.st-warning .val { color: var(--warn); }
+  .hp-node.st-critical { border-color: #7a2e2e; box-shadow: 0 0 14px rgba(248,81,73,.18); }
+  .hp-node.st-critical .dot { border-color: var(--err); color: var(--err); }
+  .hp-node.st-critical .val { color: var(--err); }
+  .hp-node.st-unknown.checking .dot { border-color: var(--accent); color: var(--accent);
+                                      animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(76,141,255,.5); }
+                     50% { box-shadow: 0 0 0 7px rgba(76,141,255,0); } }
+  .hp-flash { animation: flash .8s ease; }
+  @keyframes flash { 0% { background: #24314a; } 100% { background: var(--panel2); } }
+  .hp-gauge { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; }
+  .hp-gauge span { width: 22px; height: 22px; border-radius: 50%; background: var(--panel2);
+                   display: grid; place-items: center; font-size: 8.5px; font-weight: 700; }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
              border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite;
              vertical-align: -2px; margin-right: 6px; }
@@ -191,6 +249,7 @@
         <span class="status" id="shStatus"></span>
         <span id="shPills"></span>
         <span class="actions">
+          <button class="ghost" id="healthBtn">Health view</button>
           <button class="ghost" id="dlReport" style="display:none">Download report</button>
           <button class="ghost danger" id="cancelBtn" style="display:none">Cancel</button>
         </span>
@@ -214,6 +273,19 @@
     </div>
   </div>
 </main>
+
+<div id="healthPanel">
+  <div class="hp-head"><h3>Server health</h3><button class="x" id="hpClose">×</button></div>
+  <div class="hp-body">
+    <div class="hp-server s-unknown" id="hpServer">
+      <div class="hp-ring" id="hpRing">◎</div>
+      <div class="name" id="hpName">—</div>
+      <div class="overall" id="hpOverall">no data yet</div>
+    </div>
+    <div class="hp-trunk"></div>
+    <div class="hp-tree" id="hpTree"></div>
+  </div>
+</div>
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
@@ -406,6 +478,68 @@ async function loadFiles(id) {
   });
 }
 
+/* ---------- health panel ---------- */
+const ASPECTS = [
+  ['connectivity', '🔌'], ['uptime', '⏱'], ['cpu', '🧠'], ['memory', '📊'],
+  ['storage', '💾'], ['services', '⚙️'], ['network', '🌐'], ['firewall', '🛡'],
+  ['patching', '📦'], ['logs', '📜'],
+];
+let lastHealthJson = '';
+
+function healthNodeHtml(key, icon, check, running) {
+  const st = (check?.status || 'unknown').toLowerCase();
+  const val = check?.value || (running ? 'checking…' : 'not assessed');
+  const note = check?.note || '';
+  const pct = /^(\d{1,3})%/.exec(check?.value || '');
+  const color = st === 'ok' ? 'var(--ok)' : st === 'warning' ? 'var(--warn)'
+              : st === 'critical' ? 'var(--err)' : 'var(--border)';
+  const dot = pct
+    ? `<div class="dot hp-gauge" style="background:conic-gradient(${color} ${Math.min(+pct[1],100) * 3.6}deg, var(--border) 0)">
+         <span>${pct[1]}%</span></div>`
+    : `<div class="dot">${icon}</div>`;
+  return `<div class="hp-node st-${st} ${running ? 'checking' : ''}" data-k="${key}">
+      ${dot}
+      <div class="info"><div class="label">${key}</div>
+        <div class="val" title="${escapeHtml(val)}">${escapeHtml(val)}</div>
+        ${note ? `<div class="note" title="${escapeHtml(note)}">${escapeHtml(note)}</div>` : ''}
+      </div></div>`;
+}
+
+function renderHealth(health, running, serverName) {
+  const checks = health?.checks || {};
+  $('hpName').textContent = serverName || '—';
+  const statuses = ASPECTS.map(([k]) => (checks[k]?.status || 'unknown').toLowerCase());
+  const overall = statuses.includes('critical') ? 'critical'
+                : statuses.includes('warning') ? 'warning'
+                : statuses.every(s => s === 'ok') && statuses.length ? 'ok' : 'unknown';
+  const sv = $('hpServer');
+  sv.className = `hp-server s-${overall}`;
+  $('hpOverall').textContent = overall === 'unknown'
+    ? (running ? 'assessing…' : 'no data') : overall;
+  $('hpRing').textContent = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
+    : overall === 'warning' ? '!' : '◎';
+
+  const prev = {};
+  document.querySelectorAll('#hpTree .hp-node').forEach(n =>
+    prev[n.dataset.k] = n.className.match(/st-\w+/)?.[0]);
+  $('hpTree').innerHTML = ASPECTS.map(([k, icon]) =>
+    healthNodeHtml(k, icon, checks[k], running && (checks[k]?.status || 'unknown') === 'unknown')).join('');
+  // flash nodes whose status just changed
+  document.querySelectorAll('#hpTree .hp-node').forEach(n => {
+    const nowSt = n.className.match(/st-\w+/)?.[0];
+    if (prev[n.dataset.k] && prev[n.dataset.k] !== nowSt) n.classList.add('hp-flash');
+  });
+}
+
+function openHealth() { $('healthPanel').classList.add('open'); }
+$('healthBtn').onclick = () => $('healthPanel').classList.toggle('open');
+$('hpClose').onclick = () => $('healthPanel').classList.remove('open');
+
+async function loadHealth(id, running, serverName) {
+  const { health } = await (await fetch(`/api/sessions/${id}/health`)).json();
+  renderHealth(health, running, serverName);
+}
+
 /* ---------- session open / head ---------- */
 function renderHead(s) {
   $('sessionHead').style.display = '';
@@ -439,11 +573,15 @@ async function openSession(id) {
   const session = await (await fetch(`/api/sessions/${id}`)).json();
   renderHead(session);
   loadFiles(id);
+  lastHealthJson = '';
+  loadHealth(id, session.status === 'running', session.server);
+  if (session.status === 'running') openHealth();
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
     eventSource.onmessage = async (msg) => {
       const ev = JSON.parse(msg.data);
+      if (ev.type === 'health') { renderHealth(ev.health, true, session.server); return; }
       addEvent(ev);
       if (ev.type === 'completed' || ev.type === 'failed') {
         if (ev.report) renderReport(ev.report);
@@ -453,6 +591,7 @@ async function openSession(id) {
         if (fresh) renderHead(fresh);
         if (ev.type === 'completed') showTab('report');
         loadFiles(id);
+        loadHealth(id, false, session.server);
       }
     };
   } else {
