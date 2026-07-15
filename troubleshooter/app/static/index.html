@@ -21,8 +21,18 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 650; }
   header .sub { color: var(--muted); font-size: 12px; }
   header .right { margin-left: auto; font-size: 12px; color: var(--muted); }
-  main { display: grid; grid-template-columns: 360px 1fr; gap: 16px; padding: 16px 24px;
-         max-width: 1600px; margin: 0 auto; align-items: start; }
+  :root { --leftw: 360px; }
+  main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px; padding: 16px 24px;
+         max-width: 1600px; margin: 0 auto; align-items: start;
+         transition: margin-right .25s ease; }
+  #viewOverview { transition: margin-right .25s ease; }
+  /* when the health panel is open, shrink the content instead of covering it */
+  body.hp-open main, body.hp-open #viewOverview { margin-right: 392px; max-width: none; }
+  .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
+  .resizer:hover, .resizer.dragging { background: var(--accent); opacity: .55; }
+  @media (max-width: 1100px) {
+    body.hp-open main, body.hp-open #viewOverview { margin-right: 0; }  /* overlay on small screens */
+  }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
        color: var(--muted); margin: 0 0 12px; font-weight: 700; }
@@ -242,7 +252,11 @@
              border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite;
              vertical-align: -2px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+    .resizer { display: none; }
+    #healthPanel { width: min(380px, 94vw); }
+  }
 </style>
 </head>
 <body>
@@ -305,7 +319,9 @@
     </div>
   </div>
 
-  <div>
+  <div class="resizer" id="resizer" title="Drag to resize"></div>
+
+  <div style="min-width:0">
     <div class="panel">
       <div class="session-head" id="sessionHead" style="display:none">
         <span class="title" id="shTitle"></span>
@@ -568,6 +584,7 @@ async function loadFiles(id) {
 
 /* ---------- views ---------- */
 function switchView(view) {
+  if (view === 'overview') closeHealth();
   $('viewOverview').style.display = view === 'overview' ? '' : 'none';
   $('viewWork').style.display = view === 'work' ? '' : 'none';
   $('navOverview').classList.toggle('active', view === 'overview');
@@ -745,9 +762,48 @@ function renderHealth(health, running, serverName) {
   });
 }
 
-function openHealth() { $('healthPanel').classList.add('open'); }
-$('healthBtn').onclick = () => $('healthPanel').classList.toggle('open');
-$('hpClose').onclick = () => $('healthPanel').classList.remove('open');
+function openHealth() {
+  $('healthPanel').classList.add('open');
+  document.body.classList.add('hp-open');
+}
+function closeHealth() {
+  $('healthPanel').classList.remove('open');
+  document.body.classList.remove('hp-open');
+}
+$('healthBtn').onclick = () =>
+  $('healthPanel').classList.contains('open') ? closeHealth() : openHealth();
+$('hpClose').onclick = closeHealth;
+
+/* ---------- resizable left column ---------- */
+(() => {
+  const saved = localStorage.getItem('leftw');
+  if (saved) document.documentElement.style.setProperty('--leftw', saved + 'px');
+  const rz = $('resizer');
+  let dragging = false;
+  rz.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    rz.classList.add('dragging');
+    rz.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = 'none';
+  });
+  rz.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const main = $('viewWork');
+    const w = Math.min(620, Math.max(260, e.clientX - main.getBoundingClientRect().left));
+    document.documentElement.style.setProperty('--leftw', w + 'px');
+  });
+  rz.addEventListener('pointerup', () => {
+    dragging = false;
+    rz.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    const w = getComputedStyle(document.documentElement).getPropertyValue('--leftw').trim();
+    localStorage.setItem('leftw', parseInt(w, 10));
+  });
+  rz.addEventListener('dblclick', () => {   // double-click resets
+    document.documentElement.style.setProperty('--leftw', '360px');
+    localStorage.removeItem('leftw');
+  });
+})();
 
 async function loadHealth(id, running, serverName) {
   const { health } = await (await fetch(`/api/sessions/${id}/health`)).json();
