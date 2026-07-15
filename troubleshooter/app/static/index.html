@@ -152,7 +152,12 @@
       <div class="hint" id="serverMeta"></div>
 
       <label for="problem">Problem statement</label>
-      <textarea id="problem" placeholder="e.g. Since ~14:30 IST users report intermittent 502s on the booking app; response times spiked. No known deploys."></textarea>
+      <textarea id="problem" placeholder="e.g. Users report intermittent 502s on the booking app; response times spiked. No known deploys."></textarea>
+
+      <label for="incidentTime">Problem started at <span style="font-weight:normal">(approximate, optional)</span></label>
+      <input type="datetime-local" id="incidentTime">
+      <div class="hint">The agent starts reviewing logs at least 30 minutes before this
+        time, and still verifies the real failure time itself. Leave empty if unknown.</div>
 
       <label>Evidence layers
         <button class="link" id="layersAll" style="float:right">all</button>
@@ -268,7 +273,8 @@ async function startSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ server: $('server').value, problem, layers,
-                             depth: selectedDepth }),
+                             depth: selectedDepth,
+                             incident_time: $('incidentTime').value || null }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
     const session = await res.json();
@@ -353,6 +359,12 @@ function renderReport(report) {
       <td class="verdict-${escapeHtml(v)}">${escapeHtml(l.verdict || '')}</td>
       <td>${escapeHtml(l.note || '')}</td></tr>`;
   }).join('');
+  const timelineRows = (report.incident_timeline || []).map(t =>
+    `<tr><td style="white-space:nowrap;font-family:var(--mono);font-size:12px">${escapeHtml(t.time || '')}</td>
+      <td>${escapeHtml(t.source || '')}</td><td>${escapeHtml(t.event || '')}</td></tr>`).join('');
+  const reviewedRows = (report.logs_reviewed || []).map(r =>
+    `<tr><td style="font-family:var(--mono);font-size:12px">${escapeHtml(r.source || '')}</td>
+      <td style="white-space:nowrap">${escapeHtml(r.covers || '')}</td><td>${escapeHtml(r.note || '')}</td></tr>`).join('');
   $('reportBody').classList.remove('empty');
   $('reportBody').innerHTML = `
     <div class="kv"><div class="k">Summary</div><div class="v">${escapeHtml(report.summary || '—')}</div></div>
@@ -360,9 +372,13 @@ function renderReport(report) {
       <span class="conf ${conf}">${escapeHtml(conf)} confidence</span>
       ${report.root_cause_layer ? `<span class="layerpill">${escapeHtml(report.root_cause_layer)}</span>` : ''}</div>
       <div class="v"><strong>${escapeHtml(report.probable_root_cause || '—')}</strong></div></div>
+    ${timelineRows ? `<div class="kv"><div class="k">Incident timeline</div>
+      <table class="layers"><tr><th>Time</th><th>Source</th><th>Event</th></tr>${timelineRows}</table></div>` : ''}
     ${layersRows ? `<div class="kv"><div class="k">Layers checked</div>
       <table class="layers"><tr><th>Layer</th><th>Verdict</th><th>Note</th></tr>${layersRows}</table></div>` : ''}
     ${evidence ? `<div class="kv"><div class="k">Evidence</div>${evidence}</div>` : ''}
+    ${reviewedRows ? `<div class="kv"><div class="k">Logs reviewed by the agent</div>
+      <table class="layers"><tr><th>Source</th><th>Time range covered</th><th>Note</th></tr>${reviewedRows}</table></div>` : ''}
     ${report.impact ? `<div class="kv"><div class="k">Impact</div><div class="v">${escapeHtml(report.impact)}</div></div>` : ''}
     ${report.recommended_fix?.length ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
     ${report.preventive_measures?.length ? `<div class="kv"><div class="k">Preventive measures</div><ul>${list(report.preventive_measures)}</ul></div>` : ''}

@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -43,6 +43,9 @@ class SessionRequest(BaseModel):
     # Evidence layers (datasource names) to investigate; empty = server only
     layers: list[str] = Field(default_factory=list)
     depth: str = Field("standard", pattern="^(quick|standard|deep)$")
+    # Approximate time the problem started, as reported by the operator
+    # (free-form; e.g. "2026-07-15T14:30" from the UI's datetime picker)
+    incident_time: str | None = Field(None, max_length=64)
 
 
 @app.get("/")
@@ -94,6 +97,7 @@ async def create_session(req: SessionRequest):
         req.problem.strip(),
         layer_sources=layer_sources,
         depth=req.depth,
+        incident_time=(req.incident_time or "").strip() or None,
     )
     return state.to_dict()
 

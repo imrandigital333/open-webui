@@ -30,6 +30,12 @@ REPORT_SCHEMA = """{
   "evidence": [
     {"source": "file or command the evidence came from", "finding": "what it shows"}
   ],
+  "incident_timeline": [
+    {"time": "timestamp as it appears in the logs", "source": "which log/layer", "event": "what happened at this moment — include normal state, first anomaly, escalation, failure, aftermath"}
+  ],
+  "logs_reviewed": [
+    {"source": "log file / journal unit / API queried", "covers": "time range the reviewed extract covered", "note": "relevant findings or 'nothing relevant'"}
+  ],
   "impact": "what is affected and how badly",
   "recommended_fix": ["ordered, concrete remediation steps with exact commands where possible"],
   "preventive_measures": ["changes that would stop this recurring (monitoring, config, capacity...)"],
@@ -70,6 +76,7 @@ class SessionState:
     status: str = "running"  # running | completed | failed | cancelled
     layers: list[str] = field(default_factory=list)
     depth: str = "standard"
+    incident_time: str | None = None
     events: list[dict] = field(default_factory=list)
     report: dict | None = None
     error: str | None = None
@@ -117,6 +124,7 @@ class SessionState:
             "status": self.status,
             "layers": self.layers,
             "depth": self.depth,
+            "incident_time": self.incident_time,
             "report": self.report,
             "error": self.error,
         }
@@ -187,11 +195,26 @@ def build_prompt(
     problem: str,
     layer_sources: list[dict] | None = None,
     depth: str = "standard",
+    incident_time: str | None = None,
 ) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
     layers_section = build_layers_section(layer_sources or [])
     depth_guidance = DEPTH_GUIDANCE.get(depth, DEPTH_GUIDANCE["standard"])
+    if incident_time:
+        incident_line = (
+            f"\nOperator-estimated problem start time: {incident_time} "
+            "(operator's local time — verify against the server clock). Treat "
+            "this as a strong hint, not a fact: begin your log review AT LEAST "
+            "30 minutes BEFORE this time, and still verify the actual failure "
+            "timestamp yourself in the PINPOINT step (operator estimates are "
+            "often late — users notice problems after they start)."
+        )
+    else:
+        incident_line = (
+            "\nThe operator did not provide a start time — determining WHEN the "
+            "problem began is part of your job (PINPOINT step)."
+        )
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
 ## Target server
@@ -205,6 +228,7 @@ def build_prompt(
 {layers_section}
 ## Problem statement (from the operator)
 {problem}
+{incident_line}
 
 ## Investigation depth
 {depth_guidance}
@@ -259,7 +283,12 @@ def build_prompt(
 5. REPORT: write two files in the working directory:
    - `report.md` — a readable incident report for the operator.
    - `report.json` — EXACTLY this JSON structure (valid JSON, no markdown
-     fences, no comments):
+     fences, no comments). Populate `incident_timeline` with the key events
+     in chronological order (normal state → first anomaly → escalation →
+     failure → aftermath), each tied to its source log. Populate
+     `logs_reviewed` with EVERY log file, journal unit and layer API you
+     actually examined — including ones that showed nothing relevant — and
+     the time range each reviewed extract covered:
 {REPORT_SCHEMA}
 
 Finish only after both report files are written."""
@@ -423,6 +452,7 @@ async def run_session(
             state.problem,
             layer_sources=layer_sources,
             depth=state.depth,
+            incident_time=state.incident_time,
         )
         # Debug artifacts: exactly what this run was asked to do (no secrets)
         (workdir / "prompt.txt").write_text(prompt)
@@ -432,6 +462,7 @@ async def run_session(
             "depth": state.depth,
             "max_turns": max_turns,
             "layers": [ds["name"] for ds in layer_sources],
+            "incident_time": state.incident_time,
         }, indent=2))
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
@@ -516,6 +547,7 @@ def start_session(
     problem: str,
     layer_sources: list[dict] | None = None,
     depth: str = "standard",
+    incident_time: str | None = None,
 ) -> SessionState:
     state = SessionState(
         id=uuid.uuid4().hex[:12],
@@ -524,6 +556,7 @@ def start_session(
         created_at=time.time(),
         layers=[ds["name"] for ds in (layer_sources or [])],
         depth=depth if depth in DEPTH_TURNS else "standard",
+        incident_time=incident_time,
     )
     SESSIONS[state.id] = state
     state.workdir.mkdir(parents=True, exist_ok=True)
