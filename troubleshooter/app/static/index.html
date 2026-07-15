@@ -155,9 +155,11 @@
       <textarea id="problem" placeholder="e.g. Users report intermittent 502s on the booking app; response times spiked. No known deploys."></textarea>
 
       <label for="incidentTime">Problem started at <span style="font-weight:normal">(approximate, optional)</span></label>
-      <input type="datetime-local" id="incidentTime">
-      <div class="hint">The agent starts reviewing logs at least 30 minutes before this
-        time, and still verifies the real failure time itself. Leave empty if unknown.</div>
+      <input type="text" id="incidentTime" maxlength="64" autocomplete="off"
+             placeholder='e.g. "around 2:30pm today", "1 hour ago", "yesterday evening"'>
+      <div class="hint">Plain language is fine. The agent starts reviewing logs at least
+        30 minutes before this time, and still verifies the real failure time itself.
+        Leave empty if unknown.</div>
 
       <label>Evidence layers
         <button class="link" id="layersAll" style="float:right">all</button>

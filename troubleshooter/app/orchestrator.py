@@ -202,10 +202,13 @@ def build_prompt(
     layers_section = build_layers_section(layer_sources or [])
     depth_guidance = DEPTH_GUIDANCE.get(depth, DEPTH_GUIDANCE["standard"])
     if incident_time:
+        submitted = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         incident_line = (
-            f"\nOperator-estimated problem start time: {incident_time} "
-            "(operator's local time — verify against the server clock). Treat "
-            "this as a strong hint, not a fact: begin your log review AT LEAST "
+            f'\nOperator-estimated problem start time: "{incident_time}" '
+            f"(free-form text, written at {submitted} — resolve relative "
+            "phrases like '1 hour ago' or 'yesterday evening' against that "
+            "submission time, and verify against the server clock). Treat it "
+            "as a strong hint, not a fact: begin your log review AT LEAST "
             "30 minutes BEFORE this time, and still verify the actual failure "
             "timestamp yourself in the PINPOINT step (operator estimates are "
             "often late — users notice problems after they start)."
