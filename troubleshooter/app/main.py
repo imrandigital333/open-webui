@@ -14,7 +14,7 @@ from . import orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import load_inventory
 
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.5.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -60,6 +60,45 @@ async def index():
 @app.get("/api/version")
 async def version():
     return {"version": APP_VERSION, "commit": GIT_COMMIT}
+
+
+@app.get("/api/selfcheck")
+async def selfcheck():
+    """Verify the Claude Code pipeline end-to-end with a minimal 1-turn run.
+
+    Use when sessions hang at 'Investigating': if this fails or times out,
+    the problem is Claude Code auth / network on this machine, not the app.
+    """
+    import asyncio
+
+    try:
+        from claude_agent_sdk import ClaudeAgentOptions, query
+        from claude_agent_sdk.types import ResultMessage
+    except ImportError as exc:
+        return {"ok": False, "error": f"claude-agent-sdk not installed: {exc}"}
+    try:
+        options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+        outcome: dict | None = None
+        async with asyncio.timeout(90):
+            async for message in query(prompt="Reply with the single word: ok", options=options):
+                if isinstance(message, ResultMessage):
+                    outcome = {
+                        "ok": not message.is_error,
+                        "result": (message.result or "")[:200],
+                        "error": message.subtype if message.is_error else None,
+                    }
+        return outcome or {"ok": False, "error": "Claude Code produced no result message"}
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": (
+                "Claude Code did not respond within 90s — check that the "
+                "service account is logged in (run: claude -p 'say ok') and "
+                "that this machine can reach the Claude API."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.get("/api/inventory")

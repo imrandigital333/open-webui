@@ -419,12 +419,21 @@ async def run_session(
     # by name only.
     env: dict[str, str] = {"PYTHONPATH": str(BASE_DIR)}
 
+    # Capture the Claude Code CLI's stderr — the only place startup problems
+    # (auth, network, CLI errors) are visible when a session hangs silently.
+    stderr_path = workdir / "claude-stderr.log"
+    stderr_file = open(stderr_path, "a", buffering=1)
+
+    def _on_stderr(line: str) -> None:
+        stderr_file.write(line.rstrip("\n") + "\n")
+
     max_turns = DEPTH_TURNS.get(state.depth, DEPTH_TURNS["standard"])
     if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
         max_turns = min(max_turns, int(os.environ["TROUBLESHOOTER_MAX_TURNS"]))
 
     options = ClaudeAgentOptions(
         env=env,
+        stderr=_on_stderr,
         cwd=str(workdir),
         system_prompt=(
             "You are an autonomous infrastructure troubleshooting agent running in "
@@ -449,6 +458,24 @@ async def run_session(
         },
     )
 
+    got_first_message = asyncio.Event()
+
+    async def _startup_watchdog() -> None:
+        try:
+            await asyncio.wait_for(got_first_message.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            await state.emit("agent_text", {"text": (
+                "⚠ No output from the Claude Code process for 2 minutes. "
+                "Likely causes: Claude Code is not logged in for the account "
+                "running this service (test with: claude -p 'say ok'), no "
+                "network path to the Claude API, or a CLI update/consent "
+                f"prompt. Check {stderr_path} for the CLI's own errors. "
+                "The session will keep waiting; cancel it if this persists."
+            )})
+
+    watchdog = asyncio.create_task(_startup_watchdog())
+    timeout_s = int(os.environ.get("TROUBLESHOOTER_SESSION_TIMEOUT", "3600"))
+
     try:
         prompt = build_prompt(
             server,
@@ -467,7 +494,13 @@ async def run_session(
             "layers": [ds["name"] for ds in layer_sources],
             "incident_time": state.incident_time,
         }, indent=2))
+        deadline = time.monotonic() + timeout_s
         async for message in query(prompt=prompt, options=options):
+            got_first_message.set()
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Session exceeded TROUBLESHOOTER_SESSION_TIMEOUT ({timeout_s}s)"
+                )
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
@@ -508,6 +541,9 @@ async def run_session(
         state.error = f"{type(exc).__name__}: {exc}"
         await state.emit("failed", {"error": state.error})
         return
+    finally:
+        watchdog.cancel()
+        stderr_file.close()
 
     state.report = _load_report(workdir)
     state.status = "completed"
