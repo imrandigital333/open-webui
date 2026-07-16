@@ -26,13 +26,8 @@
          max-width: 1600px; margin: 0 auto; align-items: start;
          transition: margin-right .25s ease; }
   #viewOverview { transition: margin-right .25s ease; }
-  /* when the health panel is open, shrink the content instead of covering it */
-  body.hp-open main, body.hp-open #viewOverview { margin-right: 392px; max-width: none; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
   .resizer:hover, .resizer.dragging { background: var(--accent); opacity: .55; }
-  @media (max-width: 1100px) {
-    body.hp-open main, body.hp-open #viewOverview { margin-right: 0; }  /* overlay on small screens */
-  }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
        color: var(--muted); margin: 0 0 12px; font-weight: 700; }
@@ -137,6 +132,50 @@
               border-radius: 8px; padding: 10px 12px; max-height: 380px; overflow: auto;
               font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .empty { color: var(--muted); font-size: 13px; }
+  /* horizontal health strip */
+  #healthStrip { display: none; align-items: center; gap: 14px; background: var(--panel2);
+                 border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px;
+                 margin: 0 0 12px; }
+  .hs-server { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: 0 0 auto; }
+  .hs-ring { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--border);
+             display: grid; place-items: center; font-weight: 800; font-size: 14px; color: var(--muted); }
+  .hs-overall { font-size: 9px; text-transform: uppercase; letter-spacing: .07em;
+                font-weight: 700; color: var(--muted); }
+  #healthStrip.o-ok .hs-ring { border-color: var(--ok); color: var(--ok); }
+  #healthStrip.o-ok .hs-overall { color: var(--ok); }
+  #healthStrip.o-warning .hs-ring { border-color: var(--warn); color: var(--warn); }
+  #healthStrip.o-warning .hs-overall { color: var(--warn); }
+  #healthStrip.o-critical .hs-ring { border-color: var(--err); color: var(--err);
+                                     box-shadow: 0 0 14px rgba(248,81,73,.3); }
+  #healthStrip.o-critical .hs-overall { color: var(--err); }
+  #healthStrip.o-running .hs-ring { border-color: var(--accent); color: var(--accent);
+                                    animation: pulse 1.4s infinite; }
+  .hs-nodes { display: flex; flex-wrap: wrap; gap: 8px 10px; flex: 1; min-width: 0;
+              position: relative; padding-left: 14px; }
+  .hs-nodes::before { content: ''; position: absolute; left: 0; top: 15px; width: 12px;
+                      height: 2px; background: var(--border); }
+  .hs-node { display: flex; flex-direction: column; align-items: center; gap: 3px;
+             width: 54px; cursor: pointer; }
+  .hs-dot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--border);
+            background: var(--panel); display: grid; place-items: center; font-size: 13px;
+            color: var(--muted); transition: border-color .3s; }
+  .hs-node .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: .03em;
+                  color: var(--muted); max-width: 58px; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+  .hs-node.st-ok .hs-dot { border-color: var(--ok); }
+  .hs-node.st-warning .hs-dot { border-color: var(--warn); }
+  .hs-node.st-warning .lbl { color: var(--warn); }
+  .hs-node.st-critical .hs-dot { border-color: var(--err);
+                                 box-shadow: 0 0 10px rgba(248,81,73,.25); }
+  .hs-node.st-critical .lbl { color: var(--err); font-weight: 700; }
+  .hs-node.checking .hs-dot { border-color: var(--accent); animation: pulse 1.4s infinite; }
+  .hs-node .hs-gauge { border: none; }
+  .hs-gauge span { width: 22px; height: 22px; border-radius: 50%; background: var(--panel2);
+                   display: grid; place-items: center; font-size: 8px; font-weight: 700;
+                   color: var(--text); }
+  .hs-note { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; max-width: 170px;
+             text-align: right; line-height: 1.35; }
+  #hsDetail { margin: -6px 0 12px 4px; }
   /* top nav */
   .nav { display: flex; gap: 6px; margin-left: 26px; }
   .nav button { width: auto; background: none; border: 1px solid transparent; color: var(--muted);
@@ -190,64 +229,6 @@
   .modebadge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
                border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; color: var(--muted); }
   .shstats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  /* health slide-over */
-  #healthPanel { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; z-index: 40;
-                 background: var(--panel); border-left: 1px solid var(--border);
-                 box-shadow: -12px 0 40px rgba(0,0,0,.45); transform: translateX(105%);
-                 transition: transform .25s ease; display: flex; flex-direction: column; }
-  #healthPanel.open { transform: translateX(0); }
-  .hp-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px;
-             border-bottom: 1px solid var(--border); }
-  .hp-head h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
-                color: var(--muted); }
-  .hp-head .x { margin-left: auto; width: auto; background: none; border: none;
-                color: var(--muted); font-size: 18px; padding: 0 4px; }
-  .hp-body { overflow-y: auto; padding: 18px 16px; flex: 1; }
-  .hp-server { text-align: center; margin-bottom: 4px; }
-  .hp-ring { width: 92px; height: 92px; margin: 0 auto; border-radius: 50%;
-             display: grid; place-items: center; border: 4px solid var(--border);
-             background: var(--panel2); font-size: 28px; }
-  .hp-server .name { font-weight: 700; margin-top: 8px; }
-  .hp-server .overall { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-                        font-weight: 700; }
-  .hp-server.s-ok .hp-ring { border-color: var(--ok); } .hp-server.s-ok .overall { color: var(--ok); }
-  .hp-server.s-warning .hp-ring { border-color: var(--warn); } .hp-server.s-warning .overall { color: var(--warn); }
-  .hp-server.s-critical .hp-ring { border-color: var(--err); box-shadow: 0 0 24px rgba(248,81,73,.35); }
-  .hp-server.s-critical .overall { color: var(--err); }
-  .hp-server.s-unknown .overall { color: var(--muted); }
-  .hp-trunk { width: 2px; height: 22px; background: var(--border); margin: 6px auto; }
-  .hp-tree { position: relative; margin-left: 26px; }
-  .hp-tree::before { content: ''; position: absolute; left: -14px; top: 0; bottom: 18px;
-                     width: 2px; background: var(--border); }
-  .hp-node { position: relative; display: flex; gap: 10px; align-items: center;
-             background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-             padding: 8px 10px; margin-bottom: 8px; transition: border-color .3s, box-shadow .3s; }
-  .hp-node::before { content: ''; position: absolute; left: -14px; top: 50%; width: 14px;
-                     height: 2px; background: var(--border); }
-  .hp-node .dot { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%;
-                  display: grid; place-items: center; font-size: 10px; font-weight: 700;
-                  background: var(--panel); border: 2px solid var(--border); color: var(--muted); }
-  .hp-node .info { min-width: 0; flex: 1; }
-  .hp-node .label { font-size: 12.5px; font-weight: 650; text-transform: capitalize; }
-  .hp-node .val { font-size: 12px; color: var(--muted); overflow: hidden;
-                  text-overflow: ellipsis; white-space: nowrap; }
-  .hp-node .note { font-size: 11px; color: var(--muted); opacity: .8; overflow: hidden;
-                   text-overflow: ellipsis; white-space: nowrap; }
-  .hp-node.st-ok { border-color: #2b5a37; } .hp-node.st-ok .dot { border-color: var(--ok); color: var(--ok); }
-  .hp-node.st-warning { border-color: #6b5618; } .hp-node.st-warning .dot { border-color: var(--warn); color: var(--warn); }
-  .hp-node.st-warning .val { color: var(--warn); }
-  .hp-node.st-critical { border-color: #7a2e2e; box-shadow: 0 0 14px rgba(248,81,73,.18); }
-  .hp-node.st-critical .dot { border-color: var(--err); color: var(--err); }
-  .hp-node.st-critical .val { color: var(--err); }
-  .hp-node.st-unknown.checking .dot { border-color: var(--accent); color: var(--accent);
-                                      animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(76,141,255,.5); }
-                     50% { box-shadow: 0 0 0 7px rgba(76,141,255,0); } }
-  .hp-flash { animation: flash .8s ease; }
-  @keyframes flash { 0% { background: #24314a; } 100% { background: var(--panel2); } }
-  .hp-gauge { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; }
-  .hp-gauge span { width: 22px; height: 22px; border-radius: 50%; background: var(--panel2);
-                   display: grid; place-items: center; font-size: 8.5px; font-weight: 700; }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
              border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite;
              vertical-align: -2px; margin-right: 6px; }
@@ -255,7 +236,6 @@
   @media (max-width: 980px) {
     main { grid-template-columns: 1fr; }
     .resizer { display: none; }
-    #healthPanel { width: min(380px, 94vw); }
   }
 </style>
 </head>
@@ -387,6 +367,15 @@
         </span>
       </div>
       <div class="stepper" id="stepper" style="display:none"></div>
+      <div id="healthStrip">
+        <div class="hs-server">
+          <div class="hs-ring" id="hsRing">◎</div>
+          <div class="hs-overall" id="hsOverall">health</div>
+        </div>
+        <div class="hs-nodes" id="hsNodes"></div>
+        <div class="hs-note" id="hpNote"></div>
+      </div>
+      <div id="hsDetail" class="hint" style="display:none"></div>
       <div class="tabs" id="tabs" style="display:none">
         <button data-tab="activity" class="active">Activity</button>
         <button data-tab="report">Report</button>
@@ -406,20 +395,6 @@
     </div>
   </div>
 </main>
-
-<div id="healthPanel">
-  <div class="hp-head"><h3>Server health</h3><button class="x" id="hpClose">×</button></div>
-  <div class="hp-body">
-    <div class="hp-server s-unknown" id="hpServer">
-      <div class="hp-ring" id="hpRing">◎</div>
-      <div class="name" id="hpName">—</div>
-      <div class="overall" id="hpOverall">no data yet</div>
-      <div class="hint" id="hpNote" style="margin-top:4px"></div>
-    </div>
-    <div class="hp-trunk"></div>
-    <div class="hp-tree" id="hpTree"></div>
-  </div>
-</div>
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
@@ -636,7 +611,6 @@ async function loadFiles(id) {
 
 /* ---------- views ---------- */
 function switchView(view) {
-  if (view !== 'work') closeHealth();
   $('viewOverview').style.display = view === 'overview' ? '' : 'none';
   $('viewWork').style.display = view === 'work' ? '' : 'none';
   $('viewSettings').style.display = view === 'settings' ? '' : 'none';
@@ -890,62 +864,63 @@ const ASPECTS = [
 ];
 let lastHealthJson = '';
 
-function healthNodeHtml(key, icon, check, running) {
+function healthNodeHtml(key, icon, check, checking) {
   const st = (check?.status || 'unknown').toLowerCase();
-  const val = check?.value || (running ? 'checking…' : 'not assessed');
+  const val = check?.value || (checking ? 'checking…' : 'not assessed');
   const note = check?.note || '';
   const pct = /^(\d{1,3})%/.exec(check?.value || '');
   const color = st === 'ok' ? 'var(--ok)' : st === 'warning' ? 'var(--warn)'
               : st === 'critical' ? 'var(--err)' : 'var(--border)';
   const dot = pct
-    ? `<div class="dot hp-gauge" style="background:conic-gradient(${color} ${Math.min(+pct[1],100) * 3.6}deg, var(--border) 0)">
+    ? `<div class="hs-dot hs-gauge" style="background:conic-gradient(${color} ${Math.min(+pct[1],100) * 3.6}deg, var(--border) 0)">
          <span>${pct[1]}%</span></div>`
-    : `<div class="dot">${icon}</div>`;
-  return `<div class="hp-node st-${st} ${running ? 'checking' : ''}" data-k="${key}">
-      ${dot}
-      <div class="info"><div class="label">${key}</div>
-        <div class="val" title="${escapeHtml(val)}">${escapeHtml(val)}</div>
-        ${note ? `<div class="note" title="${escapeHtml(note)}">${escapeHtml(note)}</div>` : ''}
-      </div></div>`;
+    : `<div class="hs-dot">${icon}</div>`;
+  const tip = `${key}: ${st}${val ? ' — ' + val : ''}${note ? ' — ' + note : ''}`;
+  return `<div class="hs-node st-${st} ${checking ? 'checking' : ''}" data-k="${key}"
+       title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">
+      ${dot}<div class="lbl">${key}</div></div>`;
 }
 
-function renderHealth(health, running, serverName) {
+function renderHealth(health, running) {
+  const strip = $('healthStrip');
   const checks = health?.checks || {};
-  $('hpName').textContent = serverName || '—';
   const statuses = ASPECTS.map(([k]) => (checks[k]?.status || 'unknown').toLowerCase());
   const overall = statuses.includes('critical') ? 'critical'
                 : statuses.includes('warning') ? 'warning'
                 : statuses.every(s => s === 'ok') && statuses.length ? 'ok' : 'unknown';
-  const sv = $('hpServer');
-  sv.className = `hp-server s-${overall}`;
-  $('hpOverall').textContent = overall === 'unknown'
-    ? (running ? 'assessing…' : 'no data') : overall;
-  $('hpRing').textContent = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
+  strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`;
+  strip.style.display = healthCollapsed ? 'none' : 'flex';
+  $('hsOverall').textContent = overall === 'unknown' ? (running ? 'checking' : 'health') : overall;
+  $('hsRing').textContent = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
     : overall === 'warning' ? '!' : '◎';
 
   const prev = {};
-  document.querySelectorAll('#hpTree .hp-node').forEach(n =>
+  document.querySelectorAll('#hsNodes .hs-node').forEach(n =>
     prev[n.dataset.k] = n.className.match(/st-\w+/)?.[0]);
-  $('hpTree').innerHTML = ASPECTS.map(([k, icon]) =>
+  $('hsNodes').innerHTML = ASPECTS.map(([k, icon]) =>
     healthNodeHtml(k, icon, checks[k], running && (checks[k]?.status || 'unknown') === 'unknown')).join('');
-  // flash nodes whose status just changed
-  document.querySelectorAll('#hpTree .hp-node').forEach(n => {
+  document.querySelectorAll('#hsNodes .hs-node').forEach(n => {
     const nowSt = n.className.match(/st-\w+/)?.[0];
     if (prev[n.dataset.k] && prev[n.dataset.k] !== nowSt) n.classList.add('hp-flash');
+    n.onclick = () => {                      // click a node -> one-line detail
+      const d = $('hsDetail');
+      if (d.style.display !== 'none' && d.dataset.k === n.dataset.k) {
+        d.style.display = 'none'; return;
+      }
+      d.textContent = n.dataset.tip;
+      d.dataset.k = n.dataset.k;
+      d.style.display = '';
+    };
   });
 }
 
-function openHealth() {
-  $('healthPanel').classList.add('open');
-  document.body.classList.add('hp-open');
-}
-function closeHealth() {
-  $('healthPanel').classList.remove('open');
-  document.body.classList.remove('hp-open');
-}
-$('healthBtn').onclick = () =>
-  $('healthPanel').classList.contains('open') ? closeHealth() : openHealth();
-$('hpClose').onclick = closeHealth;
+let healthCollapsed = localStorage.getItem('healthCollapsed') === '1';
+$('healthBtn').onclick = () => {
+  healthCollapsed = !healthCollapsed;
+  localStorage.setItem('healthCollapsed', healthCollapsed ? '1' : '0');
+  $('healthStrip').style.display = healthCollapsed ? 'none' : 'flex';
+  $('hsDetail').style.display = 'none';
+};
 
 /* ---------- resizable left column ---------- */
 (() => {
@@ -1045,7 +1020,7 @@ async function openSession(id) {
   loadFiles(id);
   lastHealthJson = '';
   loadHealth(id, session.status === 'running', session.server, session.mode);
-  if (session.status === 'running' && session.mode === 'healthcheck') openHealth();
+  if (session.status === 'running' && session.mode === 'healthcheck') { healthCollapsed = false; $('healthStrip').style.display = 'flex'; }
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
