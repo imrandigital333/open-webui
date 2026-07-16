@@ -300,6 +300,34 @@
                  border-radius: 50%; background: var(--err); border: 2px solid var(--bg);
                  display: none; }
   #rcMini.unread .dot { display: block; }
+  /* remediation roadmap panel (docks left of the chat) */
+  #rcMap { position: fixed; bottom: 22px; width: 340px; max-width: calc(100vw - 60px);
+           background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+           box-shadow: 0 12px 40px rgba(0,0,0,.55); display: none; flex-direction: column;
+           max-height: min(74vh, 680px); z-index: 59; overflow: hidden; }
+  #rcMap.open { display: flex; }
+  .rcmap-sum { padding: 10px 14px 4px; font-size: 12.5px; }
+  .rcmap-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;
+               display: flex; gap: 1px; margin-top: 7px; }
+  .rcmap-bar i { flex: 1; height: 100%; }
+  .rcmap-body { overflow-y: auto; padding: 6px 10px 12px; flex: 1; }
+  .rm-phase-lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em;
+                  color: var(--muted); font-weight: 800; margin: 9px 0 2px 5px; }
+  .rm-item { display: flex; gap: 9px; padding: 8px 7px; border-radius: 8px;
+             cursor: pointer; align-items: flex-start; }
+  .rm-item:hover { background: var(--panel2); }
+  .rm-item.cur { background: rgba(76,141,255,.08); outline: 1px solid #2b4a7a; }
+  .rm-st { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%;
+           display: grid; place-items: center; border: 2px solid var(--border);
+           font: 700 11px var(--mono); background: var(--panel2); color: var(--muted); }
+  .rm-item.done .rm-st { border-color: var(--ok); color: var(--ok); }
+  .rm-item.fail .rm-st { border-color: var(--err); color: var(--err); }
+  .rm-item.skip .rm-st { border-color: var(--warn); color: var(--warn); }
+  .rm-item.cur .rm-st { border-color: var(--accent); color: var(--accent);
+                        animation: pulse 1.4s infinite; }
+  .rm-item .cmd { font-family: var(--mono); font-size: 11px; color: var(--muted);
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .rm-item .desc { font-size: 12.5px; font-weight: 600; line-height: 1.4; }
   .rchat-foot { border-top: 1px solid var(--border); padding: 8px 12px 10px; }
   .rchat-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 0; }
   .rchat-chips:not(:empty) { margin-bottom: 8px; }
@@ -625,7 +653,8 @@
     <span id="rchatIcon"></span>
     <span>Remediation Assistant</span>
     <span class="sub" id="rchatSrv"></span>
-    <button id="rcMin" style="margin-left:auto" title="Minimise">—</button>
+    <button id="rcMapBtn" style="margin-left:auto" title="Toggle roadmap"></button>
+    <button id="rcMin" title="Minimise">—</button>
     <button id="rcSize" title="Toggle window size">⤢</button>
     <button onclick="closeRemChat()" title="Close">✕</button>
   </div>
@@ -640,6 +669,17 @@
   <div class="rchat-prog" id="rchatProg"></div>
 </div>
 <button id="rcMini" title="Remediation Assistant — click to restore"></button>
+
+<div id="rcMap">
+  <div class="rchat-head">
+    <span id="rcMapIcon"></span>
+    <span>Remediation Roadmap</span>
+    <span class="sub" id="rcMapSub"></span>
+    <button style="margin-left:auto" onclick="toggleRcMap(false)" title="Close">✕</button>
+  </div>
+  <div class="rcmap-sum" id="rcMapSum"></div>
+  <div class="rcmap-body" id="rcMapBody"></div>
+</div>
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
@@ -671,6 +711,7 @@ const ICONS = {
   'terminal': '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
   'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
   'refresh': '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  'map': '<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>',
 };
 const ic = (n, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${ICONS[n] || ''}</svg>`;
 
@@ -1134,12 +1175,15 @@ function openRemChat() {
     Nothing runs without your approval: click a button (or just type <b>run</b>) for each step
     and I'll show you the output before we continue. You can also type
     <b>!&lt;command&gt;</b> at any time — I review every command first (impact, risk,
-    backup needs) before anything executes.`);
+    backup needs) before anything executes. The roadmap panel beside me shows the whole
+    plan and tracks progress live — click a step there to jump to it.`);
   rcNextStep();
+  toggleRcMap(window.innerWidth > 1250);   // roadmap docks beside the chat when there's room
 }
 function closeRemChat() {
   $('remChat').classList.remove('open');
   $('rcMini').classList.remove('show', 'unread');
+  toggleRcMap(false);
 }
 function rcScroll() { const b = $('rchatBody'); b.scrollTop = b.scrollHeight; }
 function rcBot(html) {
@@ -1176,6 +1220,70 @@ function renderRcProg() {
     `<i class="${rc.done[i] === 'ok' ? 'done' : rc.done[i] === 'err' ? 'fail'
                : rc.done[i] === 'skip' ? 'skip' : i === rc.i ? 'cur' : ''}"
         title="step ${i + 1} · ${escapeHtml(s.phase || '')}${rc.done[i] ? ' · ' + rc.done[i] : ''}"></i>`).join('');
+  renderRcMap();
+}
+
+/* ---------- remediation roadmap: full plan as a live stepper beside the chat ---------- */
+let rcMapOpen = false, rcMapWasOpen = false;
+function positionRcMap() {
+  $('rcMap').style.right = ($('remChat').offsetWidth + 34) + 'px';
+}
+function toggleRcMap(on) {
+  rcMapOpen = on === undefined ? !rcMapOpen : !!on;
+  $('rcMap').classList.toggle('open', rcMapOpen && !!rc);
+  if (rcMapOpen && rc) { positionRcMap(); renderRcMap(); }
+}
+function rcStepState(i) {
+  if (rc.done[i] === 'ok') return 'done';
+  if (rc.done[i] === 'err') return 'fail';
+  if (rc.done[i] === 'skip') return 'skip';
+  if (i === rc.i && rc.stage !== 'done' && rc.stage !== 'context') return 'cur';
+  return '';
+}
+function renderRcMap() {
+  if (!rc || !$('rcMap').classList.contains('open')) return;
+  const plan = rc.plan;
+  const okN = Object.values(rc.done).filter(v => v === 'ok').length;
+  $('rcMapSub').textContent = `· ${currentSessionInfo?.server || ''}`;
+  $('rcMapSum').innerHTML = `<b>${okN}</b> of <b>${plan.length}</b> steps completed
+    <div class="rcmap-bar">${plan.map((s, i) => {
+      const st = rcStepState(i);
+      const color = st === 'done' ? 'var(--ok)' : st === 'fail' ? 'var(--err)'
+        : st === 'skip' ? 'var(--warn)' : st === 'cur' ? 'var(--accent)' : 'transparent';
+      return `<i style="background:${color}"></i>`;
+    }).join('')}</div>`;
+  let html = '', lastPhase = '';
+  plan.forEach((s, i) => {
+    const ph = (s.phase || 'fix').toLowerCase();
+    if (ph !== lastPhase) { html += `<div class="rm-phase-lbl">${escapeHtml(ph)}</div>`; lastPhase = ph; }
+    const st = rcStepState(i);
+    const mark = st === 'done' ? '✓' : st === 'fail' ? '✕' : st === 'skip' ? '➟'
+      : st === 'cur' ? '▶' : String(i + 1);
+    html += `<div class="rm-item ${st}" onclick="rcMapJump(${i})"
+        title="click to jump the assistant to this step&#10;${escapeHtml(s.command || '')}">
+      <span class="rm-st">${mark}</span>
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;gap:6px;align-items:baseline">
+          <span class="desc">${escapeHtml(s.description || 'step ' + (i + 1))}</span>
+          <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}"
+            style="margin-left:auto;flex:0 0 auto">${escapeHtml(s.risk || 'low')}</span>
+        </div>
+        <div class="cmd">${escapeHtml(s.command || '')}</div>
+      </div></div>`;
+  });
+  $('rcMapBody').innerHTML = html;
+}
+function rcMapJump(i) {
+  if (!rc || rcThinkCount > 0) return;                      // never mid-execution
+  if (rc.stage === 'context' || rc.stage === 'done') return;
+  if (i === rc.i && rc.stage === 'step') return;            // already there
+  if (!confirm(`Jump the assistant to step ${i + 1}?\n\n${rc.plan[i].command}`)) return;
+  rcDisableMsg(rc.pendingMsg);
+  $('rcChips').innerHTML = '';
+  rcUser(`Jump to step ${i + 1}`);
+  rc.i = i;
+  rc.stage = 'step';
+  rcNextStep();
 }
 function rcSetChips(chips) {
   // one-click actions mirroring the current state — always available above the input
@@ -1507,15 +1615,22 @@ $('rcSize').onclick = () => {
   const chat = $('remChat');
   chat.style.removeProperty('--rcw');
   chat.classList.toggle('big');
+  if (rcMapOpen) requestAnimationFrame(positionRcMap);
 };
+$('rcMapBtn').innerHTML = ic('map', 14);
+$('rcMapBtn').onclick = () => toggleRcMap();
+$('rcMapIcon').innerHTML = ic('map', 15);
 $('rcMini').innerHTML = AI_ROBOT + '<span class="dot"></span>';
 $('rcMin').onclick = () => {
+  rcMapWasOpen = rcMapOpen;
+  toggleRcMap(false);
   $('remChat').classList.remove('open');
   $('rcMini').classList.add('show');
 };
 $('rcMini').onclick = () => {
   $('rcMini').classList.remove('show', 'unread');
   $('remChat').classList.add('open');
+  if (rcMapWasOpen) toggleRcMap(true);
   rcScroll();
 };
 (() => {  // drag the chat's left edge to any width
@@ -1530,6 +1645,7 @@ $('rcMini').onclick = () => {
     chat.classList.remove('big');
     const w = Math.min(920, Math.max(340, window.innerWidth - 22 - e.clientX));
     chat.style.setProperty('--rcw', w + 'px');
+    if (rcMapOpen) positionRcMap();
   });
   rz.addEventListener('pointerup', () => {
     dragging = false; document.body.style.userSelect = '';
