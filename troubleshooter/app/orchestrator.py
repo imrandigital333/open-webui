@@ -328,6 +328,8 @@ class SessionState:
     duration_ms: int | None = None
     cost_usd: float | None = None
     num_turns: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
     events: list[dict] = field(default_factory=list)
     report: dict | None = None
     error: str | None = None
@@ -385,6 +387,8 @@ class SessionState:
             "duration_ms": self.duration_ms,
             "cost_usd": self.cost_usd,
             "num_turns": self.num_turns,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
             "report": self.report,
             "error": self.error,
         }
@@ -879,6 +883,12 @@ async def run_session(
                 state.duration_ms = message.duration_ms
                 state.cost_usd = message.total_cost_usd
                 state.num_turns = message.num_turns
+                usage = getattr(message, "usage", None) or {}
+                # total input = fresh + cache-created + cache-read tokens
+                state.input_tokens = (usage.get("input_tokens", 0)
+                                      + usage.get("cache_creation_input_tokens", 0)
+                                      + usage.get("cache_read_input_tokens", 0)) or None
+                state.output_tokens = usage.get("output_tokens") or None
                 if message.is_error:
                     state.status = "failed"
                     if message.subtype == "error_max_turns":
@@ -993,6 +1003,8 @@ def _write_outcome(state: SessionState) -> None:
             "duration_ms": state.duration_ms,
             "cost_usd": state.cost_usd,
             "num_turns": state.num_turns,
+            "input_tokens": state.input_tokens,
+            "output_tokens": state.output_tokens,
             "confidence": (state.report or {}).get("confidence"),
             "root_cause_layer": (state.report or {}).get("root_cause_layer"),
         }, indent=2))
@@ -1006,7 +1018,8 @@ def scan_fleet() -> dict:
     latest: dict[str, dict] = {}
     latest_checks: dict[str, dict] = {}   # newest health.json per server, any session
     stats = {"total": 0, "completed": 0, "failed": 0, "running": 0,
-             "high_confidence": 0, "cost_usd": 0.0, "healthchecks": 0}
+             "high_confidence": 0, "cost_usd": 0.0, "healthchecks": 0,
+             "tokens_in": 0, "tokens_out": 0}
     if SESSIONS_DIR.exists():
         for d in SESSIONS_DIR.iterdir():
             meta_path = d / "meta.json"
@@ -1041,6 +1054,8 @@ def scan_fleet() -> dict:
                 stats["healthchecks"] += 1
             if outcome.get("cost_usd"):
                 stats["cost_usd"] += float(outcome["cost_usd"])
+            stats["tokens_in"] += int(outcome.get("input_tokens") or 0)
+            stats["tokens_out"] += int(outcome.get("output_tokens") or 0)
             if outcome.get("confidence") == "high":
                 stats["high_confidence"] += 1
 

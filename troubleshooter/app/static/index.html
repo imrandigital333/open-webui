@@ -392,6 +392,16 @@
   .kpi .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
             letter-spacing: .07em; margin-top: 2px; font-weight: 700; }
   .kpi .n .u { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .kpi .l svg { vertical-align: -2px; margin-right: 2px; }
+  .ovgrid { display: grid; grid-template-columns: 1fr 330px; gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .ovgrid { grid-template-columns: 1fr; } }
+  .ov-item { display: flex; gap: 9px; padding: 9px 6px; border-bottom: 1px solid var(--border);
+             cursor: pointer; border-radius: 6px; align-items: flex-start; }
+  .ov-item:hover { background: var(--panel2); }
+  .ov-item:last-child { border-bottom: none; }
+  .ov-item .p { color: var(--muted); font-size: 12px; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+  .ov-item .meta { font-size: 11px; color: var(--muted); }
   .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
   .card .top { display: flex; align-items: center; gap: 11px; }
@@ -459,7 +469,16 @@
 
 <div id="viewOverview">
   <div class="kpis" id="kpis"></div>
-  <div class="fleet" id="fleet"><div class="empty">Loading fleet…</div></div>
+  <div class="ovgrid">
+    <div>
+      <div class="sec-label" style="margin-top:4px">Fleet</div>
+      <div class="fleet" id="fleet"><div class="empty">Loading fleet…</div></div>
+    </div>
+    <div>
+      <div class="sec-label" style="margin-top:4px">Recent activity</div>
+      <div id="ovActivity" class="panel" style="padding:8px 10px"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
 </div>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
@@ -722,6 +741,26 @@ async function startSession() {
 async function refreshSessions() {
   sessionsCache = (await (await fetch('/api/sessions')).json()).sessions;
   renderSessions();
+  renderOvActivity();
+}
+
+function renderOvActivity() {
+  const box = $('ovActivity');
+  if (!box) return;
+  const items = sessionsCache.slice(0, 9);
+  box.classList.toggle('empty', !items.length);
+  box.innerHTML = items.length ? items.map(s => `
+    <div class="ov-item" onclick="viewLast('${s.id}')">
+      <span>${MODE_ICON[s.mode] || '🔍'}</span>
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;gap:8px;align-items:baseline">
+          <b>${escapeHtml(s.server)}</b>
+          <span class="status ${s.status}" style="margin-left:auto">${s.status === 'running' ? '<span class="spinner"></span>' : ''}${s.status}</span>
+        </div>
+        <div class="p">${escapeHtml(s.problem)}</div>
+        <div class="meta">${timeAgo(s.created_at)}${s.confidence ? ` · ${escapeHtml(s.confidence)} confidence` : ''}</div>
+      </div>
+    </div>`).join('') : 'No sessions yet — start a health check or investigation from a server card.';
 }
 
 let sessGroupsOpen = { cur: true, hist: localStorage.getItem('sessHistOpen') === '1' };
@@ -871,6 +910,8 @@ function renderReport(report) {
         `<span style="text-transform:capitalize">${escapeHtml(report.root_cause_layer)}</span>`) : ''}
       ${s.duration_ms ? stat('Analysis time', fmtDur(s.duration_ms)) : ''}
       ${s.num_turns ? stat('Agent turns', s.num_turns) : ''}
+      ${(s.input_tokens || s.output_tokens)
+        ? stat('AI tokens', `${fmtTok(s.input_tokens || 0)} in · ${fmtTok(s.output_tokens || 0)} out`) : ''}
       ${stat('Evidence items', (report.evidence || []).length)}
       ${stat('Log sources', (report.logs_reviewed || []).length)}
     </div>
@@ -1710,15 +1751,32 @@ async function deleteScript(file) {
 
 /* ---------- overview: KPIs + fleet ---------- */
 const OVERALL_ICON = { ok: '✓', warning: '!', critical: '✕', running: '…' };
+const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
+  : n >= 1000 ? (n / 1e3).toFixed(1) + 'k' : String(n || 0);
+function timeAgo(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 async function loadFleet() {
   const { servers, stats } = await (await fetch('/api/fleet')).json();
+  const fh = { ok: 0, warning: 0, critical: 0 };
+  servers.forEach(s => { if (fh[s.overall] !== undefined) fh[s.overall]++; });
   $('kpis').innerHTML = [
-    [stats.servers, 'Servers'],
-    [stats.datasources_ready, 'Data sources ready'],
-    [stats.total, 'Total runs'],
-    [`<span>${stats.running}</span>`, 'Running now'],
-    [stats.high_confidence, 'High-confidence RCAs'],
-    [`$${(stats.cost_usd || 0).toFixed(2)}<span class="u"> USD</span>`, 'AI spend'],
+    [stats.servers, `${ic('layers', 12)} Servers`],
+    [`<span style="font-size:19px;display:inline-flex;gap:10px;align-items:baseline">
+        <span style="color:var(--ok)">✓ ${fh.ok}</span>
+        <span style="color:var(--warn)">! ${fh.warning}</span>
+        <span style="color:var(--err)">✕ ${fh.critical}</span></span>`,
+     `${ic('shield', 12)} Fleet health`],
+    [`<span>${stats.running}</span>`, `${ic('refresh', 12)} Running now`],
+    [stats.total, `${ic('clock', 12)} Total runs`],
+    [stats.high_confidence, `${ic('check-circle', 12)} High-confidence RCAs`],
+    [`${fmtTok(stats.tokens_in)}<span class="u"> in</span> ${fmtTok(stats.tokens_out)}<span class="u"> out</span>`,
+     `${ic('zap', 12)} AI tokens used`],
   ].map(([n, l]) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
 
   $('fleet').innerHTML = servers.map(s => {
@@ -1833,7 +1891,8 @@ function renderStats(s) {
     const bits = [];
     if (s.duration_ms) bits.push(fmtDur(s.duration_ms));
     if (s.num_turns) bits.push(`${s.num_turns} turns`);
-    if (s.cost_usd) bits.push(`$${s.cost_usd.toFixed(2)}`);
+    if (s.input_tokens || s.output_tokens)
+      bits.push(`tokens ${fmtTok(s.input_tokens || 0)} in / ${fmtTok(s.output_tokens || 0)} out`);
     $('shStats').textContent = bits.join(' · ');
   }
 }

@@ -54,6 +54,8 @@ sessions_t = Table(
     Column("duration_ms", Integer, nullable=True),
     Column("cost_usd", Float, nullable=True),
     Column("num_turns", Integer, nullable=True),
+    Column("input_tokens", Integer, nullable=True),
+    Column("output_tokens", Integer, nullable=True),
     Column("confidence", String(20), nullable=True),
     Column("root_cause_layer", String(40), nullable=True),
     Column("error", Text, nullable=True),
@@ -123,6 +125,17 @@ def engine():
 
 def init_db() -> None:
     metadata.create_all(engine())
+    # lightweight in-place migration: columns added after the first release.
+    # create_all never ALTERs, so add them best-effort (no-op once present).
+    import contextlib as _ctx
+    from sqlalchemy import text as _text
+
+    for ddl in (
+        "ALTER TABLE sessions ADD COLUMN input_tokens INTEGER",
+        "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER",
+    ):
+        with _ctx.suppress(Exception), engine().begin() as conn:
+            conn.execute(_text(ddl))
     # sessions left 'running' by a crash/restart can never finish
     with engine().begin() as conn:
         conn.execute(
@@ -154,6 +167,7 @@ def session_finished(s: dict) -> None:
         conn.execute(update(sessions_t).where(sessions_t.c.id == s["id"]).values(
             status=s["status"], phase=s["phase"], finished_at=time.time(),
             duration_ms=s["duration_ms"], cost_usd=s["cost_usd"], num_turns=s["num_turns"],
+            input_tokens=s.get("input_tokens"), output_tokens=s.get("output_tokens"),
             confidence=(s.get("report") or {}).get("confidence"),
             root_cause_layer=(s.get("report") or {}).get("root_cause_layer"),
             error=s["error"], report=json.dumps(s.get("report")) if s.get("report") else None,
