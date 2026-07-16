@@ -373,10 +373,13 @@ def build_prompt(
             "\nThe operator did not provide a start time — determining WHEN the "
             "problem began is part of your job (PINPOINT step)."
         )
-    wd_section = workdir_section(workdir) if workdir else ""
+    # NOTE: this prompt is deliberately the lean v2.4.1 shape — no health
+    # checklist, no phase markers, no script library, no extra duties. Field
+    # experience showed side-quests dilute the root-cause hunt (e.g. the agent
+    # assesses patching/firewall instead of running `dnf history`). Keep it
+    # focused; auxiliary features live in healthcheck mode.
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
-{wd_section}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
@@ -392,14 +395,6 @@ def build_prompt(
 
 ## Investigation depth
 {depth_guidance}
-
-{HEALTH_SECTION}
-## Progress markers
-When you enter a new phase of the workflow below, start the FIRST line of
-your next message with exactly one of:
-PHASE: TRIAGE | PHASE: PINPOINT | PHASE: COLLECT | PHASE: ANALYZE | PHASE: REPORT
-(then continue your message on the next line). The operator's dashboard uses
-these to show live progress.
 
 ## Hard rules
 - READ-ONLY on the remote server. You may run diagnostic and log-reading

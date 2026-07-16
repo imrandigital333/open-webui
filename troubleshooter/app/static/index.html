@@ -996,7 +996,10 @@ function renderHead(s) {
   $('cancelBtn').style.display = s.status === 'running' ? '' : 'none';
   $('dlReport').style.display = (s.status === 'completed' || s.report) ? '' : 'none';
   renderStats(s);
-  renderStepper(s.mode || 'investigate', s.phase, s.status);
+  // investigations run the lean prompt (no phase markers / health duties) —
+  // show the stepper only where phase data actually exists
+  if (s.mode === 'healthcheck' || s.phase) renderStepper(s.mode || 'investigate', s.phase, s.status);
+  else $('stepper').style.display = 'none';
 }
 
 $('cancelBtn').onclick = async () => {
@@ -1021,7 +1024,7 @@ async function openSession(id) {
   loadFiles(id);
   lastHealthJson = '';
   loadHealth(id, session.status === 'running', session.server);
-  if (session.status === 'running') openHealth();
+  if (session.status === 'running' && session.mode === 'healthcheck') openHealth();
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
