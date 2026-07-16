@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.14.0"
+APP_VERSION = "2.15.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -314,6 +314,43 @@ async def remediate(session_id: str, request: Request):
                             {"session": state.id, "parent": session_id,
                              "steps": len(plan)})
     return state.to_dict()
+
+
+class RunStepRequest(BaseModel):
+    order: int = Field(..., ge=0, le=999)
+
+
+@app.post("/api/sessions/{session_id}/run-step")
+async def run_step(session_id: str, req: RunStepRequest, request: Request):
+    """Execute ONE approved remediation command over SSH and return its output.
+
+    No agent involved — direct execution of the exact command the operator
+    clicked, fully audited. Powers the per-command Run buttons in the UI.
+    """
+    parent = await _load_any_session(session_id)
+    plan = (parent.get("report") or {}).get("remediation_plan") or []
+    step = next((s for s in plan if s.get("order") == req.order), None)
+    if step is None:
+        raise HTTPException(status_code=404, detail="No such step in the remediation plan")
+    server = load_inventory().get(parent["server"])
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    actor = _actor(request)
+    await asyncio.to_thread(db.audit, actor, "remediation_step_run",
+                            {"session": session_id, "order": req.order,
+                             "command": step.get("command", "")[:300]})
+    cmd = server.ssh_command().split() + [step.get("command", "")]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "exit_code": -1, "output": "Timed out after 90s"}
+    except OSError as exc:
+        return {"ok": False, "exit_code": -1, "output": str(exc)}
+    return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
+            "output": out.decode(errors="replace")[-4000:]}
 
 
 async def _load_any_session(session_id: str) -> dict:

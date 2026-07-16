@@ -116,6 +116,34 @@
   .evidence { font-family: var(--mono); font-size: 12.5px; background: var(--panel2);
               border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
   .evidence .src { color: var(--accent2); }
+  /* report: summary card + accordions + action box */
+  .rc-card { border: 1px solid var(--border); border-left: 4px solid var(--accent);
+             border-radius: 10px; background: var(--panel2); padding: 14px 16px; margin-bottom: 12px; }
+  .rc-card.c-high { border-left-color: var(--ok); }
+  .rc-card.c-medium { border-left-color: var(--warn); }
+  .rc-card.c-low { border-left-color: var(--err); }
+  .rc-card .rc-cause { font-size: 15px; font-weight: 700; line-height: 1.45; margin: 6px 0 8px; }
+  .rc-card .rc-sum { font-size: 13px; color: var(--muted); line-height: 1.55; }
+  .acc { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--panel2); }
+  .acc summary { cursor: pointer; padding: 9px 12px; font-size: 11.5px; font-weight: 700;
+                 text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+                 list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
+  .acc summary::-webkit-details-marker { display: none; }
+  .acc summary::before { content: '▸'; transition: transform .15s; font-size: 10px; }
+  .acc[open] summary::before { transform: rotate(90deg); }
+  .acc summary:hover { color: var(--text); }
+  .acc .acc-body { padding: 2px 12px 12px; }
+  .action-box { border: 1px solid #2b4a7a; border-radius: 10px; padding: 14px 16px;
+                margin-top: 14px; background: linear-gradient(180deg, #16203a22, transparent); }
+  .action-box .ab-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+                          letter-spacing: .06em; color: var(--accent2); margin-bottom: 10px; }
+  .step-out { display: none; margin: 6px 0 2px; padding: 8px 10px; border-radius: 6px;
+              font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap;
+              word-break: break-word; max-height: 180px; overflow: auto; }
+  .step-out.ok { background: #12291a; border: 1px solid #2b5a37; }
+  .step-out.err { background: #2e1414; border: 1px solid #6e2c2c; }
+  .spin { display: inline-block; animation: rot 1.1s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
   /* remediation plan */
   .rem-phase { font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
                color: var(--muted); font-weight: 700; margin: 10px 0 4px; }
@@ -563,66 +591,117 @@ function renderReport(report) {
   const reviewedRows = (report.logs_reviewed || []).map(r =>
     `<tr><td style="font-family:var(--mono);font-size:12px">${escapeHtml(r.source || '')}</td>
       <td style="white-space:nowrap">${escapeHtml(r.covers || '')}</td><td>${escapeHtml(r.note || '')}</td></tr>`).join('');
+  const acc = (title, count, inner) => count
+    ? `<details class="acc"><summary>${title}<span class="count">${count}</span></summary>
+       <div class="acc-body">${inner}</div></details>` : '';
   $('reportBody').classList.remove('empty');
   $('reportBody').innerHTML = `
-    <div class="kv"><div class="k">Summary</div><div class="v">${escapeHtml(report.summary || '—')}</div></div>
-    <div class="kv"><div class="k">Probable root cause
-      <span class="conf ${conf}">${escapeHtml(conf)} confidence</span>
-      ${report.root_cause_layer ? `<span class="layerpill">${escapeHtml(report.root_cause_layer)}</span>` : ''}</div>
-      <div class="v"><strong>${escapeHtml(report.probable_root_cause || '—')}</strong></div></div>
-    ${timelineRows ? `<div class="kv"><div class="k">Incident timeline</div>
-      <table class="layers"><tr><th>Time</th><th>Source</th><th>Event</th></tr>${timelineRows}</table></div>` : ''}
-    ${layersRows ? `<div class="kv"><div class="k">Layers checked</div>
-      <table class="layers"><tr><th>Layer</th><th>Verdict</th><th>Note</th></tr>${layersRows}</table></div>` : ''}
-    ${evidence ? `<div class="kv"><div class="k">Evidence</div>${evidence}</div>` : ''}
-    ${reviewedRows ? `<div class="kv"><div class="k">Logs reviewed by the agent</div>
-      <table class="layers"><tr><th>Source</th><th>Time range covered</th><th>Note</th></tr>${reviewedRows}</table></div>` : ''}
-    ${report.impact ? `<div class="kv"><div class="k">Impact</div><div class="v">${escapeHtml(report.impact)}</div></div>` : ''}
-    ${report.recommended_fix?.length && !(report.remediation_plan?.length) ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
-    ${renderRemediationPlan(report)}
-    ${report.preventive_measures?.length ? `<div class="kv"><div class="k">Preventive measures</div><ul>${list(report.preventive_measures)}</ul></div>` : ''}
-    ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}
-    ${renderFeedbackBox()}`;
+    <div class="rc-card c-${conf}">
+      <div>
+        <span class="conf ${conf}" style="margin-left:0">${escapeHtml(conf)} confidence</span>
+        ${report.root_cause_layer ? `<span class="layerpill">${escapeHtml(report.root_cause_layer)}</span>` : ''}
+      </div>
+      <div class="rc-cause">${escapeHtml(report.probable_root_cause || '—')}</div>
+      <div class="rc-sum">${escapeHtml(report.summary || '')}</div>
+      ${report.impact ? `<div class="rc-sum" style="margin-top:6px"><b>Impact:</b> ${escapeHtml(report.impact)}</div>` : ''}
+    </div>
+    ${acc('Incident timeline', (report.incident_timeline || []).length,
+      `<table class="layers"><tr><th>Time</th><th>Source</th><th>Event</th></tr>${timelineRows}</table>`)}
+    ${acc('Layers checked', (report.layers_checked || []).length,
+      `<table class="layers"><tr><th>Layer</th><th>Verdict</th><th>Note</th></tr>${layersRows}</table>`)}
+    ${acc('Evidence', (report.evidence || []).length, evidence)}
+    ${acc('Logs reviewed by the agent', (report.logs_reviewed || []).length,
+      `<table class="layers"><tr><th>Source</th><th>Time range covered</th><th>Note</th></tr>${reviewedRows}</table>`)}
+    ${acc('Preventive measures', (report.preventive_measures || []).length,
+      `<ul>${list(report.preventive_measures)}</ul>`)}
+    ${acc('Open questions', (report.needs_followup || []).length,
+      `<ul>${list(report.needs_followup)}</ul>`)}
+    ${report.recommended_fix?.length && !(report.remediation_plan?.length)
+      ? acc('Recommended fix', report.recommended_fix.length, `<ol>${list(report.recommended_fix)}</ol>`) : ''}
+    ${renderActionBox(report)}`;
 }
 
-/* ---------- remediation plan + execution ---------- */
-function renderRemediationPlan(report) {
+/* ---------- next-actions box: remediation + verdict ---------- */
+function renderActionBox(report) {
+  if (!currentSessionInfo || currentSessionInfo.mode !== 'investigate'
+      || currentSessionInfo.status !== 'completed') return '';
   const plan = report.remediation_plan || [];
-  if (!plan.length) return '';
   window._plan = plan;
-  const phaseOrder = ['backup', 'fix', 'verify', 'rollback'];
-  let html = `<div class="kv"><div class="k">Remediation plan
-      <button class="ghost" style="margin-left:10px" onclick="copyPlanScript()">Copy as script</button>
-      <button class="ghost danger" style="margin-left:4px" onclick="$('execConfirm').style.display=''">▶ Execute on server</button>
-    </div>
-    <div class="hint">Backups first, then fix, then verification — rollback steps restore the
-      backups if the fix fails. Execute from here (supervised agent run) or copy and run manually.</div>`;
-  phaseOrder.forEach(ph => {
-    const steps = plan.filter(s => (s.phase || '').toLowerCase().startsWith(ph.slice(0, 4)));
-    if (!steps.length) return;
-    html += `<div class="rem-phase">${ph}</div>`;
-    steps.forEach(s => {
-      const i = plan.indexOf(s);
-      html += `<div class="rem-step">
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}">${escapeHtml(s.risk || 'low')}</span>
-          <code style="flex:1;min-width:0">${escapeHtml(s.command || '')}</code>
-          <button class="ghost" style="flex:0 0 auto" onclick="copyCmd(${i}, this)">copy</button>
-        </div>
-        <div class="hint" style="margin:3px 0 0 2px">${escapeHtml(s.description || '')}</div>
-      </div>`;
+  let rem = '';
+  if (plan.length) {
+    const phaseOrder = ['backup', 'fix', 'verify', 'rollback'];
+    let steps = '';
+    phaseOrder.forEach(ph => {
+      const rows = plan.filter(s => (s.phase || '').toLowerCase().startsWith(ph.slice(0, 4)));
+      if (!rows.length) return;
+      steps += `<div class="rem-phase">${ph}</div>`;
+      rows.forEach(s => {
+        const i = plan.indexOf(s);
+        steps += `<div class="rem-step">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}">${escapeHtml(s.risk || 'low')}</span>
+            <code style="flex:1;min-width:0">${escapeHtml(s.command || '')}</code>
+            <button class="ghost" style="flex:0 0 auto" onclick="runStep(${i}, this)">▶ Run</button>
+            <button class="ghost" style="flex:0 0 auto" onclick="copyCmd(${i}, this)">copy</button>
+          </div>
+          <div class="hint" style="margin:3px 0 0 2px">${escapeHtml(s.description || '')}</div>
+          <div class="step-out" id="stepout-${i}"></div>
+        </div>`;
+      });
     });
-  });
-  html += `<div id="execConfirm" style="display:none;border:1px solid var(--err);border-radius:8px;padding:10px 12px;margin-top:10px">
-      <b style="color:var(--err)">Execute ${plan.length} commands on ${escapeHtml(currentSessionInfo?.server || 'the server')}?</b>
-      <div class="hint">A supervised agent run will execute exactly these commands in order
-        (backups first), stop on failure, run the rollback steps if verification fails, and
-        report the result of every step. This CHANGES the server.</div>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="ghost danger" onclick="execRemediation(this)">I understand — execute now</button>
-        <button class="ghost" onclick="$('execConfirm').style.display='none'">Cancel</button>
-      </div></div></div>`;
-  return html;
+    rem = `<div class="hint" style="margin-bottom:8px">Run steps one by one from here (each
+        run is executed on ${escapeHtml(currentSessionInfo.server)} and audited — output appears
+        under the command), copy them, or hand the whole plan to a supervised agent run.</div>
+      ${steps}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="ghost" onclick="copyPlanScript()">Copy as script</button>
+        <button class="ghost danger" onclick="$('execConfirm').style.display=''">▶ Run all via agent (supervised)</button>
+      </div>
+      <div id="execConfirm" style="display:none;border:1px solid var(--err);border-radius:8px;padding:10px 12px;margin-top:10px">
+        <b style="color:var(--err)">Execute all ${plan.length} commands on ${escapeHtml(currentSessionInfo.server)}?</b>
+        <div class="hint">A supervised agent run executes the plan in order (backups first),
+          stops on failure, rolls back if verification fails, and reports every step.</div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="ghost danger" onclick="execRemediation(this)">I understand — execute now</button>
+          <button class="ghost" onclick="$('execConfirm').style.display='none'">Cancel</button>
+        </div></div>
+      <div style="border-top:1px solid var(--border);margin:14px 0 12px"></div>`;
+  }
+  const fb = currentSessionInfo.feedback;
+  let verdict;
+  if (fb) {
+    const ok = fb.verdict === 'confirmed';
+    verdict = `<div class="v" style="color:${ok ? 'var(--ok)' : 'var(--warn)'}">${ok ? '✓' : '⟳'} ${escapeHtml(fb.verdict)}
+      by ${escapeHtml(fb.actor || '')} · ${new Date(fb.ts * 1000).toLocaleString()}${fb.note ? ' — ' + escapeHtml(fb.note) : ''}</div>`;
+  } else {
+    verdict = `<div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="ghost" style="flex:0 0 auto" onclick="sendFeedback('confirmed')">✓ Root cause confirmed — issue resolved</button>
+        <button class="ghost" style="flex:0 0 auto" onclick="$('reinvBox').style.display=''">⟳ Continue troubleshooting with more details</button>
+      </div>
+      <div id="reinvBox" style="display:none;margin-top:10px">
+        <textarea id="reinvContext" placeholder="Give the agent more to work with: what you observed after the fix, exact log paths to check, recent changes, the precise error users see…"></textarea>
+        <button class="primary" style="margin-top:8px" onclick="startReinvestigation(this)">Start deeper re-investigation</button>
+      </div>`;
+  }
+  return `<div class="action-box"><div class="ab-title">Next actions</div>${rem}${verdict}</div>`;
+}
+async function runStep(i, btn) {
+  const s = window._plan[i];
+  if (!confirm(`Run this on ${currentSessionInfo?.server}?\n\n${s.command}`)) return;
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
+  try {
+    const res = await fetch(`/api/sessions/${currentSession}/run-step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order: s.order }),
+    });
+    const d = await res.json();
+    const out = document.getElementById(`stepout-${i}`);
+    out.style.display = 'block';
+    out.className = 'step-out ' + (d.ok ? 'ok' : 'err');
+    out.textContent = `exit ${d.exit_code ?? '?'}\n` + ((d.output || '').trim() || '(no output)');
+    btn.textContent = d.ok ? '✓ ran' : '✕ failed';
+  } catch (e) { btn.textContent = old; alert('Run failed: ' + e.message); }
+  btn.disabled = false;
 }
 function copyCmd(i, btn) {
   navigator.clipboard.writeText(window._plan[i].command || '').then(() => {
@@ -646,31 +725,6 @@ async function execRemediation(btn) {
   const s = await res.json();
   await refreshSessions();
   openSession(s.id);
-}
-
-/* ---------- RCA feedback / reinvestigation ---------- */
-function renderFeedbackBox() {
-  if (!currentSessionInfo || currentSessionInfo.mode !== 'investigate'
-      || currentSessionInfo.status !== 'completed') return '';
-  const fb = currentSessionInfo.feedback;
-  if (fb) {
-    const ok = fb.verdict === 'confirmed';
-    return `<div class="kv"><div class="k">Root cause verdict</div>
-      <div class="v" style="color:${ok ? 'var(--ok)' : 'var(--warn)'}">${ok ? '✓' : '⟳'} ${escapeHtml(fb.verdict)}
-        by ${escapeHtml(fb.actor || '')} · ${new Date(fb.ts * 1000).toLocaleString()}${fb.note ? ' — ' + escapeHtml(fb.note) : ''}</div></div>`;
-  }
-  return `<div class="kv"><div class="k">Is this root cause correct?</div>
-    <div class="hint">Confirming feeds the server's incident memory; re-investigating starts a
-      deeper follow-up run that carries this conclusion and your corrections.</div>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="ghost" onclick="sendFeedback('confirmed')">✓ Confirmed — correct / issue resolved</button>
-      <button class="ghost" onclick="$('reinvBox').style.display=''">⟳ Not correct — re-investigate</button>
-    </div>
-    <div id="reinvBox" style="display:none;margin-top:10px">
-      <label>Additional context for the re-investigation</label>
-      <textarea id="reinvContext" placeholder="e.g. the suggested fix did not help; also check /var/log/myapp/debug.log; it only affects HTTPS clients; we changed X yesterday; here is the exact error users see: ..."></textarea>
-      <button class="primary" style="margin-top:8px" onclick="startReinvestigation(this)">Start re-investigation (deep)</button>
-    </div></div>`;
 }
 async function sendFeedback(verdict) {
   await fetch(`/api/sessions/${currentSession}/feedback`, {
@@ -1020,7 +1074,9 @@ function healthNodeHtml(key, icon, check, checking) {
   const pct = /^(\d{1,3})%/.exec(check?.value || '');
   const color = st === 'ok' ? 'var(--ok)' : st === 'warning' ? 'var(--warn)'
               : st === 'critical' ? 'var(--err)' : 'var(--border)';
-  const dot = pct
+  const dot = checking
+    ? `<div class="hs-dot"><span class="spin">⟳</span></div>`
+    : pct
     ? `<div class="hs-dot hs-gauge" style="background:conic-gradient(${color} ${Math.min(+pct[1],100) * 3.6}deg, var(--border) 0)">
          <span>${pct[1]}%</span></div>`
     : `<div class="hs-dot">${icon}</div>`;
@@ -1039,9 +1095,9 @@ function renderHealth(health, running) {
                 : statuses.every(s => s === 'ok') && statuses.length ? 'ok' : 'unknown';
   strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`;
   strip.style.display = healthCollapsed ? 'none' : 'flex';
-  $('hsOverall').textContent = overall === 'unknown' ? (running ? 'checking' : 'health') : overall;
-  $('hsRing').textContent = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
-    : overall === 'warning' ? '!' : '◎';
+  $('hsOverall').textContent = overall === 'unknown' ? (running ? 'scanning' : 'health') : overall;
+  $('hsRing').innerHTML = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
+    : overall === 'warning' ? '!' : (running ? '<span class="spin">⟳</span>' : '◎');
 
   const prev = {};
   document.querySelectorAll('#hsNodes .hs-node').forEach(n =>
@@ -1108,6 +1164,12 @@ async function loadHealth(id, running, serverName, mode) {
     // live/own data — pulse only while a health check is actively running
     renderHealth(health, running && mode === 'healthcheck', serverName);
     $('hpNote').textContent = '';
+    return;
+  }
+  if (running && mode === 'healthcheck') {
+    // live scan just starting — NEVER show stale data; show scanning state
+    renderHealth(null, true, serverName);
+    $('hpNote').textContent = 'scanning the server now…';
     return;
   }
   // lean investigations don't produce health.json — show the server's last
