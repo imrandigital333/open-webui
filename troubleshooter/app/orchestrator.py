@@ -393,7 +393,6 @@ def build_prompt(
 ## Investigation depth
 {depth_guidance}
 
-{script_library_section()}
 {HEALTH_SECTION}
 ## Progress markers
 When you enter a new phase of the workflow below, start the FIRST line of
@@ -600,11 +599,14 @@ async def run_session(
     if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
         max_turns = min(max_turns, int(os.environ["TROUBLESHOOTER_MAX_TURNS"]))
 
-    scriptlib = ensure_scriptlib()
+    # Script library is for health checks only: investigations generate their
+    # diagnostics from scratch (operator decision — a reused generic sweep can
+    # anchor an investigation on recent-window data and hurt RCA quality).
+    scriptlib_dirs = [str(ensure_scriptlib())] if state.mode == "healthcheck" else []
     options = ClaudeAgentOptions(
         env=env,
         stderr=_on_stderr,
-        add_dirs=[str(scriptlib)],
+        add_dirs=scriptlib_dirs,
         cwd=str(workdir),
         system_prompt=(
             "You are an autonomous infrastructure troubleshooting agent running in "
