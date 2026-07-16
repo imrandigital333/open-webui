@@ -325,8 +325,10 @@
   .rm-item.skip .rm-st { border-color: var(--warn); color: var(--warn); }
   .rm-item.cur .rm-st { border-color: var(--accent); color: var(--accent);
                         animation: pulse 1.4s infinite; }
-  .rm-item .cmd { font-family: var(--mono); font-size: 11px; color: var(--muted);
-                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .rm-item .cmd { font-family: var(--mono); font-size: 11px; color: var(--text);
+                  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+                  padding: 5px 8px; white-space: pre-wrap; word-break: break-all; margin-top: 5px; }
+  .rm-copy { flex: 0 0 auto; padding: 2px 7px !important; font-size: 10px !important; }
   .rm-item .desc { font-size: 12.5px; font-weight: 600; line-height: 1.4; }
   .rchat-foot { border-top: 1px solid var(--border); padding: 8px 12px 10px; }
   .rchat-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 0; }
@@ -673,7 +675,7 @@
 <div id="rcMap">
   <div class="rchat-head">
     <span id="rcMapIcon"></span>
-    <span>Remediation Roadmap</span>
+    <span>Remediation Steps</span>
     <span class="sub" id="rcMapSub"></span>
     <button style="margin-left:auto" onclick="toggleRcMap(false)" title="Close">✕</button>
   </div>
@@ -1022,6 +1024,7 @@ function renderActionBox(report) {
     rem = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <button class="primary" style="margin:0;width:auto;padding:8px 14px"
           onclick="openRemChat()">${ic('zap', 12)} Start interactive remediation</button>
+        <button class="ghost" onclick="toggleRcMap(true)">${ic('file-text', 12)} View all steps</button>
         <button class="ghost" onclick="copyPlanScript()">${ic('copy', 12)} Copy as script</button>
         <button class="ghost danger" onclick="$('execConfirm').style.display=''">${ic('play', 11)} Run all via agent (supervised)</button>
       </div>
@@ -1175,8 +1178,8 @@ function openRemChat() {
     Nothing runs without your approval: click a button (or just type <b>run</b>) for each step
     and I'll show you the output before we continue. You can also type
     <b>!&lt;command&gt;</b> at any time — I review every command first (impact, risk,
-    backup needs) before anything executes. The roadmap panel beside me shows the whole
-    plan and tracks progress live — click a step there to jump to it.`);
+    backup needs) before anything executes. The steps panel beside me shows the whole
+    plan for review and tracks progress live — click a step there to jump to it.`);
   rcNextStep();
   toggleRcMap(window.innerWidth > 1250);   // roadmap docks beside the chat when there's room
 }
@@ -1223,15 +1226,19 @@ function renderRcProg() {
   renderRcMap();
 }
 
-/* ---------- remediation roadmap: full plan as a live stepper beside the chat ---------- */
+/* ---------- remediation steps panel: review ALL steps at once; live statuses when the chat runs ---------- */
 let rcMapOpen = false, rcMapWasOpen = false;
+function rcCurrentPlan() { return (rc && rc.plan) || window._plan || []; }
 function positionRcMap() {
-  $('rcMap').style.right = ($('remChat').offsetWidth + 34) + 'px';
+  const chat = $('remChat');
+  $('rcMap').style.right = chat.classList.contains('open')
+    ? (chat.offsetWidth + 34) + 'px' : '22px';
 }
 function toggleRcMap(on) {
   rcMapOpen = on === undefined ? !rcMapOpen : !!on;
-  $('rcMap').classList.toggle('open', rcMapOpen && !!rc);
-  if (rcMapOpen && rc) { positionRcMap(); renderRcMap(); }
+  const has = rcCurrentPlan().length > 0;
+  $('rcMap').classList.toggle('open', rcMapOpen && has);
+  if (rcMapOpen && has) { positionRcMap(); renderRcMap(); }
 }
 function rcStepState(i) {
   if (rc.done[i] === 'ok') return 'done';
@@ -1241,37 +1248,52 @@ function rcStepState(i) {
   return '';
 }
 function renderRcMap() {
-  if (!rc || !$('rcMap').classList.contains('open')) return;
-  const plan = rc.plan;
-  const okN = Object.values(rc.done).filter(v => v === 'ok').length;
+  if (!$('rcMap').classList.contains('open')) return;
+  const plan = rcCurrentPlan();
+  if (!plan.length) return;
+  const live = !!rc;   // chat running -> live statuses + click-to-jump
   $('rcMapSub').textContent = `· ${currentSessionInfo?.server || ''}`;
-  $('rcMapSum').innerHTML = `<b>${okN}</b> of <b>${plan.length}</b> steps completed
-    <div class="rcmap-bar">${plan.map((s, i) => {
-      const st = rcStepState(i);
-      const color = st === 'done' ? 'var(--ok)' : st === 'fail' ? 'var(--err)'
-        : st === 'skip' ? 'var(--warn)' : st === 'cur' ? 'var(--accent)' : 'transparent';
-      return `<i style="background:${color}"></i>`;
-    }).join('')}</div>`;
+  if (live) {
+    const okN = Object.values(rc.done).filter(v => v === 'ok').length;
+    $('rcMapSum').innerHTML = `<b>${okN}</b> of <b>${plan.length}</b> steps completed
+      <div class="rcmap-bar">${plan.map((s, i) => {
+        const st = rcStepState(i);
+        const color = st === 'done' ? 'var(--ok)' : st === 'fail' ? 'var(--err)'
+          : st === 'skip' ? 'var(--warn)' : st === 'cur' ? 'var(--accent)' : 'transparent';
+        return `<i style="background:${color}"></i>`;
+      }).join('')}</div>`;
+  } else {
+    $('rcMapSum').innerHTML = `<b>${plan.length}</b> steps — review the full plan below.
+      <span class="hint">Start interactive remediation to execute them one by one.</span>`;
+  }
   let html = '', lastPhase = '';
   plan.forEach((s, i) => {
     const ph = (s.phase || 'fix').toLowerCase();
     if (ph !== lastPhase) { html += `<div class="rm-phase-lbl">${escapeHtml(ph)}</div>`; lastPhase = ph; }
-    const st = rcStepState(i);
+    const st = live ? rcStepState(i) : '';
     const mark = st === 'done' ? '✓' : st === 'fail' ? '✕' : st === 'skip' ? '➟'
       : st === 'cur' ? '▶' : String(i + 1);
-    html += `<div class="rm-item ${st}" onclick="rcMapJump(${i})"
-        title="click to jump the assistant to this step&#10;${escapeHtml(s.command || '')}">
+    html += `<div class="rm-item ${st}" ${live ? `onclick="rcMapJump(${i})"` : ''}
+        title="${live ? 'click to jump the assistant to this step' : escapeHtml(s.command || '')}">
       <span class="rm-st">${mark}</span>
       <div style="min-width:0;flex:1">
-        <div style="display:flex;gap:6px;align-items:baseline">
+        <div style="display:flex;gap:6px;align-items:center">
           <span class="desc">${escapeHtml(s.description || 'step ' + (i + 1))}</span>
           <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}"
             style="margin-left:auto;flex:0 0 auto">${escapeHtml(s.risk || 'low')}</span>
+          <button class="ghost rm-copy" title="Copy command"
+            onclick="event.stopPropagation(); rcMapCopy(${i}, this)">${ic('copy', 11)}</button>
         </div>
         <div class="cmd">${escapeHtml(s.command || '')}</div>
       </div></div>`;
   });
   $('rcMapBody').innerHTML = html;
+}
+function rcMapCopy(i, btn) {
+  navigator.clipboard.writeText((rcCurrentPlan()[i] || {}).command || '').then(() => {
+    const old = btn.innerHTML; btn.textContent = '✓';
+    setTimeout(() => btn.innerHTML = old, 1200);
+  });
 }
 function rcMapJump(i) {
   if (!rc || rcThinkCount > 0) return;                      // never mid-execution
