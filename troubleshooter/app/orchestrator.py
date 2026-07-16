@@ -181,29 +181,55 @@ Maintain a machine-readable health snapshot of the target server in
 - IMMEDIATELY after your first message, write the initial file with every
   aspect set to {"status": "unknown"}.
 - Rewrite the file as soon as you have assessed an aspect — do NOT batch the
-  updates to the end. Keep it cheap: assess most aspects from one or two
-  combined SSH commands (uptime; top -b -n1 | head; free -m; df -h;
-  systemctl list-units --state=failed; ss -ltn; ufw status or
-  iptables -S | head; apt list --upgradable 2>/dev/null | head).
-- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE
-  (e.g. disk >90% = critical, >80% = warning; failed key service = critical).
-- EXACT format — all ten keys always present:
+  updates to the end. Keep it cheap: most aspects come from a couple of
+  combined SSH commands (uptime; cat /proc/loadavg; nproc; top -b -n1 | head;
+  free -m; df -h; df -i; vmstat 1 2 | tail -1;
+  systemctl list-units --state=failed; ps -eo stat,pid,ppid,comm | awk '$1~/^Z/';
+  ss -ltn; getent hosts localhost && timeout 3 getent hosts <a real fqdn>;
+  timedatectl 2>/dev/null || chronyc tracking 2>/dev/null;
+  ufw status 2>/dev/null || iptables -S | head;
+  lastb -n 20 2>/dev/null | head; [ -f /var/run/reboot-required ] && echo reboot-required;
+  apt list --upgradable 2>/dev/null | head || yum check-update -q | head;
+  dmesg --level=err,crit 2>/dev/null | tail -15;
+  journalctl -p err --since "-2 hours" --no-pager | tail -20).
+  For certificates: check TLS certs of listening services, e.g.
+  `echo | timeout 3 openssl s_client -connect localhost:443 2>/dev/null | openssl x509 -noout -enddate`
+  and any certs referenced in service configs; "n/a — no TLS services" is a valid ok value.
+- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE:
+  disk/inodes >90% critical, >80% warning; load1 > cores warning, > 2x cores
+  critical; swap >40% used or active si/so warning, >80% critical; iowait >20%
+  warning, >40% critical; any failed key service critical; zombies >5 or a
+  D-state pileup warning; DNS resolution failure critical; clock unsynced or
+  offset >1s warning, >30s critical; cert expiring <30d warning, expired or <7d
+  critical; burst of failed logins warning; reboot-required or pending security
+  updates warning; OOM/hardware/I-O errors in dmesg warning or critical.
+- EXACT format — ALL TWENTY keys always present:
 {
   "checks": {
     "connectivity": {"status": "...", "value": "reachable, ssh ok", "note": "one line"},
     "uptime":       {"status": "...", "value": "up 41 days", "note": "no unexpected reboot"},
-    "cpu":          {"status": "...", "value": "23%", "note": "load 0.8 on 4 cores"},
+    "cpu":          {"status": "...", "value": "23%", "note": "top consumer: java 18%"},
+    "load":         {"status": "...", "value": "0.8 / 4 cores", "note": "load1 well under core count"},
     "memory":       {"status": "...", "value": "78%", "note": "no OOM events"},
+    "swap":         {"status": "...", "value": "12%", "note": "no active swapping (si/so 0)"},
     "storage":      {"status": "...", "value": "91% /var", "note": "worst filesystem"},
+    "inodes":       {"status": "...", "value": "34% /", "note": "worst filesystem inode usage"},
+    "disk_io":      {"status": "...", "value": "3% iowait", "note": "no device saturation"},
     "services":     {"status": "...", "value": "1 failed", "note": "fakeapp down since 14:31"},
-    "network":      {"status": "...", "value": "ports ok", "note": "expected listeners present"},
+    "processes":    {"status": "...", "value": "0 zombies", "note": "no D-state pileup; top hog: mysqld"},
+    "network":      {"status": "...", "value": "ports ok", "note": "expected listeners present, no drops"},
+    "dns":          {"status": "...", "value": "resolving", "note": "internal + external lookups ok"},
+    "time_sync":    {"status": "...", "value": "synced", "note": "chrony offset 0.2ms"},
     "firewall":     {"status": "...", "value": "ufw active", "note": "no recent rule changes"},
-    "patching":     {"status": "...", "value": "12 pending", "note": "3 security updates pending"},
+    "security":     {"status": "...", "value": "clean", "note": "no failed-login bursts; selinux enforcing"},
+    "certificates": {"status": "...", "value": "ok, 148d", "note": "nearest expiry: web cert 2026-12-11"},
+    "patching":     {"status": "...", "value": "12 pending", "note": "3 security updates; no reboot-required"},
+    "kernel":       {"status": "...", "value": "clean", "note": "no err/crit in dmesg"},
     "logs":         {"status": "...", "value": "error burst", "note": "kernel OOM messages at 14:31"}
   }
 }
-- Start each value with "NN%" when a percentage applies (cpu, memory, storage)
-  so the dashboard can draw a gauge.
+- Start each value with "NN%" when a percentage applies (cpu, memory, swap,
+  storage, inodes, disk_io) so the dashboard can draw a gauge.
 """
 
 
@@ -683,7 +709,7 @@ async def run_session(
         stderr_file.write(line.rstrip("\n") + "\n")
 
     if state.mode == "healthcheck":
-        max_turns = 25
+        max_turns = 32  # twenty aspects now — a few extra turns for the deeper sweep
     elif state.mode == "remediate":
         max_turns = 40
     else:
@@ -941,6 +967,7 @@ def scan_fleet() -> dict:
     """Per-server last-known state + global stats, from disk (survives restarts)
     merged with in-memory running sessions."""
     latest: dict[str, dict] = {}
+    latest_checks: dict[str, dict] = {}   # newest health.json per server, any session
     stats = {"total": 0, "completed": 0, "failed": 0, "running": 0,
              "high_confidence": 0, "cost_usd": 0.0, "healthchecks": 0}
     if SESSIONS_DIR.exists():
@@ -992,8 +1019,12 @@ def scan_fleet() -> dict:
             }
             if server not in latest or created > latest[server]["created_at"]:
                 latest[server] = entry
+            if health.get("checks") and (
+                    server not in latest_checks or created > latest_checks[server]["ts"]):
+                latest_checks[server] = {"ts": created, "session": sid,
+                                         "checks": health["checks"]}
     stats["cost_usd"] = round(stats["cost_usd"], 2)
-    return {"latest": latest, "stats": stats}
+    return {"latest": latest, "latest_checks": latest_checks, "stats": stats}
 
 
 def start_session(

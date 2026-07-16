@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.17.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -194,17 +194,22 @@ async def fleet():
     out = []
     for s in servers.values():
         last = data["latest"].get(s.name)
+        last_checks = data["latest_checks"].get(s.name)
         overall = None
         counts = None
-        if last and last.get("checks"):
+        # judge overall health from the freshest checks available for the
+        # server, even when the newest session (e.g. an investigation) has none
+        checks = (last or {}).get("checks") or (last_checks or {}).get("checks")
+        if checks:
             counts = {"ok": 0, "warning": 0, "critical": 0, "unknown": 0}
-            for v in last["checks"].values():
+            for v in checks.values():
                 st = (v.get("status") or "unknown").lower()
                 counts[st if st in counts else "unknown"] += 1
             overall = ("critical" if counts["critical"] else
                        "warning" if counts["warning"] else
                        "ok" if counts["ok"] else "unknown")
-        out.append({**s.to_public_dict(), "last": last, "overall": overall, "counts": counts})
+        out.append({**s.to_public_dict(), "last": last, "last_checks": last_checks,
+                    "overall": overall, "counts": counts})
     stats = data["stats"]
     stats["servers"] = len(out)
     stats["datasources_ready"] = sum(1 for d in sources.values() if not missing_env_vars(d))

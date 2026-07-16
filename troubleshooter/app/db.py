@@ -217,7 +217,8 @@ def health_history(server: str, limit_snapshots: int = 30) -> list[dict]:
     with engine().connect() as conn:
         rows = conn.execute(
             select(health_t).where(health_t.c.server == server)
-            .order_by(health_t.c.ts.desc()).limit(limit_snapshots * 12)
+            # 40 rows per snapshot leaves headroom over the 20 tracked aspects
+            .order_by(health_t.c.ts.desc()).limit(limit_snapshots * 40)
         ).fetchall()
     snaps: dict[float, dict] = {}
     for r in rows:

@@ -311,6 +311,8 @@
   .aspect-dot { flex: 1; height: 6px; border-radius: 3px; background: var(--border); }
   .aspect-dot.ok { background: var(--ok); } .aspect-dot.warning { background: var(--warn); }
   .aspect-dot.critical { background: var(--err); }
+  .aspect-dot.checking { background: var(--accent); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .card .sline { font-size: 11px; color: var(--muted); margin-bottom: 11px; min-height: 15px; }
   .card .sline b.w { color: var(--warn); } .card .sline b.c { color: var(--err); }
   .card .btns { display: flex; gap: 8px; }
@@ -1112,6 +1114,7 @@ async function loadFleet() {
 
   $('fleet').innerHTML = servers.map(s => {
     const running = s.last?.status === 'running';
+    const liveCheck = running && s.last?.mode === 'healthcheck';
     const overall = running ? 'running' : (s.overall || 'unknown');
     const c = s.counts;
     const summary = running
@@ -1124,10 +1127,17 @@ async function loadFleet() {
     const when = s.last
       ? `${s.last.mode === 'healthcheck' ? '🩺' : '🔍'} ${new Date(s.last.created_at * 1000).toLocaleString()}`
       : '';
+    // during a LIVE health check show only that run's own results (pulse while
+    // an aspect is still being checked) — never the previous run's colors;
+    // when idle, fall back to the freshest checks from any earlier session
+    const idleChecks = s.last?.checks || s.last_checks?.checks || {};
     const dots = ASPECTS.map(([k]) => {
-      const st = (s.last?.checks?.[k]?.status || 'unknown').toLowerCase();
-      const v = s.last?.checks?.[k]?.value || '';
-      return `<div class="aspect-dot ${st}" title="${escapeHtml(k)}: ${escapeHtml(st)}${v ? ' — ' + escapeHtml(v) : ''}"></div>`;
+      const ck = liveCheck ? (s.last?.checks || {})[k] : idleChecks[k];
+      const st = (ck?.status || 'unknown').toLowerCase();
+      const checking = liveCheck && st === 'unknown';
+      const v = ck?.value || '';
+      return `<div class="aspect-dot ${checking ? 'checking' : st}"
+        title="${escapeHtml(k)}: ${escapeHtml(checking ? 'checking…' : st)}${v ? ' — ' + escapeHtml(v) : ''}"></div>`;
     }).join('');
     return `<div class="card o-${overall}">
       <div class="top">
@@ -1146,6 +1156,10 @@ async function loadFleet() {
       </div>
     </div>`;
   }).join('') || '<div class="empty">No servers in the inventory.</div>';
+  // refresh fast while anything is running so the overview stays live
+  clearTimeout(window._fleetFast);
+  if (stats.running && $('viewOverview').style.display !== 'none')
+    window._fleetFast = setTimeout(loadFleet, 4000);
 }
 
 function investigate(name) {
@@ -1217,10 +1231,16 @@ function renderStats(s) {
 
 /* ---------- health panel ---------- */
 const ASPECTS = [
-  ['connectivity', '🔌'], ['uptime', '⏱'], ['cpu', '🧠'], ['memory', '📊'],
-  ['storage', '💾'], ['services', '⚙️'], ['network', '🌐'], ['firewall', '🛡'],
-  ['patching', '📦'], ['logs', '📜'],
+  ['connectivity', '🔌'], ['uptime', '⏱'], ['cpu', '🧠'], ['load', '⚖️'],
+  ['memory', '📊'], ['swap', '🔃'], ['storage', '💾'], ['inodes', '🗂️'],
+  ['disk_io', '⏳'], ['services', '⚙️'], ['processes', '🧾'], ['network', '🌐'],
+  ['dns', '🧭'], ['time_sync', '🕒'], ['firewall', '🛡'], ['security', '🔐'],
+  ['certificates', '🔏'], ['patching', '📦'], ['kernel', '🧬'], ['logs', '📜'],
 ];
+const ASPECT_LABEL = {
+  connectivity: 'conn', disk_io: 'disk i/o', time_sync: 'time sync',
+  certificates: 'certs', processes: 'procs',
+};
 let lastHealthJson = '';
 
 function healthNodeHtml(key, icon, check, checking) {
@@ -1239,16 +1259,20 @@ function healthNodeHtml(key, icon, check, checking) {
   const tip = `${key}: ${st}${val ? ' — ' + val : ''}${note ? ' — ' + note : ''}`;
   return `<div class="hs-node st-${st} ${checking ? 'checking' : ''}" data-k="${key}"
        title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">
-      ${dot}<div class="lbl">${key}</div></div>`;
+      ${dot}<div class="lbl">${ASPECT_LABEL[key] || key}</div></div>`;
 }
 
 function renderHealth(health, running) {
   const strip = $('healthStrip');
   const checks = health?.checks || {};
   const statuses = ASPECTS.map(([k]) => (checks[k]?.status || 'unknown').toLowerCase());
-  const overall = statuses.includes('critical') ? 'critical'
-                : statuses.includes('warning') ? 'warning'
-                : statuses.every(s => s === 'ok') && statuses.length ? 'ok' : 'unknown';
+  const assessed = statuses.filter(s => s !== 'unknown');
+  const allDone = assessed.length === ASPECTS.length;
+  const overall = assessed.includes('critical') ? 'critical'
+                : assessed.includes('warning') ? 'warning'
+                : !assessed.length ? 'unknown'
+                : (running && !allDone) ? 'unknown'   // mid-scan, nothing bad yet
+                : 'ok';
   strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`;
   strip.style.display = healthCollapsed ? 'none' : 'flex';
   $('hsOverall').textContent = overall === 'unknown' ? (running ? 'scanning' : 'health') : overall;
@@ -1373,10 +1397,12 @@ $('dlReport').onclick = () => {
   if (currentSession) window.open(`/api/sessions/${currentSession}/report.md`, '_blank');
 };
 
+let healthPollTimer = null;
 async function openSession(id) {
   currentSession = id;
   renderSessions();
   if (eventSource) { eventSource.close(); eventSource = null; }
+  clearInterval(healthPollTimer);
   $('timeline').innerHTML = '';
   $('reportBody').innerHTML = 'No report yet.'; $('reportBody').classList.add('empty');
   $('fileView').style.display = 'none';
@@ -1388,7 +1414,14 @@ async function openSession(id) {
   loadFiles(id);
   lastHealthJson = '';
   loadHealth(id, session.status === 'running', session.server, session.mode);
-  if (session.status === 'running' && session.mode === 'healthcheck') { healthCollapsed = false; $('healthStrip').style.display = 'flex'; }
+  if (session.status === 'running' && session.mode === 'healthcheck') {
+    healthCollapsed = false; $('healthStrip').style.display = 'flex';
+    // poll as a fallback so the strip stays LIVE even if SSE events are
+    // buffered by a proxy — always this run's own data, never stale history
+    healthPollTimer = setInterval(() => {
+      if (currentSession === id) loadHealth(id, true, session.server, 'healthcheck');
+    }, 3000);
+  }
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
@@ -1405,6 +1438,7 @@ async function openSession(id) {
       }
       addEvent(ev);
       if (ev.type === 'completed' || ev.type === 'failed') {
+        clearInterval(healthPollTimer);
         currentSessionInfo = { ...session, status: ev.type === 'completed' ? 'completed' : 'failed',
                                report: ev.report || null, feedback: null };
         if (ev.report) renderReport(ev.report);
