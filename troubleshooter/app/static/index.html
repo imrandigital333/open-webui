@@ -329,6 +329,9 @@
                                  box-shadow: 0 0 10px rgba(248,81,73,.25); }
   .hs-node.st-critical .lbl { color: var(--err); font-weight: 700; }
   .hs-node.checking .hs-dot { border-color: var(--accent); animation: pulse 1.4s infinite; }
+  .hs-node.checking .lbl { color: var(--accent2); }
+  .hs-node.queued .hs-dot { border-style: dashed; opacity: .45; }
+  .hs-node.queued .lbl { opacity: .45; }
   .hs-node .hs-gauge { border: none; }
   .hs-gauge span { width: 22px; height: 22px; border-radius: 50%; background: var(--panel2);
                    display: grid; place-items: center; font-size: 8px; font-weight: 700;
@@ -1605,11 +1608,24 @@ const ASPECT_LABEL = {
   connectivity: 'conn', disk_io: 'disk i/o', time_sync: 'time sync',
   certificates: 'certs', processes: 'procs',
 };
+// collection groups — the agent checks them in this order, so during a live
+// scan the strip can animate the group being checked and dim the queued ones
+const HC_GROUPS = [
+  ['connectivity', 'uptime'],
+  ['cpu', 'load', 'memory', 'swap'],
+  ['storage', 'inodes', 'disk_io'],
+  ['services', 'processes', 'network', 'dns', 'time_sync'],
+  ['firewall', 'security', 'certificates', 'patching'],
+  ['kernel', 'logs'],
+];
+const HC_GROUP_NAMES = ['basics', 'compute', 'storage', 'runtime', 'security', 'logs'];
 let lastHealthJson = '';
 
-function healthNodeHtml(key, icon, check, checking) {
+function healthNodeHtml(key, icon, check, state) {
   const st = (check?.status || 'unknown').toLowerCase();
-  const val = check?.value || (checking ? 'checking…' : 'not assessed');
+  const checking = state === 'checking';
+  const queued = state === 'queued';
+  const val = check?.value || (checking ? 'checking…' : queued ? 'queued' : 'not assessed');
   const note = check?.note || '';
   const pct = /^(\d{1,3})%/.exec(check?.value || '');
   const color = st === 'ok' ? 'var(--ok)' : st === 'warning' ? 'var(--warn)'
@@ -1620,8 +1636,8 @@ function healthNodeHtml(key, icon, check, checking) {
     ? `<div class="hs-dot hs-gauge" style="background:conic-gradient(${color} ${Math.min(+pct[1],100) * 3.6}deg, var(--border) 0)">
          <span>${pct[1]}%</span></div>`
     : `<div class="hs-dot">${icon}</div>`;
-  const tip = `${key}: ${st}${val ? ' — ' + val : ''}${note ? ' — ' + note : ''}`;
-  return `<div class="hs-node st-${st} ${checking ? 'checking' : ''}" data-k="${key}"
+  const tip = `${key}: ${checking ? 'checking…' : queued ? 'queued' : st}${val ? ' — ' + val : ''}${note ? ' — ' + note : ''}`;
+  return `<div class="hs-node st-${st} ${checking ? 'checking' : ''} ${queued ? 'queued' : ''}" data-k="${key}"
        title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">
       ${dot}<div class="lbl">${ASPECT_LABEL[key] || key}</div></div>`;
 }
@@ -1640,17 +1656,27 @@ function renderHealth(health, running) {
   strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`;
   strip.style.display = healthCollapsed ? 'none' : 'flex';
   $('hsOverall').textContent = overall === 'unknown' ? (running ? 'scanning' : 'health') : overall;
+  // group being checked right now (first group with an unknown aspect)
+  const activeG = running
+    ? HC_GROUPS.findIndex(g => g.some(k => (checks[k]?.status || 'unknown') === 'unknown'))
+    : -1;
   if (running) $('hpNote').textContent = assessed.length
-    ? `scanning · ${assessed.length}/${ASPECTS.length} assessed`
-    : 'scanning the server now…';
+    ? `checking ${HC_GROUP_NAMES[activeG] || '…'} · ${assessed.length}/${ASPECTS.length} assessed`
+    : 'connecting to the server…';
   $('hsRing').innerHTML = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
     : overall === 'warning' ? '!' : (running ? '<span class="spin">⟳</span>' : '◎');
 
   const prev = {};
   document.querySelectorAll('#hsNodes .hs-node').forEach(n =>
     prev[n.dataset.k] = n.className.match(/st-\w+/)?.[0]);
-  $('hsNodes').innerHTML = ASPECTS.map(([k, icon]) =>
-    healthNodeHtml(k, icon, checks[k], running && (checks[k]?.status || 'unknown') === 'unknown')).join('');
+  $('hsNodes').innerHTML = ASPECTS.map(([k, icon]) => {
+    let state;
+    if (running && (checks[k]?.status || 'unknown') === 'unknown') {
+      const gi = HC_GROUPS.findIndex(g => g.includes(k));
+      state = (gi === -1 || gi <= activeG) ? 'checking' : 'queued';
+    }
+    return healthNodeHtml(k, icon, checks[k], state);
+  }).join('');
   document.querySelectorAll('#hsNodes .hs-node').forEach(n => {
     const nowSt = n.className.match(/st-\w+/)?.[0];
     if (prev[n.dataset.k] && prev[n.dataset.k] !== nowSt) n.classList.add('hp-flash');
@@ -1806,22 +1832,33 @@ async function openSession(id) {
       }
       addEvent(ev);
       if (ev.type === 'completed' || ev.type === 'failed') {
-        clearInterval(healthPollTimer);
-        currentSessionInfo = { ...session, status: ev.type === 'completed' ? 'completed' : 'failed',
-                               report: ev.report || null, feedback: null };
-        if (ev.report) renderReport(ev.report);
         eventSource.close();
-        await refreshSessions();
-        const fresh = sessionsCache.find(x => x.id === id);
-        if (fresh) renderHead(fresh);
-        if (ev.type === 'completed') showTab('report');
-        loadFiles(id);
-        loadHealth(id, false, session.server, session.mode);
+        await onLiveEnd(ev, session, id);
       }
     };
   } else {
     (session.events || []).forEach(addEvent);
     renderReport(session.report);
+  }
+}
+
+/* a session the operator was watching just finished */
+async function onLiveEnd(ev, session, id) {
+  clearInterval(healthPollTimer);
+  currentSessionInfo = { ...session, status: ev.type === 'completed' ? 'completed' : 'failed',
+                         report: ev.report || null, feedback: null };
+  if (ev.report) renderReport(ev.report);
+  await refreshSessions();
+  const fresh = sessionsCache.find(x => x.id === id);
+  if (fresh) renderHead(fresh);
+  if (ev.type === 'completed') showTab('report');
+  loadFiles(id);
+  loadHealth(id, false, session.server, session.mode);
+  // root cause found + plan ready -> bring up the remediation assistant right away
+  if (ev.type === 'completed' && session.mode === 'investigate'
+      && ev.report?.remediation_plan?.length
+      && !$('remChat').classList.contains('open')) {
+    setTimeout(openRemChat, 700);
   }
 }
 

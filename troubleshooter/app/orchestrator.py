@@ -189,25 +189,27 @@ Maintain a machine-readable health snapshot of the target server in
 ./health.json so the operator's dashboard updates live:
 - IMMEDIATELY after your first message, write the initial file with every
   aspect set to {"status": "unknown"}.
-- PROGRESSIVE UPDATES ARE MANDATORY: rewrite the file after EVERY aspect (or
-  small group of 2-3 aspects) you assess — the operator is watching this file
-  live and each write moves their progress display. Writing all results in
-  one batch at the end is a FAILURE even if the values are correct. Expect to
-  write health.json at least 5-6 times during the sweep.
-  Keep collection cheap: most aspects come from a couple of
-  combined SSH commands (uptime; cat /proc/loadavg; nproc; top -b -n1 | head;
-  free -m; df -h; df -i; vmstat 1 2 | tail -1;
-  systemctl list-units --state=failed; ps -eo stat,pid,ppid,comm | awk '$1~/^Z/';
-  ss -ltn; getent hosts localhost && timeout 3 getent hosts <a real fqdn>;
-  timedatectl 2>/dev/null || chronyc tracking 2>/dev/null;
-  ufw status 2>/dev/null || iptables -S | head;
-  lastb -n 20 2>/dev/null | head; [ -f /var/run/reboot-required ] && echo reboot-required;
-  apt list --upgradable 2>/dev/null | head || yum check-update -q | head;
-  dmesg --level=err,crit 2>/dev/null | tail -15;
-  journalctl -p err --since "-2 hours" --no-pager | tail -20).
-  For certificates: check TLS certs of listening services, e.g.
-  `echo | timeout 3 openssl s_client -connect localhost:443 2>/dev/null | openssl x509 -noout -enddate`
-  and any certs referenced in service configs; "n/a — no TLS services" is a valid ok value.
+- PROGRESSIVE UPDATES ARE MANDATORY. Collect in SIX ordered groups, ONE
+  combined SSH command per group, and rewrite ./health.json IMMEDIATELY after
+  each group returns — the operator's dashboard animates the group being
+  checked, so running everything as one big sweep (or batching the writes)
+  is a FAILURE even if the values are correct. The groups, in this exact order:
+  G1 basics   (connectivity, uptime): date; uptime; who -b
+  G2 compute  (cpu, load, memory, swap): nproc; cat /proc/loadavg;
+     top -b -n1 | head -12; free -m
+  G3 storage  (storage, inodes, disk_io): df -h; df -i; vmstat 1 2 | tail -2
+  G4 runtime  (services, processes, network, dns, time_sync):
+     systemctl list-units --state=failed; ps -eo stat,pid,comm | awk '$1~/^Z|^D/';
+     ss -ltn; getent hosts localhost; timeout 3 getent hosts $(hostname -f);
+     timedatectl 2>/dev/null || chronyc tracking 2>/dev/null
+  G5 security (firewall, security, certificates, patching):
+     ufw status 2>/dev/null || iptables -S | head -20; lastb -n 15 2>/dev/null;
+     getenforce 2>/dev/null; [ -f /var/run/reboot-required ] && echo reboot-required;
+     apt list --upgradable 2>/dev/null | head -15 || yum check-update 2>/dev/null | head -15;
+     for TLS listeners: echo | timeout 3 openssl s_client -connect localhost:443 2>/dev/null
+       | openssl x509 -noout -enddate  ("n/a — no TLS services" is a valid ok value)
+  G6 logs     (kernel, logs): dmesg --level=err,crit 2>/dev/null | tail -15;
+     journalctl -p err --since "-2 hours" --no-pager | tail -20
 - Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE:
   disk/inodes >90% critical, >80% warning; load1 > cores warning, > 2x cores
   critical; swap >40% used or active si/so warning, >80% critical; iowait >20%
@@ -268,8 +270,10 @@ reported incident. Assess its health quickly and thoroughly.
 ## Progress markers
 When you enter a new phase, start the FIRST line of your next message with
 exactly one of: PHASE: CONNECT | PHASE: SWEEP | PHASE: REPORT
-Tip: the library's health_sweep script collects most aspects in ONE call:
-`SSHP="<ssh prefix>" bash {SCRIPTLIB_DIR}/health_sweep.sh`
+Library tip: reuse per-group scripts (health_g1.sh … health_g6.sh) from the
+library when they exist, and save parameterized ones back after a successful
+run. Do NOT use the all-in-one health_sweep.sh for an interactive check — it
+returns everything at once, which defeats the live group-by-group progress.
 
 ## Hard rules
 - READ-ONLY on the remote server: diagnostic and log-reading commands only.
@@ -280,12 +284,12 @@ Tip: the library's health_sweep script collects most aspects in ONE call:
 - Save command outputs under ./logs/ for the operator.
 
 ## Workflow
-1. CONNECT: verify reachability, get date/uptime, and write the initial
-   all-unknown ./health.json.
-2. SWEEP: run the combined health commands, then work through the output
-   aspect by aspect, rewriting ./health.json after each small group so the
-   operator's dashboard progresses visibly. Briefly investigate anything
-   warning/critical.
+1. CONNECT: verify reachability, and write the initial all-unknown
+   ./health.json.
+2. SWEEP: run groups G1→G6 in order — one SSH call per group, then
+   immediately update ./health.json for that group's aspects before starting
+   the next group. Briefly investigate anything warning/critical after its
+   group completes.
 3. COMPLETE THE CHECKLIST: re-read ./health.json — EVERY one of the twenty
    aspects MUST have a verdict. Assess any aspect still "unknown" now; if
    something is genuinely not measurable on this OS, set status "ok" or
