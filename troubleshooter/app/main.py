@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.18.0"
+APP_VERSION = "2.18.1"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -325,6 +325,26 @@ class RunStepRequest(BaseModel):
     order: int = Field(..., ge=0, le=999)
 
 
+class RunCmdRequest(BaseModel):
+    command: str = Field(..., min_length=1, max_length=2000)
+
+
+async def _ssh_exec(server, command: str) -> dict:
+    """Run one command on the target over SSH, no agent involved."""
+    cmd = server.ssh_command().split() + [command]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "exit_code": -1, "output": "Timed out after 90s"}
+    except OSError as exc:
+        return {"ok": False, "exit_code": -1, "output": str(exc)}
+    return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
+            "output": out.decode(errors="replace")[-4000:]}
+
+
 @app.post("/api/sessions/{session_id}/run-step")
 async def run_step(session_id: str, req: RunStepRequest, request: Request):
     """Execute ONE approved remediation command over SSH and return its output.
@@ -344,18 +364,24 @@ async def run_step(session_id: str, req: RunStepRequest, request: Request):
     await asyncio.to_thread(db.audit, actor, "remediation_step_run",
                             {"session": session_id, "order": req.order,
                              "command": step.get("command", "")[:300]})
-    cmd = server.ssh_command().split() + [step.get("command", "")]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return {"ok": False, "exit_code": -1, "output": "Timed out after 90s"}
-    except OSError as exc:
-        return {"ok": False, "exit_code": -1, "output": str(exc)}
-    return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
-            "output": out.decode(errors="replace")[-4000:]}
+    return await _ssh_exec(server, step.get("command", ""))
+
+
+@app.post("/api/sessions/{session_id}/run-cmd")
+async def run_cmd(session_id: str, req: RunCmdRequest, request: Request):
+    """Execute ONE operator-typed command on the session's server over SSH.
+
+    Powers the chat's ad-hoc `!command` input — the operator explicitly types
+    and confirms the exact command; every run is audited with its full text.
+    """
+    parent = await _load_any_session(session_id)
+    server = load_inventory().get(parent["server"])
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    actor = _actor(request)
+    await asyncio.to_thread(db.audit, actor, "adhoc_command_run",
+                            {"session": session_id, "command": req.command[:500]})
+    return await _ssh_exec(server, req.command)
 
 
 async def _load_any_session(session_id: str) -> dict:

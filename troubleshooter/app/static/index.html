@@ -262,6 +262,13 @@
                  animation: pulse 1s infinite; }
   .rc-typing i:nth-child(2) { animation-delay: .2s; }
   .rc-typing i:nth-child(3) { animation-delay: .4s; }
+  .rchat-foot { border-top: 1px solid var(--border); padding: 8px 12px 10px; }
+  .rchat-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 0; }
+  .rchat-chips:not(:empty) { margin-bottom: 8px; }
+  .rchat-chips button { padding: 5px 11px; font-size: 11.5px; }
+  .rchat-inputrow { display: flex; gap: 7px; }
+  .rchat-inputrow input { flex: 1; font-size: 12.5px; padding: 8px 11px; }
+  .rchat-inputrow button { flex: 0 0 auto; padding: 5px 13px; }
   .rchat-prog { display: flex; gap: 4px; padding: 9px 14px 11px;
                 border-top: 1px solid var(--border); background: var(--panel2); }
   .rchat-prog i { flex: 1; height: 5px; border-radius: 3px; background: var(--border); }
@@ -560,6 +567,13 @@
     <button style="margin-left:auto" onclick="closeRemChat()" title="Close">✕</button>
   </div>
   <div class="rchat-body" id="rchatBody"></div>
+  <div class="rchat-foot">
+    <div class="rchat-chips" id="rcChips"></div>
+    <div class="rchat-inputrow">
+      <input id="rcInput" placeholder="run · skip · stop — or !command to execute on the server" maxlength="2000">
+      <button class="ghost run" id="rcSendBtn">Send</button>
+    </div>
+  </div>
   <div class="rchat-prog" id="rchatProg"></div>
 </div>
 
@@ -969,15 +983,19 @@ async function startReinvestigation(btn) {
 }
 
 /* ---------- interactive remediation chat ---------- */
-let rc = null;   // { plan, i, done: {idx: 'ok'|'err'|'skip'}, session }
+// stages: step (a step awaits approval) | fail (a step failed) |
+//         finish (verdict question) | context (collecting reinvestigation notes) | done
+let rc = null;   // { plan, i, done: {idx: 'ok'|'err'|'skip'}, session, stage, pendingMsg }
 
 function openRemChat() {
   const plan = window._plan || [];
   if (!plan.length) return;
-  rc = { plan, i: 0, done: {}, session: currentSession };
+  rc = { plan, i: 0, done: {}, session: currentSession, stage: 'step', pendingMsg: null };
   $('rchatIcon').innerHTML = ic('tool', 15);
   $('rchatSrv').textContent = `· ${currentSessionInfo?.server || ''}`;
   $('rchatBody').innerHTML = '';
+  $('rcInput').value = '';
+  $('rcInput').placeholder = `run · skip · stop — or !command to execute on ${currentSessionInfo?.server || 'the server'}`;
   $('remChat').classList.add('open');
   renderRcProg();
   const counts = {};
@@ -986,8 +1004,9 @@ function openRemChat() {
     <b>${escapeHtml(currentSessionInfo?.server || '')}</b> —
     ${['backup', 'fix', 'verify', 'rollback'].filter(k => counts[k])
       .map(k => `${counts[k]} ${k}`).join(' · ')}.<br><br>
-    Nothing runs without your approval: press <b>Run</b> on each step, and I'll show you the
-    output before we continue. Backups come first, and rollback steps are ready if we need them.`);
+    Nothing runs without your approval: click a button (or just type <b>run</b>) for each step
+    and I'll show you the output before we continue. You can also type
+    <b>!&lt;command&gt;</b> at any time to run a one-off check on the server.`);
   rcNextStep();
 }
 function closeRemChat() { $('remChat').classList.remove('open'); }
@@ -1002,35 +1021,70 @@ function rcUser(text) {
   d.className = 'rmsg user'; d.textContent = text;
   $('rchatBody').appendChild(d); rcScroll();
 }
-function rcDisable(el) { el.closest('.rmsg').querySelectorAll('button,textarea').forEach(b => b.disabled = true); }
+function rcDisableMsg(msg) {
+  if (msg) msg.querySelectorAll('button,textarea').forEach(b => b.disabled = true);
+}
 function renderRcProg() {
   $('rchatProg').innerHTML = rc.plan.map((s, i) =>
     `<i class="${rc.done[i] === 'ok' ? 'done' : rc.done[i] === 'err' ? 'fail'
                : rc.done[i] === 'skip' ? 'skip' : i === rc.i ? 'cur' : ''}"
         title="step ${i + 1} · ${escapeHtml(s.phase || '')}${rc.done[i] ? ' · ' + rc.done[i] : ''}"></i>`).join('');
 }
+function rcSetChips(chips) {
+  // one-click actions mirroring the current state — always available above the input
+  $('rcChips').innerHTML = chips.map(([label, action, danger]) =>
+    `<button class="ghost ${danger ? 'danger' : 'run'}" onclick="rcAct('${action}')">${label}</button>`).join('');
+}
+
+/* central dispatcher — every button, chip and typed keyword lands here */
+function rcAct(action, btn) {
+  if (!rc) return;
+  rcDisableMsg(btn ? btn.closest('.rmsg') : rc.pendingMsg);
+  if (action !== 'copy') $('rcChips').innerHTML = '';
+  switch (action) {
+    case 'run':
+      if (rc.stage === 'fail') { rcUser('Retry'); rcNextStep(); }
+      else { rcUser(`Run step ${rc.i + 1}`); rcExecStep(); }
+      break;
+    case 'retry': rcUser('Retry'); rcNextStep(); break;
+    case 'skip':
+      rcUser(`Skip step ${rc.i + 1}`);
+      rc.done[rc.i] = rc.done[rc.i] === 'err' ? 'err' : 'skip';
+      rc.i += 1; rcNextStep(); break;
+    case 'rollback': {
+      const rb = rc.plan.findIndex((s, i) => i > rc.i && (s.phase || '').toLowerCase().startsWith('roll'));
+      rcUser('Jump to rollback');
+      if (rb >= 0) { rc.i = rb; rcNextStep(); } else rcFinish(true);
+      break;
+    }
+    case 'stop': rcUser('Stop'); rcFinish(true); break;
+    case 'resolved': rcResolved(); break;
+    case 'morehelp': rcMoreHelp(); break;
+    case 'close': closeRemChat(); break;
+  }
+}
 
 function rcNextStep() {
   renderRcProg();
   if (!rc || rc.i >= rc.plan.length) { rcFinish(false); return; }
+  rc.stage = 'step';
   const s = rc.plan[rc.i];
-  rcBot(`<b style="text-transform:uppercase;font-size:10px;letter-spacing:.06em;color:var(--muted)">
+  rc.pendingMsg = rcBot(`<b style="text-transform:uppercase;font-size:10px;letter-spacing:.06em;color:var(--muted)">
       step ${rc.i + 1} of ${rc.plan.length} · ${escapeHtml((s.phase || 'fix'))}</b>
     <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}"
       style="margin-left:6px">${escapeHtml(s.risk || 'low')} risk</span>
     <div style="margin-top:6px">${escapeHtml(s.description || '')}</div>
     <div class="code">${escapeHtml(s.command || '')}</div>
     <div class="btns">
-      <button class="ghost run" onclick="rcRun(this)">${ic('play', 11)} Run</button>
-      <button class="ghost" onclick="rcSkip(this)">Skip</button>
+      <button class="ghost run" onclick="rcAct('run', this)">${ic('play', 11)} Run</button>
+      <button class="ghost" onclick="rcAct('skip', this)">Skip</button>
       <button class="ghost" title="Copy command" onclick="rcCopy(${rc.i}, this)">${ic('copy', 11)}</button>
-      <button class="ghost danger" onclick="rcAbort(this)">Stop</button>
+      <button class="ghost danger" onclick="rcAct('stop', this)">Stop</button>
     </div>`);
+  rcSetChips([[`${ic('play', 11)} Run step ${rc.i + 1}`, 'run'], ['Skip', 'skip'], ['Stop', 'stop', true]]);
 }
-async function rcRun(btn) {
-  rcDisable(btn);
+async function rcExecStep() {
   const s = rc.plan[rc.i];
-  rcUser(`Run step ${rc.i + 1}`);
   const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span>
     running on ${escapeHtml(currentSessionInfo?.server || 'the server')}…`);
   try {
@@ -1056,21 +1110,18 @@ async function rcRun(btn) {
 }
 function rcFail() {
   renderRcProg();
+  rc.stage = 'fail';
   const rb = rc.plan.findIndex((s, i) => i > rc.i && (s.phase || '').toLowerCase().startsWith('roll'));
-  rcBot(`How do you want to proceed?
+  rc.pendingMsg = rcBot(`How do you want to proceed?
     <div class="btns">
-      <button class="ghost" onclick="rcDisable(this); rcUser('Retry'); rcNextStep()">${ic('refresh', 11)} Retry step</button>
-      <button class="ghost" onclick="rcSkip(this)">Skip and continue</button>
-      ${rb >= 0 ? `<button class="ghost danger" onclick="rcDisable(this); rcUser('Jump to rollback'); rc.i = ${rb}; rcNextStep()">${ic('rotate-ccw', 11)} Jump to rollback</button>` : ''}
-      <button class="ghost danger" onclick="rcAbort(this)">Stop here</button>
+      <button class="ghost" onclick="rcAct('retry', this)">${ic('refresh', 11)} Retry step</button>
+      <button class="ghost" onclick="rcAct('skip', this)">Skip and continue</button>
+      ${rb >= 0 ? `<button class="ghost danger" onclick="rcAct('rollback', this)">${ic('rotate-ccw', 11)} Jump to rollback</button>` : ''}
+      <button class="ghost danger" onclick="rcAct('stop', this)">Stop here</button>
     </div>`);
+  rcSetChips([[`${ic('refresh', 11)} Retry`, 'retry'], ['Skip', 'skip'],
+              ...(rb >= 0 ? [['Rollback', 'rollback', true]] : []), ['Stop', 'stop', true]]);
 }
-function rcSkip(btn) {
-  rcDisable(btn); rcUser(`Skip step ${rc.i + 1}`);
-  rc.done[rc.i] = rc.done[rc.i] === 'err' ? 'err' : 'skip';
-  rc.i += 1; rcNextStep();
-}
-function rcAbort(btn) { rcDisable(btn); rcUser('Stop'); rcFinish(true); }
 function rcCopy(i, btn) {
   navigator.clipboard.writeText(rc.plan[i].command || '').then(() => {
     const old = btn.innerHTML; btn.textContent = '✓';
@@ -1079,44 +1130,53 @@ function rcCopy(i, btn) {
 }
 function rcFinish(stopped) {
   rc.i = rc.plan.length + 1; renderRcProg();
+  rc.stage = 'finish';
   const okN = Object.values(rc.done).filter(v => v === 'ok').length;
   const errN = Object.values(rc.done).filter(v => v === 'err').length;
   const skipN = Object.values(rc.done).filter(v => v === 'skip').length;
-  rcBot(`${stopped ? 'Stopped.' : '<b>Plan finished.</b>'}
+  rc.pendingMsg = rcBot(`${stopped ? 'Stopped.' : '<b>Plan finished.</b>'}
     ${okN} succeeded${errN ? ` · ${errN} failed` : ''}${skipN ? ` · ${skipN} skipped` : ''}.<br>
     Is the issue resolved?
     <div class="btns">
-      <button class="ghost" onclick="rcResolved(this)">${ic('check-circle', 11)} Yes — resolved</button>
-      <button class="ghost" onclick="rcMoreHelp(this)">${ic('refresh', 11)} No — keep troubleshooting</button>
+      <button class="ghost" onclick="rcAct('resolved', this)">${ic('check-circle', 11)} Yes — resolved</button>
+      <button class="ghost" onclick="rcAct('morehelp', this)">${ic('refresh', 11)} No — keep troubleshooting</button>
     </div>`);
+  rcSetChips([[`${ic('check-circle', 11)} Resolved`, 'resolved'],
+              [`${ic('refresh', 11)} Keep troubleshooting`, 'morehelp']]);
 }
-async function rcResolved(btn) {
-  rcDisable(btn); rcUser('Yes — resolved');
+async function rcResolved() {
+  rc.stage = 'done';
+  rcUser('Yes — resolved');
   await sendFeedback('confirmed');
   rcBot(`Great — I marked the root cause as <b>operator-confirmed</b>. It's stored in this
     server's incident memory, so future investigations on
     ${escapeHtml(currentSessionInfo?.server || 'this server')} will know about it.`);
+  rcSetChips([['Close', 'close']]);
 }
-function rcMoreHelp(btn) {
-  rcDisable(btn); rcUser('No — keep troubleshooting');
-  rcBot(`Tell me what you're still seeing — symptoms, exact errors, log paths, anything that
-    changed — and I'll start a deeper re-investigation that carries the full context of
-    this session plus your notes.
+function rcMoreHelp() {
+  rc.stage = 'context';
+  rcUser('No — keep troubleshooting');
+  rc.pendingMsg = rcBot(`Tell me what you're still seeing — symptoms, exact errors, log paths,
+    anything that changed — type it below (or here) and I'll start a deeper re-investigation
+    that carries the full context of this session plus your notes.
     <textarea id="rcCtx" placeholder="e.g. httpd starts now but returns 503 on /app; error_log shows upstream timeout to 10.2.0.7:8009…"></textarea>
     <div class="btns">
-      <button class="ghost run" onclick="rcReinvestigate(this)">${ic('search', 11)} Start deeper re-investigation</button>
+      <button class="ghost run" onclick="rcReinvestigate($('rcCtx').value, this)">${ic('search', 11)} Start deeper re-investigation</button>
     </div>`);
+  rcSetChips([]);
+  $('rcInput').placeholder = 'describe what you are still seeing… (or !command for a quick check)';
 }
-async function rcReinvestigate(btn) {
-  const context = $('rcCtx').value.trim();
+async function rcReinvestigate(context, btn) {
+  context = (context || '').trim();
   if (context.length < 5) { alert('Describe what you are still seeing first.'); return; }
-  rcDisable(btn);
+  rcDisableMsg(btn ? btn.closest('.rmsg') : rc.pendingMsg);
   const res = await fetch(`/api/sessions/${rc.session}/reinvestigate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ context }),
   });
   if (!res.ok) { alert((await res.json()).detail || res.statusText); return; }
   const s = await res.json();
+  rc.stage = 'done';
   rcBot('On it — starting a deeper re-investigation with your new context. Switching you to the live session…');
   setTimeout(async () => {
     closeRemChat();
@@ -1124,6 +1184,71 @@ async function rcReinvestigate(btn) {
     openSession(s.id);
   }, 1200);
 }
+
+/* typed input: keywords act like button clicks; !cmd runs an ad-hoc check */
+function rcSend() {
+  const input = $('rcInput');
+  const t = input.value.trim();
+  if (!t || !rc) return;
+  input.value = '';
+  if (t[0] === '!') { rcAdhocConfirm(t.slice(1).trim()); return; }
+  const w = t.toLowerCase();
+  const KEYWORDS = {
+    run: 'run', r: 'run', y: 'run', yes: 'run', ok: 'run', go: 'run',
+    retry: 'retry', skip: 'skip', s: 'skip',
+    stop: 'stop', abort: 'stop', cancel: 'stop', q: 'stop',
+    rollback: 'rollback', rb: 'rollback',
+    resolved: 'resolved', fixed: 'resolved', done: 'resolved',
+  };
+  if (KEYWORDS[w]) {
+    if (w in { resolved: 1, fixed: 1, done: 1 } && rc.stage !== 'finish') { rcHint(); return; }
+    rcAct(KEYWORDS[w]);
+    return;
+  }
+  if (rc.stage === 'context') { rcUser(t); rcReinvestigate(t); return; }
+  if (rc.stage === 'finish') {
+    // free text after the plan = "not fixed, here's what I see"
+    rcAct('morehelp');
+    $('rcCtx').value = t;
+    return;
+  }
+  rcHint(t);
+}
+function rcHint() {
+  rcBot(`I execute only approved commands, so I didn't act on that. You can:
+    click a button above, type <b>run</b> / <b>skip</b> / <b>stop</b>
+    ${rc.stage === 'fail' ? '/ <b>retry</b> / <b>rollback</b>' : ''},
+    or type <b>!&lt;command&gt;</b> to run a one-off read-only check on
+    ${escapeHtml(currentSessionInfo?.server || 'the server')} (e.g. <b>!systemctl status httpd</b>).`);
+}
+function rcAdhocConfirm(cmd) {
+  if (!cmd) return;
+  rcUser(`!${cmd}`);
+  rcBot(`Run this once on <b>${escapeHtml(currentSessionInfo?.server || '')}</b>?
+    <div class="code">${escapeHtml(cmd)}</div>
+    <div class="btns">
+      <button class="ghost run" onclick="rcAdhocRun(this)">${ic('play', 11)} Run</button>
+      <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
+    </div>`).dataset.cmd = cmd;
+}
+async function rcAdhocRun(btn) {
+  const msg = btn.closest('.rmsg');
+  const cmd = msg.dataset.cmd || '';
+  rcDisableMsg(msg);
+  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span> running…`);
+  try {
+    const res = await fetch(`/api/sessions/${rc.session}/run-cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd }),
+    });
+    const d = await res.json();
+    typing.remove();
+    rcBot(`${d.ok ? '✅' : '❌'} <span style="color:var(--muted)">exit ${d.exit_code ?? '?'}</span>
+      <div class="out ${d.ok ? 'ok' : 'err'}">${escapeHtml((d.output || '').trim() || '(no output)')}</div>`);
+  } catch (e) { typing.remove(); rcBot(`❌ Could not execute: ${escapeHtml(e.message)}`); }
+}
+$('rcSendBtn').onclick = rcSend;
+$('rcInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') rcSend(); });
 
 /* ---------- remediation run report ---------- */
 function renderRemediateReport(report) {
