@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, orchestrator
+from . import db, healthprobe, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.19.0"
+APP_VERSION = "2.20.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -595,6 +595,23 @@ async def delete_script(filename: str, request: Request):
 @app.get("/api/audit")
 async def get_audit(limit: int = 200):
     return {"audit": await asyncio.to_thread(db.list_audit, min(limit, 1000))}
+
+
+@app.post("/api/servers/{name}/probe")
+async def start_probe(name: str):
+    """Kick an agentless live health probe (six SSH command groups, scored
+    deterministically — no agent, no tokens). Returns the current state;
+    poll GET to watch it fill group by group."""
+    server = load_inventory().get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not in inventory")
+    asyncio.get_running_loop().create_task(healthprobe.run_probe(server))
+    return healthprobe.state(name)
+
+
+@app.get("/api/servers/{name}/probe")
+async def get_probe(name: str):
+    return healthprobe.state(name)
 
 
 @app.get("/api/servers/{name}/health-history")

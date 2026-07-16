@@ -1731,23 +1731,49 @@ $('healthBtn').onclick = () => {
   });
 })();
 
+let probeTimer = null, probeFor = null;
+
+/* agentless live probe: the backend SSHes the six groups directly (no agent,
+   no tokens) and the strip animates group by group as results land */
+async function probeServer(name) {
+  clearInterval(probeTimer);
+  probeFor = name;
+  const kick = await fetch(`/api/servers/${encodeURIComponent(name)}/probe`, { method: 'POST' });
+  if (!kick.ok) throw new Error('probe unavailable');
+  const poll = async () => {
+    if (probeFor !== name) { clearInterval(probeTimer); return; }
+    const st = await (await fetch(`/api/servers/${encodeURIComponent(name)}/probe`)).json();
+    renderHealth({ checks: st.checks || {} }, !st.complete, name);
+    if (st.complete) {
+      clearInterval(probeTimer);
+      $('hpNote').textContent = `live · probed ${new Date((st.ts || 0) * 1000).toLocaleTimeString()}`;
+    }
+  };
+  poll();
+  probeTimer = setInterval(poll, 2000);
+}
+
 async function loadHealth(id, running, serverName, mode) {
   const { health } = await (await fetch(`/api/sessions/${id}/health`)).json();
   const live = running && mode === 'healthcheck';
   if (health) {
-    // live/own data — pulse only while a health check is actively running
+    // the session produced its own health data (agent health check)
+    probeFor = null; clearInterval(probeTimer);
     renderHealth(health, live, serverName);
     if (!live) $('hpNote').textContent = '';   // live note (progress) set by renderHealth
     return;
   }
-  if (running && mode === 'healthcheck') {
-    // live scan just starting — NEVER show stale data; show scanning state
+  if (live) {
+    // agent scan just starting — NEVER show stale data; show scanning state
+    probeFor = null; clearInterval(probeTimer);
     renderHealth(null, true, serverName);
-    $('hpNote').textContent = 'scanning the server now…';
+    $('hpNote').textContent = 'connecting to the server…';
     return;
   }
-  // lean investigations don't produce health.json — show the server's last
-  // known health from its most recent health check instead of empty pulsing
+  // investigations / historical views: probe the server LIVE right now
+  // (agentless, seconds) instead of showing the last health check's results
+  try { await probeServer(serverName); return; }
+  catch (e) { /* server gone from inventory — fall back to history below */ }
   try {
     const { history } = await (await fetch(
       `/api/servers/${encodeURIComponent(serverName)}/health-history?limit=1`)).json();
@@ -1797,6 +1823,7 @@ async function openSession(id) {
   renderSessions();
   if (eventSource) { eventSource.close(); eventSource = null; }
   clearInterval(healthPollTimer);
+  clearInterval(probeTimer); probeFor = null;
   $('timeline').innerHTML = '';
   tlStick = true; $('tlJump').style.display = 'none';
   $('reportBody').innerHTML = 'No report yet.'; $('reportBody').classList.add('empty');
