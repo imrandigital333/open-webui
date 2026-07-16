@@ -414,6 +414,7 @@
       <div class="hp-ring" id="hpRing">◎</div>
       <div class="name" id="hpName">—</div>
       <div class="overall" id="hpOverall">no data yet</div>
+      <div class="hint" id="hpNote" style="margin-top:4px"></div>
     </div>
     <div class="hp-trunk"></div>
     <div class="hp-tree" id="hpTree"></div>
@@ -977,9 +978,29 @@ $('hpClose').onclick = closeHealth;
   });
 })();
 
-async function loadHealth(id, running, serverName) {
+async function loadHealth(id, running, serverName, mode) {
   const { health } = await (await fetch(`/api/sessions/${id}/health`)).json();
-  renderHealth(health, running, serverName);
+  if (health) {
+    // live/own data — pulse only while a health check is actively running
+    renderHealth(health, running && mode === 'healthcheck', serverName);
+    $('hpNote').textContent = '';
+    return;
+  }
+  // lean investigations don't produce health.json — show the server's last
+  // known health from its most recent health check instead of empty pulsing
+  try {
+    const { history } = await (await fetch(
+      `/api/servers/${encodeURIComponent(serverName)}/health-history?limit=1`)).json();
+    if (history && history.length) {
+      const snap = history[history.length - 1];
+      renderHealth({ checks: snap.checks }, false, serverName);
+      $('hpNote').textContent =
+        `from last health check · ${new Date(snap.ts * 1000).toLocaleString()}`;
+      return;
+    }
+  } catch (e) { /* fall through to empty state */ }
+  renderHealth(null, false, serverName);
+  $('hpNote').textContent = 'No health data yet — run a 🩺 Health check from the Overview.';
 }
 
 /* ---------- session open / head ---------- */
@@ -1023,14 +1044,18 @@ async function openSession(id) {
   renderHead(session);
   loadFiles(id);
   lastHealthJson = '';
-  loadHealth(id, session.status === 'running', session.server);
+  loadHealth(id, session.status === 'running', session.server, session.mode);
   if (session.status === 'running' && session.mode === 'healthcheck') openHealth();
 
   if (session.status === 'running') {
     eventSource = new EventSource(`/api/sessions/${id}/events`);
     eventSource.onmessage = async (msg) => {
       const ev = JSON.parse(msg.data);
-      if (ev.type === 'health') { renderHealth(ev.health, true, session.server); return; }
+      if (ev.type === 'health') {
+        renderHealth(ev.health, true, session.server);
+        $('hpNote').textContent = '';
+        return;
+      }
       if (ev.type === 'phase') {
         renderStepper(session.mode || 'investigate', ev.phase, 'running');
         return;
@@ -1044,7 +1069,7 @@ async function openSession(id) {
         if (fresh) renderHead(fresh);
         if (ev.type === 'completed') showTab('report');
         loadFiles(id);
-        loadHealth(id, false, session.server);
+        loadHealth(id, false, session.server, session.mode);
       }
     };
   } else {
