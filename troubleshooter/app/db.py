@@ -216,6 +216,34 @@ def health_history(server: str, limit_snapshots: int = 30) -> list[dict]:
     return sorted(snaps.values(), key=lambda s: s["ts"])[-limit_snapshots:]
 
 
+def past_incidents(server: str, exclude_id: str, limit: int = 3) -> list[dict]:
+    """Recent completed investigations on this server, for agent context."""
+    with engine().connect() as conn:
+        rows = conn.execute(
+            select(sessions_t)
+            .where(sessions_t.c.server == server)
+            .where(sessions_t.c.mode == "investigate")
+            .where(sessions_t.c.status == "completed")
+            .where(sessions_t.c.id != exclude_id)
+            .where(sessions_t.c.report.is_not(None))
+            .order_by(sessions_t.c.created_at.desc())
+            .limit(limit)
+        ).fetchall()
+    out = []
+    for r in rows:
+        report = json.loads(r.report) if r.report else {}
+        cause = report.get("probable_root_cause")
+        if not cause:
+            continue
+        out.append({
+            "created_at": r.created_at,
+            "problem": (r.problem or "")[:120],
+            "confidence": r.confidence or report.get("confidence", "-"),
+            "cause": str(cause)[:300],
+        })
+    return out
+
+
 # ---------- audit ----------
 
 def audit(actor: str, action: str, detail: dict | None = None) -> None:

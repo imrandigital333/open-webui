@@ -344,6 +344,27 @@ dashboard only reads these exact paths.
 """
 
 
+def build_history_section(past: list[dict]) -> str:
+    """Compact per-server incident memory — a few lines, high signal."""
+    if not past:
+        return ""
+    lines = ["\n## Known history of this server (previous confirmed investigations)"]
+    for p in past:
+        when = time.strftime("%Y-%m-%d", time.localtime(p["created_at"]))
+        lines.append(
+            f'- {when} ({p["confidence"]} confidence) — problem: "{p["problem"]}" '
+            f"— root cause: {p['cause']}"
+        )
+    lines.append(
+        "Use this as investigative context: early on, verify whether "
+        "previously-implicated components (configs, certs, policies, services) "
+        "are still or again in a bad state, and check what changed since "
+        "(package/dnf/apt history, config mtimes). Do NOT assume the same "
+        "cause — verify against current evidence."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def build_prompt(
     server: Server,
     problem: str,
@@ -351,10 +372,12 @@ def build_prompt(
     depth: str = "standard",
     incident_time: str | None = None,
     workdir: Path | None = None,
+    past: list[dict] | None = None,
 ) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
     layers_section = build_layers_section(layer_sources or [])
+    history_section = build_history_section(past or [])
     depth_guidance = DEPTH_GUIDANCE.get(depth, DEPTH_GUIDANCE["standard"])
     if incident_time:
         submitted = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -392,7 +415,7 @@ def build_prompt(
 ## Problem statement (from the operator)
 {problem}
 {incident_line}
-
+{history_section}
 ## Investigation depth
 {depth_guidance}
 
@@ -672,6 +695,10 @@ async def run_session(
         if state.mode == "healthcheck":
             prompt = build_healthcheck_prompt(server, workdir=workdir)
         else:
+            try:
+                past = await asyncio.to_thread(db.past_incidents, server.name, state.id)
+            except Exception:  # noqa: BLE001
+                past = []
             prompt = build_prompt(
                 server,
                 state.problem,
@@ -679,6 +706,7 @@ async def run_session(
                 depth=state.depth,
                 incident_time=state.incident_time,
                 workdir=workdir,
+                past=past,
             )
         # Debug artifacts: exactly what this run was asked to do (no secrets)
         (workdir / "prompt.txt").write_text(prompt)
