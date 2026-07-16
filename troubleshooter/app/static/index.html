@@ -301,11 +301,19 @@
                  display: none; }
   #rcMini.unread .dot { display: block; }
   /* remediation roadmap panel (docks left of the chat) */
-  #rcMap { position: fixed; bottom: 22px; width: 340px; max-width: calc(100vw - 60px);
+  #rcMap { position: fixed; bottom: 22px; width: var(--rmw, 320px); max-width: calc(100vw - 60px);
            background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
            box-shadow: 0 12px 40px rgba(0,0,0,.55); display: none; flex-direction: column;
-           max-height: min(74vh, 680px); z-index: 59; overflow: hidden; }
+           max-height: min(64vh, 580px); z-index: 59; overflow: hidden; }
   #rcMap.open { display: flex; }
+  #rcMap.wide { --rmw: min(620px, calc(100vw - 60px)); max-height: 84vh; }
+  #rcMapMini { position: fixed; bottom: 22px; width: 46px; height: 46px; border-radius: 12px;
+               background: var(--panel2); border: 1px solid #2b4a7a; color: var(--accent2);
+               display: none; place-items: center; cursor: pointer; z-index: 59; padding: 0;
+               box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #rcMapMini.show { display: grid; }
+  #rcMapMini svg { width: 22px; height: 22px; }
+  #rcMapMini:hover { border-color: var(--accent); }
   .rcmap-sum { padding: 10px 14px 4px; font-size: 12.5px; }
   .rcmap-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;
                display: flex; gap: 1px; margin-top: 7px; }
@@ -673,15 +681,19 @@
 <button id="rcMini" title="Remediation Assistant — click to restore"></button>
 
 <div id="rcMap">
+  <div class="rchat-resize" id="rcMapResize" title="Drag to resize"></div>
   <div class="rchat-head">
     <span id="rcMapIcon"></span>
     <span>Remediation Steps</span>
     <span class="sub" id="rcMapSub"></span>
-    <button style="margin-left:auto" onclick="toggleRcMap(false)" title="Close">✕</button>
+    <button id="rcMapMinBtn" style="margin-left:auto" title="Minimise">—</button>
+    <button id="rcMapSize" title="Toggle window size">⤢</button>
+    <button onclick="toggleRcMap(false)" title="Close">✕</button>
   </div>
   <div class="rcmap-sum" id="rcMapSum"></div>
   <div class="rcmap-body" id="rcMapBody"></div>
 </div>
+<button id="rcMapMini" title="Remediation Steps — click to restore"></button>
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
@@ -1227,18 +1239,25 @@ function renderRcProg() {
 }
 
 /* ---------- remediation steps panel: review ALL steps at once; live statuses when the chat runs ---------- */
-let rcMapOpen = false, rcMapWasOpen = false;
+let rcMapOpen = false, rcMapWasOpen = false, rcMapMin = false;
 function rcCurrentPlan() { return (rc && rc.plan) || window._plan || []; }
 function positionRcMap() {
   const chat = $('remChat');
-  $('rcMap').style.right = chat.classList.contains('open')
-    ? (chat.offsetWidth + 34) + 'px' : '22px';
+  const off = (chat.classList.contains('open') ? chat.offsetWidth + 34 : 22) + 'px';
+  $('rcMap').style.right = off;
+  $('rcMapMini').style.right = off;
+}
+function applyRcMap() {
+  const has = rcCurrentPlan().length > 0;
+  $('rcMap').classList.toggle('open', rcMapOpen && !rcMapMin && has);
+  $('rcMapMini').classList.toggle('show', rcMapOpen && rcMapMin && has);
+  positionRcMap();
+  if (rcMapOpen && !rcMapMin && has) renderRcMap();
 }
 function toggleRcMap(on) {
   rcMapOpen = on === undefined ? !rcMapOpen : !!on;
-  const has = rcCurrentPlan().length > 0;
-  $('rcMap').classList.toggle('open', rcMapOpen && has);
-  if (rcMapOpen && has) { positionRcMap(); renderRcMap(); }
+  if (rcMapOpen) rcMapMin = false;   // opening always restores the full panel
+  applyRcMap();
 }
 function rcStepState(i) {
   if (rc.done[i] === 'ok') return 'done';
@@ -1642,6 +1661,32 @@ $('rcSize').onclick = () => {
 $('rcMapBtn').innerHTML = ic('map', 14);
 $('rcMapBtn').onclick = () => toggleRcMap();
 $('rcMapIcon').innerHTML = ic('map', 15);
+$('rcMapMini').innerHTML = ic('map', 20);
+$('rcMapMinBtn').onclick = () => { rcMapMin = true; applyRcMap(); };
+$('rcMapMini').onclick = () => { rcMapMin = false; applyRcMap(); };
+$('rcMapSize').onclick = () => {
+  const m = $('rcMap');
+  m.style.removeProperty('--rmw');
+  m.classList.toggle('wide');
+};
+(() => {  // drag the steps panel's left edge to any width
+  const rz = $('rcMapResize'), panel = $('rcMap');
+  let dragging = false;
+  rz.addEventListener('pointerdown', (e) => {
+    dragging = true; rz.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = 'none';
+  });
+  rz.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    panel.classList.remove('wide');
+    const off = parseInt(panel.style.right || '22', 10);
+    const w = Math.min(760, Math.max(280, window.innerWidth - off - e.clientX));
+    panel.style.setProperty('--rmw', w + 'px');
+  });
+  rz.addEventListener('pointerup', () => {
+    dragging = false; document.body.style.userSelect = '';
+  });
+})();
 $('rcMini').innerHTML = AI_ROBOT + '<span class="dot"></span>';
 $('rcMin').onclick = () => {
   rcMapWasOpen = rcMapOpen;
