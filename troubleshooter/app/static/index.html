@@ -693,11 +693,12 @@ async function refreshSessions() {
   renderSessions();
 }
 
+let sessGroupsOpen = { cur: true, hist: localStorage.getItem('sessHistOpen') === '1' };
 function renderSessions() {
   const q = $('sessionSearch').value.toLowerCase();
   const list = sessionsCache.filter(s =>
     !q || `${s.server} ${s.problem} ${s.status}`.toLowerCase().includes(q));
-  $('sessions').innerHTML = list.length ? list.map(s => `
+  const item = (s) => `
     <div class="item ${s.id === currentSession ? 'active' : ''}" onclick="openSession('${s.id}')">
       <div><strong>${MODE_ICON[s.mode] || '🔍'} ${escapeHtml(s.server)}</strong>
         <span class="status ${s.status}" style="float:right">
@@ -706,7 +707,29 @@ function renderSessions() {
       <div class="meta">${new Date(s.created_at * 1000).toLocaleString()}
         ${s.mode === 'healthcheck' ? '' : `· ${escapeHtml(s.depth)}
         · ${s.layers.length ? escapeHtml(s.layers.join(', ')) : 'server only'}`}</div>
-    </div>`).join('') : '<div class="empty">No matching sessions.</div>';
+    </div>`;
+  const current = list.filter(s => s.status === 'running');
+  const history = list.filter(s => s.status !== 'running');
+  // searching opens both groups so matches are never hidden
+  $('sessions').innerHTML = `
+    <details class="acc" id="sgCur" ${(sessGroupsOpen.cur || q) ? 'open' : ''}>
+      <summary>${ic('zap', 12)}<span>Current</span><span class="count">${current.length}</span>
+        <span class="chev">${ic('chevron-down', 12)}</span></summary>
+      <div class="acc-body">${current.map(item).join('')
+        || '<div class="empty" style="font-size:12px">Nothing running right now.</div>'}</div>
+    </details>
+    <details class="acc" id="sgHist" ${(sessGroupsOpen.hist || q) ? 'open' : ''}>
+      <summary>${ic('clock', 12)}<span>History</span><span class="count">${history.length}</span>
+        <span class="chev">${ic('chevron-down', 12)}</span></summary>
+      <div class="acc-body">${history.map(item).join('')
+        || '<div class="empty" style="font-size:12px">No past sessions yet.</div>'}</div>
+    </details>`;
+  $('sgCur').ontoggle = () => { if (!$('sessionSearch').value) sessGroupsOpen.cur = $('sgCur').open; };
+  $('sgHist').ontoggle = () => {
+    if ($('sessionSearch').value) return;
+    sessGroupsOpen.hist = $('sgHist').open;
+    localStorage.setItem('sessHistOpen', $('sgHist').open ? '1' : '0');
+  };
 }
 $('sessionSearch').oninput = renderSessions;
 
@@ -1290,28 +1313,48 @@ async function rcAdhocConfirm(cmd) {
     m.dataset.cmd = cmd;
     return;
   }
-  // dangerous — double confirmation, backup strongly suggested
+  // dangerous — backup runnable on its own, then double confirmation
   const m = rcBot(`<div class="rc-danger">⚠️ <b>High-risk command.</b> <span style="color:var(--muted)">(${escapeHtml(rev.source)})</span>
     <div style="margin-top:5px">${escapeHtml(rev.impact)}</div>
     ${rev.damage ? `<div style="margin-top:5px"><b>Worst case:</b> ${escapeHtml(rev.damage)}</div>` : ''}
     <div class="code">${escapeHtml(cmd)}</div>
-    ${rev.backup_command ? `<div style="margin-top:8px;font-weight:650">If you proceed, back up first — edit if needed:</div>
-      <input class="rc-bak" value="${escapeHtml(rev.backup_command)}">` : ''}
+    <div style="margin-top:8px;font-weight:650">Back up first — edit the command if needed:</div>
+    <input class="rc-bak" value="${escapeHtml(rev.backup_command || '')}"
+      placeholder="backup command, e.g. cp -a /path /path.bak.$(date +%s)">
     <div class="btns">
+      <button class="ghost run" onclick="rcRunBackupOnly(this)">${ic('archive', 11)} Run backup now</button>
       <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel (recommended)</button>
       <button class="ghost danger" onclick="rcDangerStep2(this)">I understand the risk — continue</button>
     </div></div>`);
   m.dataset.cmd = cmd;
 }
-function rcDangerStep2(btn) {
+async function rcRunBackupOnly(btn) {
   const msg = btn.closest('.rmsg');
   const bak = msg.querySelector('.rc-bak')?.value.trim() || '';
+  if (!bak) { alert('Fill in the backup command first.'); return; }
+  btn.disabled = true;
+  rcUser('Run the backup now');
+  const ok = await rcExecCmd(bak, 'backup');
+  if (ok) {
+    msg.dataset.bakDone = '1';
+    btn.innerHTML = '✓ backup done';
+    rcBot('Backup completed. You can now continue with the command — the final confirmation will not run the backup again.');
+  } else {
+    btn.disabled = false;
+    rcBot('❌ The backup failed — fix the backup command and try again before proceeding.');
+  }
+}
+function rcDangerStep2(btn) {
+  const msg = btn.closest('.rmsg');
+  const bakDone = msg.dataset.bakDone === '1';
+  const bak = bakDone ? '' : (msg.querySelector('.rc-bak')?.value.trim() || '');
   rcDisableMsg(msg);
   const m2 = rcBot(`<div class="rc-danger"><b>Final confirmation required.</b>
     This will execute on <b>${escapeHtml(currentSessionInfo?.server || '')}</b>:
     <div class="code">${escapeHtml(msg.dataset.cmd || '')}</div>
-    ${bak ? `Backup runs first: <span style="font-family:var(--mono);font-size:11px">${escapeHtml(bak)}</span>`
-          : '<b>No backup will be taken.</b>'}
+    ${bakDone ? '✓ A backup has already been taken.'
+      : bak ? `Backup runs first: <span style="font-family:var(--mono);font-size:11px">${escapeHtml(bak)}</span>`
+      : '<b>No backup will be taken.</b>'}
     <div class="btns">
       <button class="ghost danger" onclick="rcRunReviewed(this, ${bak ? 'true' : 'false'})">Yes — execute now</button>
       <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
