@@ -41,9 +41,25 @@ REPORT_SCHEMA = """{
   ],
   "impact": "what is affected and how badly",
   "recommended_fix": ["ordered, concrete remediation steps with exact commands where possible"],
+  "remediation_plan": [
+    {"order": 1, "phase": "backup | fix | verify | rollback", "command": "one exact shell command for the TARGET server", "description": "plain language: what this command does and why it is needed", "risk": "low | medium | high"}
+  ],
   "preventive_measures": ["changes that would stop this recurring (monitoring, config, capacity...)"],
   "needs_followup": ["open questions or data that could not be collected, if any"]
 }"""
+
+REMEDIATION_RULES = """   remediation_plan rules — the operator may execute it as-is, so be precise:
+   - ALWAYS start with backup steps preserving everything the fix will touch
+     (config files, certs, current service state), e.g. cp -a with a dated
+     suffix. Never a fix step before its backup step.
+   - Then fix steps (one command each), then verify steps that PROVE recovery
+     (service active, port listening, HTTP 200), then rollback steps that
+     restore the backups if the fix fails.
+   - Each entry: a single exact command, a plain-language description of what
+     it does and why, and an honest risk level.
+   - Assume the operator runs them with appropriate privileges (sudo/root).
+   - You never execute these yourself — your investigation stays read-only.
+"""
 
 
 DEPTH_TURNS = {"quick": 35, "standard": 90, "deep": 160}
@@ -72,6 +88,61 @@ DEPTH_GUIDANCE = {
 
 INVESTIGATE_PHASES = ["triage", "pinpoint", "collect", "analyze", "report"]
 HEALTHCHECK_PHASES = ["connect", "sweep", "report"]
+REMEDIATE_PHASES = ["backup", "fix", "verify", "report"]
+
+
+def build_remediation_prompt(server: Server, remediation: dict, workdir: Path) -> str:
+    plan_lines = []
+    for step in remediation.get("plan", []):
+        plan_lines.append(
+            f"{step.get('order', '?')}. [{step.get('phase', '?').upper()}] "
+            f"(risk: {step.get('risk', '?')}) `{step.get('command', '')}`\n"
+            f"   purpose: {step.get('description', '')}"
+        )
+    plan_text = "\n".join(plan_lines) or "(empty plan)"
+    return f"""You are an SRE executing an APPROVED remediation plan on a server. A human
+operator reviewed this exact plan and authorized its execution.
+
+{workdir_section(workdir)}
+## Target server
+- Name: {server.name} ({server.description or "no description"})
+- Connect with EXACTLY this command prefix for every remote command:
+  `{server.ssh_command()} '<remote command>'`
+
+## Incident context
+- Original problem: {remediation.get("problem", "(unknown)")}
+- Confirmed root cause: {remediation.get("root_cause", "(see plan)")}
+
+## APPROVED REMEDIATION PLAN (execute exactly this, in order)
+{plan_text}
+
+## Progress markers
+When you enter a new phase, start the FIRST line of your next message with
+exactly one of: PHASE: BACKUP | PHASE: FIX | PHASE: VERIFY | PHASE: REPORT
+
+## Execution rules — read carefully
+- Execute ONLY the commands in the plan, in the given order. You may also run
+  READ-ONLY checks (systemctl status, tail, grep, curl to localhost) between
+  steps to confirm state — but NO state-changing command outside the plan.
+- BACKUP steps come first. If a backup step fails, STOP — do not run any fix.
+- After every command, check it succeeded (exit code + output) and save the
+  output under ./logs/ with the step number in the filename.
+- If a fix step fails, or the verify steps show the issue is NOT resolved,
+  execute the plan's rollback steps, then report honestly.
+- If a command fails with insufficient permissions, STOP and report exactly
+  which permission is missing. Do not invent workarounds.
+- REPORT: write report.md (readable) and report.json EXACTLY:
+{{
+  "summary": "what was executed and the outcome, in plain language",
+  "outcome": "fixed | failed | rolled_back | partial",
+  "steps": [
+    {{"order": 1, "phase": "backup", "command": "...", "status": "success | failed | skipped", "output": "trimmed relevant output"}}
+  ],
+  "verification": "the evidence that the issue is resolved (or exactly how it is still broken)",
+  "followup": ["anything the operator should still do"]
+}}
+
+Finish only after both report files are written."""
 
 def script_library_section() -> str:
     lib = ensure_scriptlib()
@@ -198,7 +269,7 @@ class SessionState:
     problem: str
     created_at: float
     status: str = "running"  # running | completed | failed | cancelled
-    mode: str = "investigate"  # investigate | healthcheck
+    mode: str = "investigate"  # investigate | healthcheck | remediate
     layers: list[str] = field(default_factory=list)
     depth: str = "standard"
     incident_time: str | None = None
@@ -476,7 +547,7 @@ def build_prompt(
      actually examined — including ones that showed nothing relevant — and
      the time range each reviewed extract covered:
 {REPORT_SCHEMA}
-
+{REMEDIATION_RULES}
 Finish only after both report files are written."""
 
 
@@ -573,6 +644,7 @@ async def run_session(
     state: SessionState,
     server: Server,
     layer_sources: list[dict] | None = None,
+    remediation: dict | None = None,
 ) -> None:
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
@@ -612,6 +684,8 @@ async def run_session(
 
     if state.mode == "healthcheck":
         max_turns = 25
+    elif state.mode == "remediate":
+        max_turns = 40
     else:
         max_turns = DEPTH_TURNS.get(state.depth, DEPTH_TURNS["standard"])
     if os.environ.get("TROUBLESHOOTER_MAX_TURNS"):
@@ -694,6 +768,8 @@ async def run_session(
     try:
         if state.mode == "healthcheck":
             prompt = build_healthcheck_prompt(server, workdir=workdir)
+        elif state.mode == "remediate":
+            prompt = build_remediation_prompt(server, remediation or {}, workdir)
         else:
             try:
                 past = await asyncio.to_thread(db.past_incidents, server.name, state.id)
@@ -927,13 +1003,14 @@ def start_session(
     depth: str = "standard",
     incident_time: str | None = None,
     mode: str = "investigate",
+    remediation: dict | None = None,
 ) -> SessionState:
     state = SessionState(
         id=uuid.uuid4().hex[:12],
         server=server.name,
         problem=problem,
         created_at=time.time(),
-        mode=mode if mode in ("investigate", "healthcheck") else "investigate",
+        mode=mode if mode in ("investigate", "healthcheck", "remediate") else "investigate",
         layers=[ds["name"] for ds in (layer_sources or [])],
         depth=depth if depth in DEPTH_TURNS else "standard",
         incident_time=incident_time,
@@ -945,6 +1022,6 @@ def start_session(
     except Exception:  # noqa: BLE001 - a DB outage must not block investigations
         pass
     state._task = asyncio.get_running_loop().create_task(
-        run_session(state, server, layer_sources)
+        run_session(state, server, layer_sources, remediation)
     )
     return state

@@ -116,6 +116,18 @@
   .evidence { font-family: var(--mono); font-size: 12.5px; background: var(--panel2);
               border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
   .evidence .src { color: var(--accent2); }
+  /* remediation plan */
+  .rem-phase { font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+               color: var(--muted); font-weight: 700; margin: 10px 0 4px; }
+  .rem-step { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+              padding: 8px 10px; margin-bottom: 6px; }
+  .rem-step code { font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+                   word-break: break-all; }
+  .rem-risk { flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase;
+              border-radius: 999px; padding: 2px 8px; }
+  .rem-risk.r-low { background: #1c3524; color: var(--ok); }
+  .rem-risk.r-medium { background: #3a2f14; color: var(--warn); }
+  .rem-risk.r-high { background: #3d1d1d; color: var(--err); }
   table.layers { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px; }
   table.layers th, table.layers td { text-align: left; padding: 6px 8px;
               border-bottom: 1px solid var(--border); }
@@ -398,7 +410,7 @@
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
-let currentSession = null, eventSource = null, selectedDepth = 'standard';
+let currentSession = null, currentSessionInfo = null, eventSource = null, selectedDepth = 'standard';
 
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -479,7 +491,7 @@ function renderSessions() {
     !q || `${s.server} ${s.problem} ${s.status}`.toLowerCase().includes(q));
   $('sessions').innerHTML = list.length ? list.map(s => `
     <div class="item ${s.id === currentSession ? 'active' : ''}" onclick="openSession('${s.id}')">
-      <div><strong>${s.mode === 'healthcheck' ? '🩺' : '🔍'} ${escapeHtml(s.server)}</strong>
+      <div><strong>${MODE_ICON[s.mode] || '🔍'} ${escapeHtml(s.server)}</strong>
         <span class="status ${s.status}" style="float:right">
           ${s.status === 'running' ? '<span class="spinner"></span>' : ''}${s.status}</span></div>
       <div class="p">${escapeHtml(s.problem)}</div>
@@ -531,6 +543,7 @@ function addEvent(ev) {
 /* ---------- report ---------- */
 function renderReport(report) {
   if (!report || !Object.keys(report).length) return;
+  if (report.outcome !== undefined && report.steps !== undefined) { renderRemediateReport(report); return; }
   if (report.anomalies !== undefined) { renderHealthcheckReport(report); return; }
   const conf = (report.confidence || 'low').toLowerCase();
   const list = (items) => (items || []).map(i =>
@@ -565,9 +578,142 @@ function renderReport(report) {
     ${reviewedRows ? `<div class="kv"><div class="k">Logs reviewed by the agent</div>
       <table class="layers"><tr><th>Source</th><th>Time range covered</th><th>Note</th></tr>${reviewedRows}</table></div>` : ''}
     ${report.impact ? `<div class="kv"><div class="k">Impact</div><div class="v">${escapeHtml(report.impact)}</div></div>` : ''}
-    ${report.recommended_fix?.length ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
+    ${report.recommended_fix?.length && !(report.remediation_plan?.length) ? `<div class="kv"><div class="k">Recommended fix</div><ol>${list(report.recommended_fix)}</ol></div>` : ''}
+    ${renderRemediationPlan(report)}
     ${report.preventive_measures?.length ? `<div class="kv"><div class="k">Preventive measures</div><ul>${list(report.preventive_measures)}</ul></div>` : ''}
-    ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}`;
+    ${report.needs_followup?.length ? `<div class="kv"><div class="k">Open questions</div><ul>${list(report.needs_followup)}</ul></div>` : ''}
+    ${renderFeedbackBox()}`;
+}
+
+/* ---------- remediation plan + execution ---------- */
+function renderRemediationPlan(report) {
+  const plan = report.remediation_plan || [];
+  if (!plan.length) return '';
+  window._plan = plan;
+  const phaseOrder = ['backup', 'fix', 'verify', 'rollback'];
+  let html = `<div class="kv"><div class="k">Remediation plan
+      <button class="ghost" style="margin-left:10px" onclick="copyPlanScript()">Copy as script</button>
+      <button class="ghost danger" style="margin-left:4px" onclick="$('execConfirm').style.display=''">▶ Execute on server</button>
+    </div>
+    <div class="hint">Backups first, then fix, then verification — rollback steps restore the
+      backups if the fix fails. Execute from here (supervised agent run) or copy and run manually.</div>`;
+  phaseOrder.forEach(ph => {
+    const steps = plan.filter(s => (s.phase || '').toLowerCase().startsWith(ph.slice(0, 4)));
+    if (!steps.length) return;
+    html += `<div class="rem-phase">${ph}</div>`;
+    steps.forEach(s => {
+      const i = plan.indexOf(s);
+      html += `<div class="rem-step">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="rem-risk r-${escapeHtml((s.risk || 'low').toLowerCase())}">${escapeHtml(s.risk || 'low')}</span>
+          <code style="flex:1;min-width:0">${escapeHtml(s.command || '')}</code>
+          <button class="ghost" style="flex:0 0 auto" onclick="copyCmd(${i}, this)">copy</button>
+        </div>
+        <div class="hint" style="margin:3px 0 0 2px">${escapeHtml(s.description || '')}</div>
+      </div>`;
+    });
+  });
+  html += `<div id="execConfirm" style="display:none;border:1px solid var(--err);border-radius:8px;padding:10px 12px;margin-top:10px">
+      <b style="color:var(--err)">Execute ${plan.length} commands on ${escapeHtml(currentSessionInfo?.server || 'the server')}?</b>
+      <div class="hint">A supervised agent run will execute exactly these commands in order
+        (backups first), stop on failure, run the rollback steps if verification fails, and
+        report the result of every step. This CHANGES the server.</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="ghost danger" onclick="execRemediation(this)">I understand — execute now</button>
+        <button class="ghost" onclick="$('execConfirm').style.display='none'">Cancel</button>
+      </div></div></div>`;
+  return html;
+}
+function copyCmd(i, btn) {
+  navigator.clipboard.writeText(window._plan[i].command || '').then(() => {
+    btn.textContent = '✓'; setTimeout(() => btn.textContent = 'copy', 1200);
+  });
+}
+function copyPlanScript() {
+  const lines = ['#!/usr/bin/env bash',
+    `# Remediation script generated by AI Troubleshooter — review before running.`,
+    `# Target server: ${currentSessionInfo?.server || ''}`, 'set -e', ''];
+  (window._plan || []).forEach(s => {
+    lines.push(`# [${(s.phase || '').toUpperCase()}] (${s.risk || 'low'} risk) ${s.description || ''}`);
+    lines.push(s.command || ''); lines.push('');
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => alert('Script copied to clipboard.'));
+}
+async function execRemediation(btn) {
+  btn.disabled = true;
+  const res = await fetch(`/api/sessions/${currentSession}/remediate`, { method: 'POST' });
+  if (!res.ok) { alert((await res.json()).detail || res.statusText); btn.disabled = false; return; }
+  const s = await res.json();
+  await refreshSessions();
+  openSession(s.id);
+}
+
+/* ---------- RCA feedback / reinvestigation ---------- */
+function renderFeedbackBox() {
+  if (!currentSessionInfo || currentSessionInfo.mode !== 'investigate'
+      || currentSessionInfo.status !== 'completed') return '';
+  const fb = currentSessionInfo.feedback;
+  if (fb) {
+    const ok = fb.verdict === 'confirmed';
+    return `<div class="kv"><div class="k">Root cause verdict</div>
+      <div class="v" style="color:${ok ? 'var(--ok)' : 'var(--warn)'}">${ok ? '✓' : '⟳'} ${escapeHtml(fb.verdict)}
+        by ${escapeHtml(fb.actor || '')} · ${new Date(fb.ts * 1000).toLocaleString()}${fb.note ? ' — ' + escapeHtml(fb.note) : ''}</div></div>`;
+  }
+  return `<div class="kv"><div class="k">Is this root cause correct?</div>
+    <div class="hint">Confirming feeds the server's incident memory; re-investigating starts a
+      deeper follow-up run that carries this conclusion and your corrections.</div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="ghost" onclick="sendFeedback('confirmed')">✓ Confirmed — correct / issue resolved</button>
+      <button class="ghost" onclick="$('reinvBox').style.display=''">⟳ Not correct — re-investigate</button>
+    </div>
+    <div id="reinvBox" style="display:none;margin-top:10px">
+      <label>Additional context for the re-investigation</label>
+      <textarea id="reinvContext" placeholder="e.g. the suggested fix did not help; also check /var/log/myapp/debug.log; it only affects HTTPS clients; we changed X yesterday; here is the exact error users see: ..."></textarea>
+      <button class="primary" style="margin-top:8px" onclick="startReinvestigation(this)">Start re-investigation (deep)</button>
+    </div></div>`;
+}
+async function sendFeedback(verdict) {
+  await fetch(`/api/sessions/${currentSession}/feedback`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ verdict }),
+  });
+  const s = await (await fetch(`/api/sessions/${currentSession}`)).json();
+  currentSessionInfo = s;
+  renderReport(s.report);
+}
+async function startReinvestigation(btn) {
+  const context = $('reinvContext').value.trim();
+  if (context.length < 5) { alert('Please describe the new context (symptoms, log paths, what was tried).'); return; }
+  btn.disabled = true;
+  const res = await fetch(`/api/sessions/${currentSession}/reinvestigate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context }),
+  });
+  if (!res.ok) { alert((await res.json()).detail || res.statusText); btn.disabled = false; return; }
+  const s = await res.json();
+  await refreshSessions();
+  openSession(s.id);
+}
+
+/* ---------- remediation run report ---------- */
+function renderRemediateReport(report) {
+  const oc = (report.outcome || '').toLowerCase();
+  const color = oc === 'fixed' ? 'var(--ok)' : (oc === 'rolled_back' || oc === 'partial') ? 'var(--warn)' : 'var(--err)';
+  const rows = (report.steps || []).map(s => `<tr>
+    <td>${s.order ?? ''}</td>
+    <td style="text-transform:uppercase;font-size:10.5px">${escapeHtml(s.phase || '')}</td>
+    <td style="font-family:var(--mono);font-size:12px;word-break:break-all">${escapeHtml(s.command || '')}</td>
+    <td class="${s.status === 'success' ? 'verdict-clean' : s.status === 'failed' ? 'verdict-rootcause' : 'verdict-unreachable'}">${escapeHtml(s.status || '')}</td>
+    <td style="font-family:var(--mono);font-size:11px">${escapeHtml(String(s.output || '').slice(0, 200))}</td></tr>`).join('');
+  $('reportBody').classList.remove('empty');
+  $('reportBody').innerHTML = `
+    <div class="kv"><div class="k">Outcome</div>
+      <div class="v" style="color:${color};font-weight:750;text-transform:uppercase">${escapeHtml(report.outcome || '?')}</div></div>
+    <div class="kv"><div class="k">Summary</div><div class="v">${escapeHtml(report.summary || '')}</div></div>
+    ${rows ? `<div class="kv"><div class="k">Steps executed</div>
+      <table class="layers"><tr><th>#</th><th>Phase</th><th>Command</th><th>Status</th><th>Output</th></tr>${rows}</table></div>` : ''}
+    ${report.verification ? `<div class="kv"><div class="k">Verification</div><div class="v">${escapeHtml(report.verification)}</div></div>` : ''}
+    ${report.followup?.length ? `<div class="kv"><div class="k">Follow-up</div><ul>${report.followup.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul></div>` : ''}`;
 }
 
 function renderHealthcheckReport(report) {
@@ -819,7 +965,10 @@ async function healthCheck(name) {
 const PHASES = {
   investigate: ['triage', 'pinpoint', 'collect', 'analyze', 'report'],
   healthcheck: ['connect', 'sweep', 'report'],
+  remediate: ['backup', 'fix', 'verify', 'report'],
 };
+const MODE_BADGE = { healthcheck: '🩺 health check', remediate: '🔧 remediation', investigate: '🔍 investigation' };
+const MODE_ICON = { healthcheck: '🩺', remediate: '🔧', investigate: '🔍' };
 function renderStepper(mode, phase, status) {
   const steps = PHASES[mode] || PHASES.investigate;
   const box = $('stepper');
@@ -983,7 +1132,7 @@ function renderHead(s) {
   $('sessionHead').style.display = '';
   $('tabs').style.display = '';
   $('shTitle').textContent = `${s.server} · ${s.id}`;
-  $('shMode').textContent = s.mode === 'healthcheck' ? '🩺 health check' : '🔍 investigation';
+  $('shMode').textContent = MODE_BADGE[s.mode] || MODE_BADGE.investigate;
   $('shStatus').className = `status ${s.status}`;
   $('shStatus').innerHTML = (s.status === 'running' ? '<span class="spinner"></span>' : '') + s.status;
   $('shPills').innerHTML = (s.mode === 'healthcheck' ? '' :
@@ -994,7 +1143,7 @@ function renderHead(s) {
   renderStats(s);
   // investigations run the lean prompt (no phase markers / health duties) —
   // show the stepper only where phase data actually exists
-  if (s.mode === 'healthcheck' || s.phase) renderStepper(s.mode || 'investigate', s.phase, s.status);
+  if (s.mode !== 'investigate' || s.phase) renderStepper(s.mode || 'investigate', s.phase, s.status);
   else $('stepper').style.display = 'none';
 }
 
@@ -1016,6 +1165,7 @@ async function openSession(id) {
   showTab('activity');
 
   const session = await (await fetch(`/api/sessions/${id}`)).json();
+  currentSessionInfo = session;
   renderHead(session);
   loadFiles(id);
   lastHealthJson = '';
@@ -1037,6 +1187,8 @@ async function openSession(id) {
       }
       addEvent(ev);
       if (ev.type === 'completed' || ev.type === 'failed') {
+        currentSessionInfo = { ...session, status: ev.type === 'completed' ? 'completed' : 'failed',
+                               report: ev.report || null, feedback: null };
         if (ev.report) renderReport(ev.report);
         eventSource.close();
         await refreshSessions();

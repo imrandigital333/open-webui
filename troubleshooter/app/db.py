@@ -81,6 +81,16 @@ health_t = Table(
     Column("note", Text),
 )
 
+feedback_t = Table(
+    "rca_feedback", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("session_id", String(32), index=True),
+    Column("ts", Float),
+    Column("actor", String(120)),
+    Column("verdict", String(20)),   # confirmed | rejected
+    Column("note", Text),
+)
+
 audit_t = Table(
     "audit_log", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -216,6 +226,25 @@ def health_history(server: str, limit_snapshots: int = 30) -> list[dict]:
     return sorted(snaps.values(), key=lambda s: s["ts"])[-limit_snapshots:]
 
 
+def add_feedback(session_id: str, actor: str, verdict: str, note: str = "") -> None:
+    with engine().begin() as conn:
+        conn.execute(feedback_t.insert().values(
+            session_id=session_id, ts=time.time(), actor=actor or "anonymous",
+            verdict=verdict, note=note[:2000],
+        ))
+
+
+def get_feedback(session_id: str) -> dict | None:
+    with engine().connect() as conn:
+        row = conn.execute(
+            select(feedback_t).where(feedback_t.c.session_id == session_id)
+            .order_by(feedback_t.c.id.desc()).limit(1)
+        ).first()
+    if row is None:
+        return None
+    return {"verdict": row.verdict, "note": row.note, "ts": row.ts, "actor": row.actor}
+
+
 def past_incidents(server: str, exclude_id: str, limit: int = 3) -> list[dict]:
     """Recent completed investigations on this server, for agent context."""
     with engine().connect() as conn:
@@ -235,11 +264,17 @@ def past_incidents(server: str, exclude_id: str, limit: int = 3) -> list[dict]:
         cause = report.get("probable_root_cause")
         if not cause:
             continue
+        fb = get_feedback(r.id)
+        verdict_note = ""
+        if fb and fb["verdict"] == "confirmed":
+            verdict_note = " [OPERATOR-CONFIRMED correct]"
+        elif fb and fb["verdict"] == "rejected":
+            verdict_note = " [operator marked this conclusion INCORRECT — do not repeat it without new evidence]"
         out.append({
             "created_at": r.created_at,
             "problem": (r.problem or "")[:120],
             "confidence": r.confidence or report.get("confidence", "-"),
-            "cause": str(cause)[:300],
+            "cause": str(cause)[:300] + verdict_note,
         })
     return out
 

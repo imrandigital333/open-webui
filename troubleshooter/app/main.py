@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.13.0"
+APP_VERSION = "2.14.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -225,8 +225,101 @@ async def list_sessions(server: str | None = None, limit: int = 200):
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     state = orchestrator.SESSIONS.get(session_id)
+    out = state.to_dict(include_events=True) if state is not None else \
+        await asyncio.to_thread(db.get_session, session_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    out["feedback"] = await asyncio.to_thread(db.get_feedback, session_id)
+    return out
+
+
+class FeedbackRequest(BaseModel):
+    verdict: str = Field(..., pattern="^(confirmed|rejected)$")
+    note: str = Field("", max_length=2000)
+
+
+@app.post("/api/sessions/{session_id}/feedback")
+async def post_feedback(session_id: str, req: FeedbackRequest, request: Request):
+    if orchestrator.SESSIONS.get(session_id) is None \
+            and await asyncio.to_thread(db.get_session, session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    actor = _actor(request)
+    await asyncio.to_thread(db.add_feedback, session_id, actor, req.verdict, req.note)
+    await asyncio.to_thread(db.audit, actor, "rca_feedback",
+                            {"session": session_id, "verdict": req.verdict})
+    return {"ok": True}
+
+
+class ReinvestigateRequest(BaseModel):
+    context: str = Field(..., min_length=5, max_length=4000,
+                         description="New details: symptoms, exact log paths, what was tried")
+
+
+@app.post("/api/sessions/{session_id}/reinvestigate")
+async def reinvestigate(session_id: str, req: ReinvestigateRequest, request: Request):
+    parent = await _load_any_session(session_id)
+    if parent.get("mode") != "investigate":
+        raise HTTPException(status_code=400, detail="Only investigations can be re-investigated")
+    server = load_inventory().get(parent["server"])
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    prev = parent.get("report") or {}
+    problem = (
+        f"{parent['problem']}\n\n"
+        f"REINVESTIGATION — a previous investigation (session {session_id}) concluded: "
+        f"\"{str(prev.get('probable_root_cause', 'no conclusion'))[:400]}\" "
+        f"({prev.get('confidence', '?')} confidence). The operator says this did NOT "
+        f"resolve or explain the issue. Do not simply repeat that conclusion — "
+        f"re-verify it and actively pursue alternatives.\n\n"
+        f"ADDITIONAL CONTEXT FROM THE OPERATOR:\n{req.context.strip()}"
+    )
+    actor = _actor(request)
+    # a reinvestigation implies the previous conclusion didn't hold
+    await asyncio.to_thread(db.add_feedback, session_id, actor, "rejected",
+                            f"reinvestigated with new context: {req.context.strip()[:200]}")
+    sources = load_datasources()
+    layer_sources = [sources[n] for n in parent.get("layers", []) if n in sources]
+    state = orchestrator.start_session(
+        server, problem, layer_sources=layer_sources, depth="deep",
+        incident_time=parent.get("incident_time"), mode="investigate",
+    )
+    await asyncio.to_thread(db.audit, actor, "reinvestigation_started",
+                            {"session": state.id, "parent": session_id})
+    return state.to_dict()
+
+
+@app.post("/api/sessions/{session_id}/remediate")
+async def remediate(session_id: str, request: Request):
+    parent = await _load_any_session(session_id)
+    report = parent.get("report") or {}
+    plan = report.get("remediation_plan") or []
+    if not plan:
+        raise HTTPException(status_code=400, detail="This session's report has no remediation plan")
+    server = load_inventory().get(parent["server"])
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    actor = _actor(request)
+    state = orchestrator.start_session(
+        server,
+        f"Execute approved remediation for: {parent['problem'][:200]}",
+        mode="remediate",
+        remediation={
+            "plan": plan,
+            "problem": parent["problem"][:400],
+            "root_cause": str(report.get("probable_root_cause", ""))[:400],
+            "parent_id": session_id,
+        },
+    )
+    await asyncio.to_thread(db.audit, actor, "remediation_started",
+                            {"session": state.id, "parent": session_id,
+                             "steps": len(plan)})
+    return state.to_dict()
+
+
+async def _load_any_session(session_id: str) -> dict:
+    state = orchestrator.SESSIONS.get(session_id)
     if state is not None:
-        return state.to_dict(include_events=True)
+        return state.to_dict()
     row = await asyncio.to_thread(db.get_session, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
