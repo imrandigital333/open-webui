@@ -7,6 +7,7 @@ API key is needed on a machine where `claude` is logged in.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -63,6 +64,14 @@ REMEDIATION_RULES = """   remediation_plan rules — the operator may execute it
 
 
 DEPTH_TURNS = {"quick": 35, "standard": 90, "deep": 160}
+
+# canonical health aspects — keep in sync with HEALTH_SECTION and the UI's ASPECTS
+HEALTH_ASPECTS = [
+    "connectivity", "uptime", "cpu", "load", "memory", "swap", "storage",
+    "inodes", "disk_io", "services", "processes", "network", "dns",
+    "time_sync", "firewall", "security", "certificates", "patching",
+    "kernel", "logs",
+]
 
 DEPTH_GUIDANCE = {
     "quick": (
@@ -180,8 +189,12 @@ Maintain a machine-readable health snapshot of the target server in
 ./health.json so the operator's dashboard updates live:
 - IMMEDIATELY after your first message, write the initial file with every
   aspect set to {"status": "unknown"}.
-- Rewrite the file as soon as you have assessed an aspect — do NOT batch the
-  updates to the end. Keep it cheap: most aspects come from a couple of
+- PROGRESSIVE UPDATES ARE MANDATORY: rewrite the file after EVERY aspect (or
+  small group of 2-3 aspects) you assess — the operator is watching this file
+  live and each write moves their progress display. Writing all results in
+  one batch at the end is a FAILURE even if the values are correct. Expect to
+  write health.json at least 5-6 times during the sweep.
+  Keep collection cheap: most aspects come from a couple of
   combined SSH commands (uptime; cat /proc/loadavg; nproc; top -b -n1 | head;
   free -m; df -h; df -i; vmstat 1 2 | tail -1;
   systemctl list-units --state=failed; ps -eo stat,pid,ppid,comm | awk '$1~/^Z/';
@@ -267,10 +280,18 @@ Tip: the library's health_sweep script collects most aspects in ONE call:
 - Save command outputs under ./logs/ for the operator.
 
 ## Workflow
-1. CONNECT: verify reachability, get date/uptime.
-2. SWEEP: run the combined health commands, update ./health.json per aspect
-   as results come in, and briefly investigate anything warning/critical.
-3. REPORT: write two files:
+1. CONNECT: verify reachability, get date/uptime, and write the initial
+   all-unknown ./health.json.
+2. SWEEP: run the combined health commands, then work through the output
+   aspect by aspect, rewriting ./health.json after each small group so the
+   operator's dashboard progresses visibly. Briefly investigate anything
+   warning/critical.
+3. COMPLETE THE CHECKLIST: re-read ./health.json — EVERY one of the twenty
+   aspects MUST have a verdict. Assess any aspect still "unknown" now; if
+   something is genuinely not measurable on this OS, set status "ok" or
+   "warning" with value "n/a" and a note explaining why. A finished check
+   with any aspect left "unknown" is an incomplete job.
+4. REPORT: write two files:
    - `report.md` — a short health report.
    - `report.json` — EXACTLY this JSON (valid JSON, no fences):
 {{
@@ -284,8 +305,8 @@ Tip: the library's health_sweep script collects most aspects in ONE call:
 }}
   (empty anomalies array if the server is fully healthy)
 
-Finish only after health.json shows no "unknown" aspects and both report
-files are written."""
+Finish only after health.json shows no "unknown" aspects — all twenty
+assessed — and both report files are written."""
 
 
 @dataclass
@@ -890,6 +911,18 @@ async def run_session(
         stderr_file.close()
         # Final health snapshot — the 2s watcher can miss the last write
         final_health = _read_health()
+        if final_health and state.mode == "healthcheck":
+            # backstop: every tracked aspect gets an explicit verdict so the
+            # dashboard and history never show silent gaps
+            checks = final_health.setdefault("checks", {})
+            for aspect in HEALTH_ASPECTS:
+                cur = checks.get(aspect) or {}
+                if (cur.get("status") or "unknown") == "unknown":
+                    checks[aspect] = {"status": "unknown", "value": "not assessed",
+                                      "note": cur.get("note") or
+                                      "the agent did not assess this aspect"}
+            with contextlib.suppress(OSError):
+                health_path.write_text(json.dumps(final_health, indent=1))
         if final_health:
             await state.emit("health", {"health": final_health})
             try:
