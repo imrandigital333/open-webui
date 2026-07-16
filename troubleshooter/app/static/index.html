@@ -271,6 +271,35 @@
                  animation: pulse 1s infinite; }
   .rc-typing i:nth-child(2) { animation-delay: .2s; }
   .rc-typing i:nth-child(3) { animation-delay: .4s; }
+  /* AI avatar */
+  .rmsg-row { display: flex; gap: 8px; align-items: flex-end; max-width: 94%;
+              align-self: flex-start; }
+  .rmsg-row .rmsg.bot { max-width: none; min-width: 0; }
+  .rc-ava { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            display: grid; place-items: center; color: #fff; }
+  .rc-ava svg { width: 17px; height: 17px; }
+  .rc-ava .eye { animation: blink 4.2s infinite; transform-origin: center; transform-box: fill-box; }
+  .rc-ava.think { animation: avaGlow 1.2s infinite; }
+  .rc-ava.think .eye { animation: blink 1.1s infinite; }
+  @keyframes blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(.12); } }
+  @keyframes avaGlow { 0%, 100% { box-shadow: 0 0 0 0 rgba(76,141,255,.55); }
+                       60% { box-shadow: 0 0 0 9px rgba(76,141,255,0); } }
+  #rchatIcon .rc-ava { width: 30px; height: 30px; }
+  #rchatIcon .rc-ava svg { width: 18px; height: 18px; }
+  /* minimised bubble */
+  #rcMini { position: fixed; right: 22px; bottom: 22px; width: 56px; height: 56px;
+            border-radius: 50%; border: none; padding: 0; display: none; place-items: center;
+            background: linear-gradient(135deg, var(--accent), var(--purple)); color: #fff;
+            cursor: pointer; z-index: 60; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #rcMini.show { display: grid; }
+  #rcMini svg { width: 28px; height: 28px; }
+  #rcMini .eye { animation: blink 4.2s infinite; transform-origin: center; transform-box: fill-box; }
+  #rcMini.think { animation: avaGlow 1.2s infinite; }
+  #rcMini .dot { position: absolute; top: 3px; right: 3px; width: 13px; height: 13px;
+                 border-radius: 50%; background: var(--err); border: 2px solid var(--bg);
+                 display: none; }
+  #rcMini.unread .dot { display: block; }
   .rchat-foot { border-top: 1px solid var(--border); padding: 8px 12px 10px; }
   .rchat-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 0; }
   .rchat-chips:not(:empty) { margin-bottom: 8px; }
@@ -575,9 +604,10 @@
   <div class="rchat-resize" id="rcResize" title="Drag to resize"></div>
   <div class="rchat-head" id="rchatHead">
     <span id="rchatIcon"></span>
-    <span>Remediation assistant</span>
+    <span>Remediation Assistant</span>
     <span class="sub" id="rchatSrv"></span>
-    <button id="rcSize" style="margin-left:auto" title="Toggle window size">⤢</button>
+    <button id="rcMin" style="margin-left:auto" title="Minimise">—</button>
+    <button id="rcSize" title="Toggle window size">⤢</button>
     <button onclick="closeRemChat()" title="Close">✕</button>
   </div>
   <div class="rchat-body" id="rchatBody"></div>
@@ -590,6 +620,7 @@
   </div>
   <div class="rchat-prog" id="rchatProg"></div>
 </div>
+<button id="rcMini" title="Remediation Assistant — click to restore"></button>
 
 <script>
 let inventory = [], datasources = [], sessionsCache = [];
@@ -1024,11 +1055,29 @@ async function startReinvestigation(btn) {
 //         finish (verdict question) | context (collecting reinvestigation notes) | done
 let rc = null;   // { plan, i, done: {idx: 'ok'|'err'|'skip'}, session, stage, pendingMsg }
 
+const AI_ROBOT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <line x1="12" y1="2.6" x2="12" y2="4.8"/><circle cx="12" cy="2.2" r="0.9" fill="currentColor" stroke="none"/>
+  <rect x="4.5" y="4.8" width="15" height="13.2" rx="3.6"/>
+  <circle class="eye" cx="9.2" cy="10.8" r="1.45" fill="currentColor" stroke="none"/>
+  <circle class="eye" cx="14.8" cy="10.8" r="1.45" fill="currentColor" stroke="none"/>
+  <path d="M9.2 14.6h5.6"/>
+  <line x1="2.4" y1="10" x2="4.5" y2="10"/><line x1="19.5" y1="10" x2="21.6" y2="10"/>
+</svg>`;
+let rcThinkCount = 0;
+function rcSetThinking(on) {
+  rcThinkCount = Math.max(0, rcThinkCount + (on ? 1 : -1));
+  const t = rcThinkCount > 0;
+  document.querySelector('#rchatIcon .rc-ava')?.classList.toggle('think', t);
+  $('rcMini').classList.toggle('think', t);
+}
+
 function openRemChat() {
   const plan = window._plan || [];
   if (!plan.length) return;
   rc = { plan, i: 0, done: {}, session: currentSession, stage: 'step', pendingMsg: null };
-  $('rchatIcon').innerHTML = ic('tool', 15);
+  rcThinkCount = 0;
+  $('rchatIcon').innerHTML = `<span class="rc-ava">${AI_ROBOT}</span>`;
+  $('rcMini').classList.remove('show', 'unread', 'think');
   $('rchatSrv').textContent = `· ${currentSessionInfo?.server || ''}`;
   $('rchatBody').innerHTML = '';
   $('rcInput').value = '';
@@ -1047,12 +1096,31 @@ function openRemChat() {
     backup needs) before anything executes.`);
   rcNextStep();
 }
-function closeRemChat() { $('remChat').classList.remove('open'); }
+function closeRemChat() {
+  $('remChat').classList.remove('open');
+  $('rcMini').classList.remove('show', 'unread');
+}
 function rcScroll() { const b = $('rchatBody'); b.scrollTop = b.scrollHeight; }
 function rcBot(html) {
+  const row = document.createElement('div');
+  row.className = 'rmsg-row';
+  row.innerHTML = `<span class="rc-ava">${AI_ROBOT}</span>`;
   const d = document.createElement('div');
   d.className = 'rmsg bot'; d.innerHTML = html;
-  $('rchatBody').appendChild(d); rcScroll(); return d;
+  row.appendChild(d);
+  $('rchatBody').appendChild(row); rcScroll();
+  if ($('rcMini').classList.contains('show')) $('rcMini').classList.add('unread');
+  d.remove = () => row.remove();   // callers remove the bubble; take the avatar too
+  return d;
+}
+function rcTypingMsg(label) {
+  // animated "AI is responding" state: header + mini avatar glow, eyes blink fast
+  rcSetThinking(true);
+  const d = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span> ${label}`);
+  d.closest('.rmsg-row').querySelector('.rc-ava').classList.add('think');
+  const rm = d.remove;
+  d.remove = () => { rcSetThinking(false); rm(); };
+  return d;
 }
 function rcUser(text) {
   const d = document.createElement('div');
@@ -1123,8 +1191,7 @@ function rcNextStep() {
 }
 async function rcExecStep() {
   const s = rc.plan[rc.i];
-  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span>
-    running on ${escapeHtml(currentSessionInfo?.server || 'the server')}…`);
+  const typing = rcTypingMsg(`running on ${escapeHtml(currentSessionInfo?.server || 'the server')}…`);
   try {
     const res = await fetch(`/api/sessions/${rc.session}/run-step`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1265,8 +1332,7 @@ function rcHint() {
 async function rcAdhocConfirm(cmd) {
   if (!cmd) return;
   rcUser(`!${cmd}`);
-  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span>
-    reviewing the command — impact, risk and backup needs…`);
+  const typing = rcTypingMsg('reviewing the command — impact, risk and backup needs…');
   let rev;
   try {
     const res = await fetch(`/api/sessions/${rc.session}/review-cmd`, {
@@ -1380,7 +1446,7 @@ async function rcRunReviewed(btn, withBackup) {
   await rcExecCmd(cmd, 'command');
 }
 async function rcExecCmd(cmd, label) {
-  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span> running ${label}…`);
+  const typing = rcTypingMsg(`running ${label}…`);
   try {
     const res = await fetch(`/api/sessions/${rc.session}/run-cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1400,6 +1466,16 @@ $('rcSize').onclick = () => {
   const chat = $('remChat');
   chat.style.removeProperty('--rcw');
   chat.classList.toggle('big');
+};
+$('rcMini').innerHTML = AI_ROBOT + '<span class="dot"></span>';
+$('rcMin').onclick = () => {
+  $('remChat').classList.remove('open');
+  $('rcMini').classList.add('show');
+};
+$('rcMini').onclick = () => {
+  $('rcMini').classList.remove('show', 'unread');
+  $('remChat').classList.add('open');
+  rcScroll();
 };
 (() => {  // drag the chat's left edge to any width
   const rz = $('rcResize'), chat = $('remChat');
