@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, healthprobe, orchestrator
+from . import cmdreview, db, healthprobe, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.20.0"
+APP_VERSION = "2.21.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -367,20 +367,43 @@ async def run_step(session_id: str, req: RunStepRequest, request: Request):
     return await _ssh_exec(server, step.get("command", ""))
 
 
+@app.post("/api/sessions/{session_id}/review-cmd")
+async def review_cmd(session_id: str, req: RunCmdRequest, request: Request):
+    """Assess an operator-typed command BEFORE execution: policy classification
+    (readonly/modifies/dangerous/blocked) plus an AI impact summary, suggested
+    backup command and worst-case damage. Blocked verdicts cannot be overridden."""
+    parent = await _load_any_session(session_id)
+    server = load_inventory().get(parent["server"])
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    result = await cmdreview.review(req.command, server)
+    await asyncio.to_thread(db.audit, _actor(request), "command_reviewed",
+                            {"session": session_id, "command": req.command[:300],
+                             "verdict": result["verdict"]})
+    return result
+
+
 @app.post("/api/sessions/{session_id}/run-cmd")
 async def run_cmd(session_id: str, req: RunCmdRequest, request: Request):
     """Execute ONE operator-typed command on the session's server over SSH.
 
     Powers the chat's ad-hoc `!command` input — the operator explicitly types
     and confirms the exact command; every run is audited with its full text.
+    Policy-blocked commands are refused here too, independent of the UI.
     """
     parent = await _load_any_session(session_id)
     server = load_inventory().get(parent["server"])
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
+    verdict, why = cmdreview.classify(req.command)
     actor = _actor(request)
+    if verdict == "blocked":
+        await asyncio.to_thread(db.audit, actor, "adhoc_command_blocked",
+                                {"session": session_id, "command": req.command[:500], "reason": why})
+        raise HTTPException(status_code=403, detail=f"Blocked by policy: this command {why}")
     await asyncio.to_thread(db.audit, actor, "adhoc_command_run",
-                            {"session": session_id, "command": req.command[:500]})
+                            {"session": session_id, "command": req.command[:500],
+                             "verdict": verdict})
     return await _ssh_exec(server, req.command)
 
 

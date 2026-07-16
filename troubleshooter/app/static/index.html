@@ -223,13 +223,22 @@
   .spin { display: inline-block; animation: rot 1.1s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
   /* interactive remediation chat */
-  #remChat { position: fixed; right: 22px; bottom: 22px; width: 420px;
+  #remChat { position: fixed; right: 22px; bottom: 22px; width: var(--rcw, 420px);
              max-width: calc(100vw - 40px); background: var(--panel);
              border: 1px solid #2b4a7a; border-radius: 14px;
              box-shadow: 0 12px 40px rgba(0,0,0,.55); display: none;
              flex-direction: column; max-height: min(74vh, 680px); z-index: 60;
              overflow: hidden; }
   #remChat.open { display: flex; }
+  #remChat.big { --rcw: min(820px, calc(100vw - 40px)); max-height: 90vh; }
+  .rchat-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
+                  cursor: ew-resize; z-index: 2; }
+  .rchat-resize:hover { background: var(--accent); opacity: .4; }
+  .rc-bak { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; }
+  .rc-danger { border: 1px solid var(--err); border-radius: 9px; padding: 9px 11px;
+               background: rgba(248,81,73,.07); }
+  .rc-block { border: 1px solid var(--err); border-radius: 9px; padding: 9px 11px;
+              background: rgba(248,81,73,.13); }
   .rchat-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px;
                 background: var(--panel2); border-bottom: 1px solid var(--border);
                 font-weight: 700; font-size: 13px; }
@@ -563,11 +572,13 @@
 </main>
 
 <div id="remChat">
+  <div class="rchat-resize" id="rcResize" title="Drag to resize"></div>
   <div class="rchat-head" id="rchatHead">
     <span id="rchatIcon"></span>
     <span>Remediation assistant</span>
     <span class="sub" id="rchatSrv"></span>
-    <button style="margin-left:auto" onclick="closeRemChat()" title="Close">✕</button>
+    <button id="rcSize" style="margin-left:auto" title="Toggle window size">⤢</button>
+    <button onclick="closeRemChat()" title="Close">✕</button>
   </div>
   <div class="rchat-body" id="rchatBody"></div>
   <div class="rchat-foot">
@@ -1009,7 +1020,8 @@ function openRemChat() {
       .map(k => `${counts[k]} ${k}`).join(' · ')}.<br><br>
     Nothing runs without your approval: click a button (or just type <b>run</b>) for each step
     and I'll show you the output before we continue. You can also type
-    <b>!&lt;command&gt;</b> at any time to run a one-off check on the server.`);
+    <b>!&lt;command&gt;</b> at any time — I review every command first (impact, risk,
+    backup needs) before anything executes.`);
   rcNextStep();
 }
 function closeRemChat() { $('remChat').classList.remove('open'); }
@@ -1221,24 +1233,111 @@ function rcHint() {
   rcBot(`I execute only approved commands, so I didn't act on that. You can:
     click a button above, type <b>run</b> / <b>skip</b> / <b>stop</b>
     ${rc.stage === 'fail' ? '/ <b>retry</b> / <b>rollback</b>' : ''},
-    or type <b>!&lt;command&gt;</b> to run a one-off read-only check on
-    ${escapeHtml(currentSessionInfo?.server || 'the server')} (e.g. <b>!systemctl status httpd</b>).`);
+    or type <b>!&lt;command&gt;</b> (e.g. <b>!systemctl status httpd</b>) — every command is
+    reviewed for impact and risk before it can run on
+    ${escapeHtml(currentSessionInfo?.server || 'the server')}.`);
 }
-function rcAdhocConfirm(cmd) {
+/* every ad-hoc command is REVIEWED before it may run:
+   readonly -> run | modifies -> backup-first | dangerous -> double confirm | blocked -> refused */
+async function rcAdhocConfirm(cmd) {
   if (!cmd) return;
   rcUser(`!${cmd}`);
-  rcBot(`Run this once on <b>${escapeHtml(currentSessionInfo?.server || '')}</b>?
+  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span>
+    reviewing the command — impact, risk and backup needs…`);
+  let rev;
+  try {
+    const res = await fetch(`/api/sessions/${rc.session}/review-cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd }),
+    });
+    rev = await res.json();
+    if (!res.ok) throw new Error(rev.detail || res.statusText);
+  } catch (e) { typing.remove(); rcBot(`❌ Could not review the command: ${escapeHtml(e.message)}`); return; }
+  typing.remove();
+  const srv = escapeHtml(currentSessionInfo?.server || 'the server');
+  if (rev.verdict === 'blocked') {
+    rcBot(`<div class="rc-block">⛔ <b>Not allowed.</b>
+      <div style="margin-top:5px">${escapeHtml(rev.impact)}</div>
+      <div class="code">${escapeHtml(cmd)}</div>
+      <div style="margin-top:6px;color:var(--muted)">Hard-blocked by policy — there is no override
+        for commands that can destroy the server.</div></div>`);
+    return;
+  }
+  if (rev.verdict === 'readonly') {
+    const m = rcBot(`<b>Review — read-only.</b> <span style="color:var(--muted)">(${escapeHtml(rev.source)})</span>
+      <div style="margin-top:5px">${escapeHtml(rev.impact)}</div>
+      <div class="code">${escapeHtml(cmd)}</div>
+      <div class="btns">
+        <button class="ghost run" onclick="rcRunReviewed(this, false)">${ic('play', 11)} Run on ${srv}</button>
+        <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
+      </div>`);
+    m.dataset.cmd = cmd;
+    return;
+  }
+  if (rev.verdict === 'modifies') {
+    const m = rcBot(`<b>Review — this command CHANGES ${srv}.</b> <span style="color:var(--muted)">(${escapeHtml(rev.source)})</span>
+      <div style="margin-top:5px">${escapeHtml(rev.impact)}</div>
+      ${rev.damage ? `<div style="margin-top:5px"><b>If it goes wrong:</b> ${escapeHtml(rev.damage)}</div>` : ''}
+      <div class="code">${escapeHtml(cmd)}</div>
+      <div style="margin-top:8px;font-weight:650">Take a backup first (recommended) — edit if needed:</div>
+      <input class="rc-bak" value="${escapeHtml(rev.backup_command || '')}"
+        placeholder="backup command, e.g. cp -a /etc/httpd /root/httpd.bak.$(date +%s)">
+      <div class="btns">
+        <button class="ghost run" onclick="rcRunReviewed(this, true)">${ic('archive', 11)} Run backup, then command</button>
+        <button class="ghost" onclick="rcRunReviewed(this, false)">Run without backup</button>
+        <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
+      </div>`);
+    m.dataset.cmd = cmd;
+    return;
+  }
+  // dangerous — double confirmation, backup strongly suggested
+  const m = rcBot(`<div class="rc-danger">⚠️ <b>High-risk command.</b> <span style="color:var(--muted)">(${escapeHtml(rev.source)})</span>
+    <div style="margin-top:5px">${escapeHtml(rev.impact)}</div>
+    ${rev.damage ? `<div style="margin-top:5px"><b>Worst case:</b> ${escapeHtml(rev.damage)}</div>` : ''}
     <div class="code">${escapeHtml(cmd)}</div>
+    ${rev.backup_command ? `<div style="margin-top:8px;font-weight:650">If you proceed, back up first — edit if needed:</div>
+      <input class="rc-bak" value="${escapeHtml(rev.backup_command)}">` : ''}
     <div class="btns">
-      <button class="ghost run" onclick="rcAdhocRun(this)">${ic('play', 11)} Run</button>
-      <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
-    </div>`).dataset.cmd = cmd;
+      <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel (recommended)</button>
+      <button class="ghost danger" onclick="rcDangerStep2(this)">I understand the risk — continue</button>
+    </div></div>`);
+  m.dataset.cmd = cmd;
 }
-async function rcAdhocRun(btn) {
+function rcDangerStep2(btn) {
+  const msg = btn.closest('.rmsg');
+  const bak = msg.querySelector('.rc-bak')?.value.trim() || '';
+  rcDisableMsg(msg);
+  const m2 = rcBot(`<div class="rc-danger"><b>Final confirmation required.</b>
+    This will execute on <b>${escapeHtml(currentSessionInfo?.server || '')}</b>:
+    <div class="code">${escapeHtml(msg.dataset.cmd || '')}</div>
+    ${bak ? `Backup runs first: <span style="font-family:var(--mono);font-size:11px">${escapeHtml(bak)}</span>`
+          : '<b>No backup will be taken.</b>'}
+    <div class="btns">
+      <button class="ghost danger" onclick="rcRunReviewed(this, ${bak ? 'true' : 'false'})">Yes — execute now</button>
+      <button class="ghost" onclick="rcDisableMsg(this.closest('.rmsg'))">Cancel</button>
+    </div></div>`);
+  m2.dataset.cmd = msg.dataset.cmd;
+  if (bak) m2.dataset.bak = bak;
+}
+async function rcRunReviewed(btn, withBackup) {
   const msg = btn.closest('.rmsg');
   const cmd = msg.dataset.cmd || '';
+  const bak = withBackup ? (msg.dataset.bak || msg.querySelector('.rc-bak')?.value.trim() || '') : '';
   rcDisableMsg(msg);
-  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span> running…`);
+  if (withBackup && !bak) {
+    rcBot('No backup command was given — stopped. Type the command again and fill the backup box.');
+    return;
+  }
+  if (bak) {
+    rcUser('Run the backup first');
+    const ok = await rcExecCmd(bak, 'backup');
+    if (!ok) { rcBot('❌ The backup failed — stopping here. Fix the backup command and try again.'); return; }
+  }
+  rcUser(bak ? 'Backup done — run the command' : 'Run the command');
+  await rcExecCmd(cmd, 'command');
+}
+async function rcExecCmd(cmd, label) {
+  const typing = rcBot(`<span class="rc-typing"><i></i><i></i><i></i></span> running ${label}…`);
   try {
     const res = await fetch(`/api/sessions/${rc.session}/run-cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1246,12 +1345,36 @@ async function rcAdhocRun(btn) {
     });
     const d = await res.json();
     typing.remove();
-    rcBot(`${d.ok ? '✅' : '❌'} <span style="color:var(--muted)">exit ${d.exit_code ?? '?'}</span>
+    if (!res.ok) { rcBot(`⛔ ${escapeHtml(d.detail || res.statusText)}`); return false; }
+    rcBot(`${d.ok ? '✅' : '❌'} <b>${label}</b> <span style="color:var(--muted)">(exit ${d.exit_code ?? '?'})</span>
       <div class="out ${d.ok ? 'ok' : 'err'}">${escapeHtml((d.output || '').trim() || '(no output)')}</div>`);
-  } catch (e) { typing.remove(); rcBot(`❌ Could not execute: ${escapeHtml(e.message)}`); }
+    return !!d.ok;
+  } catch (e) { typing.remove(); rcBot(`❌ Could not execute: ${escapeHtml(e.message)}`); return false; }
 }
 $('rcSendBtn').onclick = rcSend;
 $('rcInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') rcSend(); });
+$('rcSize').onclick = () => {
+  const chat = $('remChat');
+  chat.style.removeProperty('--rcw');
+  chat.classList.toggle('big');
+};
+(() => {  // drag the chat's left edge to any width
+  const rz = $('rcResize'), chat = $('remChat');
+  let dragging = false;
+  rz.addEventListener('pointerdown', (e) => {
+    dragging = true; rz.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = 'none';
+  });
+  rz.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    chat.classList.remove('big');
+    const w = Math.min(920, Math.max(340, window.innerWidth - 22 - e.clientX));
+    chat.style.setProperty('--rcw', w + 'px');
+  });
+  rz.addEventListener('pointerup', () => {
+    dragging = false; document.body.style.userSelect = '';
+  });
+})();
 
 /* ---------- remediation run report ---------- */
 function renderRemediateReport(report) {
