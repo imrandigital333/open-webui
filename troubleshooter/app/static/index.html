@@ -2029,7 +2029,13 @@ $('testItsmBtn').onclick = async () => {
         + (r.changes_error ? ` (changes call failed: ${r.changes_error} — check the Changes ServiceName)` : '');
     } else {
       msg.style.color = 'var(--err)';
-      msg.textContent = '✕ ' + (r.error || 'connection failed');
+      let err = '✕ ' + (r.error || 'connection failed');
+      if (/CERTIFICATE_VERIFY_FAILED/i.test(err)) {
+        err += ' — the endpoint uses an internal/self-signed certificate. Either untick'
+             + ' "Verify TLS certificate" above and re-test, or install your internal CA on'
+             + ' this server (update-ca-certificates) to keep verification on.';
+      }
+      msg.textContent = err;
     }
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 };
