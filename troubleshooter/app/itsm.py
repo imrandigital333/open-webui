@@ -4,7 +4,9 @@ Two API styles are supported, selectable in Settings:
 
 - summit_wcf (default): SummitAI's web-service endpoint, e.g.
       https://10.x.x.x/Chatbotproxy/REST/Summit_RESTWCF.svc
-  Every operation is a POST of a JSON envelope:
+  The JSON operation path (default RESTService/CommonWS_JsonObjCall) is
+  appended to that URL — the bare .svc address is WCF's SOAP endpoint and
+  answers JSON with HTTP 415. Every operation is a POST of a JSON envelope:
       {"ServiceName": "<op>", "objCommonParameters": {"_ProxyDetails": {
           "AuthType": "APIKEY", "APIKey": "...", "ProxyID": 0,
           "ReturnType": "JSON", "OrgID": 1}, ...op params...}}
@@ -48,6 +50,10 @@ DEFAULTS = {
     # 10.x.x.x calls to the URL filter, which answers 403. Off by default.
     "use_proxy": False,
     # summit_wcf style
+    # The bare ...Summit_RESTWCF.svc address is WCF's SOAP endpoint and
+    # answers JSON POSTs with HTTP 415; the JSON envelope goes to this
+    # operation path below it.
+    "wcf_operation": "RESTService/CommonWS_JsonObjCall",
     "org_id": 1,
     "proxy_id": 0,
     "incidents_service": "IM_FetchIncidents",
@@ -65,6 +71,7 @@ _ENV_MAP = {
     "api_style": "SUMMITAI_API_STYLE",
     "base_url": "SUMMITAI_BASE_URL",
     "token": "SUMMITAI_TOKEN",
+    "wcf_operation": "SUMMITAI_WCF_OPERATION",
     "org_id": "SUMMITAI_ORG_ID",
     "proxy_id": "SUMMITAI_PROXY_ID",
     "incidents_service": "SUMMITAI_INCIDENTS_SERVICE",
@@ -255,14 +262,24 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
             **(params or {}),
         },
     }
-    status, raw = _open(cfg["base_url"], cfg,
+    url = cfg["base_url"]
+    op = str(cfg.get("wcf_operation") or "").strip().strip("/")
+    if op and not url.lower().endswith("/" + op.lower()):
+        url = f"{url}/{op}"
+    status, raw = _open(url, cfg,
                         json.dumps(envelope).encode(),
-                        {"Content-Type": "application/json", "Accept": "application/json"})
+                        {"Content-Type": "application/json; charset=utf-8",
+                         "Accept": "application/json"})
     if status >= 400:
         # surface Summit's own explanation (JSON error or proxy/WAF page text)
         snippet = " ".join(raw.split())[:220]
+        hint = ""
+        if status == 415:
+            hint = (" — the endpoint rejected the JSON content type, which usually means"
+                    " the operation path is wrong (a bare ...WCF.svc URL is the SOAP"
+                    f" endpoint). Current path: {url}")
         raise RuntimeError(f"SummitAI returned HTTP {status} for {service}"
-                           + (f" — response: {snippet}" if snippet else ""))
+                           + (f" — response: {snippet}" if snippet else "") + hint)
     data = _parse_json(raw)
     if data is None:
         raise RuntimeError(f"SummitAI returned non-JSON for {service}: {raw[:160]}")

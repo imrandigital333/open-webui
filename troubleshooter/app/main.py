@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.30.0"
+APP_VERSION = "2.31.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -202,6 +202,7 @@ class ItsmConfigRequest(BaseModel):
     verify_tls: bool = True
     use_proxy: bool = False
     # summit_wcf style
+    wcf_operation: str = Field("RESTService/CommonWS_JsonObjCall", max_length=200)
     org_id: int = Field(1, ge=0, le=10_000)
     proxy_id: int = Field(0, ge=0, le=10_000)
     incidents_service: str = Field("IM_FetchIncidents", max_length=100)

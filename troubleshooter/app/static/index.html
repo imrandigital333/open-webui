@@ -675,6 +675,9 @@
             <input id="it_token" type="password" maxlength="1000" placeholder="paste key to set / change"></div>
         </div>
         <div id="itsmWcfFields" style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
+          <div style="grid-column:1/-1"><label>Operation path (appended to the .svc URL)</label>
+            <input id="it_wcf_operation" maxlength="200" placeholder="RESTService/CommonWS_JsonObjCall">
+            <div class="desc">The bare …WCF.svc address is the SOAP endpoint and answers JSON with HTTP 415 — the JSON envelope is posted to this path below it.</div></div>
           <div><label>OrgID</label><input id="it_org_id" type="number" value="1" min="0" max="10000"></div>
           <div><label>ProxyID</label><input id="it_proxy_id" type="number" value="0" min="0" max="10000"></div>
           <div><label>Incidents list ServiceName</label>
@@ -1980,6 +1983,7 @@ async function loadItsmConfig() {
   const c = await (await fetch('/api/admin/itsm')).json();
   $('it_api_style').value = c.api_style || 'summit_wcf';
   $('it_base_url').value = c.base_url || '';
+  $('it_wcf_operation').value = c.wcf_operation ?? 'RESTService/CommonWS_JsonObjCall';
   $('it_org_id').value = c.org_id ?? 1;
   $('it_proxy_id').value = c.proxy_id ?? 0;
   $('it_incidents_service').value = c.incidents_service || 'IM_FetchIncidents';
@@ -2006,6 +2010,7 @@ function itsmForm() {
     token: $('it_token').value,
     verify_tls: $('it_verify_tls').checked,
     use_proxy: $('it_use_proxy').checked,
+    wcf_operation: $('it_wcf_operation').value.trim(),
     org_id: parseInt($('it_org_id').value, 10) || 1,
     proxy_id: parseInt($('it_proxy_id').value, 10) || 0,
     incidents_service: $('it_incidents_service').value.trim() || 'IM_FetchIncidents',
