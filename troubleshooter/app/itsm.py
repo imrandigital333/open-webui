@@ -430,17 +430,37 @@ def get_incident(incident_id: str) -> dict | None:
     cfg = load_config()
     if not configured(cfg):
         return next((i for i in _demo_incidents() if i["id"] == incident_id), None)
+    want = str(incident_id)
     if cfg["api_style"] == "summit_wcf":
+        # The listing is the proven-working source — it is the base, and the
+        # detail service (whose response shape varies wildly per deployment)
+        # only ENRICHES it. A detail answer that doesn't clearly belong to
+        # this ticket is discarded instead of being shown as the incident.
+        base = next((i for i in (_norm_incident(r) for r in _fetch_incident_rows(cfg))
+                     if i["id"] == want), None)
+        detail = None
         try:
             rows = _wcf_call(cfg["incident_detail_service"],
                              {"TicketNo": incident_id}, cfg)
-            if rows:
-                return _norm_incident(rows[0])
+            for r in rows:
+                n = _norm_incident(r)
+                looks_real = n["title"] != "(no subject)" or n["description"]
+                # some deployments omit the ticket no from the detail body;
+                # accept that only when we have the listing row to anchor it
+                if n["id"] == want or (n["id"] == "" and base is not None and looks_real):
+                    detail = n
+                    break
         except RuntimeError:
-            pass   # fall back to searching the listing
-        return next((i for i in
-                     (_norm_incident(r) for r in _fetch_incident_rows(cfg))
-                     if i["id"] == str(incident_id)), None)
+            pass   # unknown/unwhitelisted detail service — the listing suffices
+        if base and detail:
+            # normaliser defaults must never overwrite real listing data
+            placeholders = ("", None, "Unassigned", "(no subject)", "Open", "P3")
+            merged = dict(base)
+            for k, v in detail.items():
+                if k != "id" and v not in placeholders:
+                    merged[k] = v
+            return merged
+        return detail or base
     rows = [_norm_incident(r) for r in _rest_get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
     return rows[0] if rows else None
 

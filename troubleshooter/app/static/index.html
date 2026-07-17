@@ -2285,10 +2285,23 @@ async function openIncident(id) {
   d.style.display = 'block';
   d.innerHTML = `<div class="incd-panel"><div class="incd-body">Loading ${escapeHtml(id)}…</div></div>`;
   d.onclick = (e) => { if (e.target === d) closeIncident(); };
-  let inc;
-  try { inc = await (await fetch(`/api/incidents/${encodeURIComponent(id)}`)).json(); }
-  catch { d.querySelector('.incd-body').textContent = 'Failed to load incident.'; return; }
-  const p = inc.priority.toLowerCase();
+  let inc = null, err = '';
+  try {
+    const r = await fetch(`/api/incidents/${encodeURIComponent(id)}`);
+    const body = await r.json().catch(() => null);
+    if (r.ok && body && body.id) inc = body;
+    else err = (body && body.detail) || `HTTP ${r.status}`;
+  } catch (e) { err = e.message; }
+  if (!inc) {
+    // the card the user clicked came from the listing — reuse its data
+    inc = incidentsCache.find(i => String(i.id) === String(id)) || null;
+  }
+  if (!inc) {
+    d.querySelector('.incd-body').textContent =
+      `Could not load ${id}${err ? ' — ' + err : ''}.`;
+    return;
+  }
+  const p = String(inc.priority || 'P3').toLowerCase();
   const matched = inventory.find(s => s.name === inc.ci
     || (inc.ci && s.name.toLowerCase() === inc.ci.toLowerCase()));
   const opts = inventory.map(s =>
