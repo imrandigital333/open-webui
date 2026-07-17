@@ -464,6 +464,42 @@
   .ov-item .p { color: var(--muted); font-size: 12px; overflow: hidden;
                 text-overflow: ellipsis; white-space: nowrap; }
   .ov-item .meta { font-size: 11px; color: var(--muted); }
+  /* incidents + changes */
+  .incgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+  .inc-card { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--border);
+              border-radius: 12px; padding: 14px 16px; cursor: pointer; transition: border-color .15s; }
+  .inc-card:hover { border-color: var(--accent); }
+  .inc-card.p-p1 { border-left-color: var(--err); }
+  .inc-card.p-p2 { border-left-color: var(--warn); }
+  .inc-card.p-p3 { border-left-color: var(--accent); }
+  .inc-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .pri { font-size: 11px; font-weight: 800; letter-spacing: .04em; border-radius: 6px;
+         padding: 1px 8px; }
+  .pri.p-p1 { background: #3d1d1d; color: var(--err); }
+  .pri.p-p2 { background: #3a2f14; color: var(--warn); }
+  .pri.p-p3 { background: #16203a; color: var(--accent2); }
+  .inc-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .inc-stat { margin-left: auto; font-size: 11px; font-weight: 700; text-transform: uppercase;
+              color: var(--muted); }
+  .inc-title { font-weight: 650; line-height: 1.4; margin-bottom: 6px; }
+  .inc-meta { display: flex; gap: 8px 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  .inc-meta b { color: var(--text); font-weight: 600; }
+  /* incident detail slide-over */
+  #incDetail.open { display: block; position: fixed; inset: 0; z-index: 70;
+                    background: rgba(0,0,0,.5); }
+  .incd-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 560px;
+                max-width: calc(100vw - 40px); background: var(--panel);
+                border-left: 1px solid var(--border); box-shadow: -12px 0 40px rgba(0,0,0,.5);
+                display: flex; flex-direction: column; overflow: hidden; }
+  .incd-head { display: flex; align-items: center; gap: 9px; padding: 14px 18px;
+               border-bottom: 1px solid var(--border); background: var(--panel2); }
+  .incd-head button { width: auto; background: none; border: none; color: var(--muted);
+                      font-size: 16px; padding: 2px 8px; }
+  .incd-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .incd-foot { padding: 14px 18px; border-top: 1px solid var(--border); background: var(--panel2); }
+  .incd-field { margin: 12px 0; }
+  .incd-field label { display: block; }
+  .incd-field .val { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
   .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
   .card .top { display: flex; align-items: center; gap: 11px; }
@@ -523,7 +559,9 @@
   </div>
   <nav class="nav">
     <button id="navOverview" class="active">Overview</button>
+    <button id="navIncidents">Incidents</button>
     <button id="navWork">Investigations</button>
+    <button id="navChanges">Changes</button>
     <button id="navSettings">Settings</button>
   </nav>
   <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
@@ -542,6 +580,34 @@
     </div>
   </div>
 </div>
+
+<div id="viewIncidents" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
+    <h2 style="margin:0">Active incidents</h2>
+    <span class="tag" id="incSource"></span>
+    <span class="hint" style="margin:0">P1 &amp; P2 · from SummitAI</span>
+    <button class="ghost" id="incRefresh" style="margin-left:auto">↻ Refresh</button>
+  </div>
+  <div class="hint" style="margin-bottom:14px">Click an incident to see its details and launch a
+    troubleshooting session with the incident context pre-filled.</div>
+  <div class="incgrid" id="incList"><div class="empty">Loading incidents…</div></div>
+</div>
+
+<div id="viewChanges" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
+    <h2 style="margin:0">Approved changes</h2>
+    <span class="tag" id="chgSource"></span>
+    <span class="hint" style="margin:0">from SummitAI · preview</span>
+    <button class="ghost" id="chgRefresh" style="margin-left:auto">↻ Refresh</button>
+  </div>
+  <div class="hint" style="margin-bottom:14px">Approved changes ready for implementation. The
+    change-implementer agent (which executes an approved plan step by step) will plug in here — this
+    is an early view.</div>
+  <div class="incgrid" id="chgList"><div class="empty">Loading changes…</div></div>
+</div>
+
+<!-- incident detail slide-over -->
+<div id="incDetail" style="display:none"></div>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
@@ -1839,18 +1905,187 @@ async function loadFiles(id) {
 
 /* ---------- views ---------- */
 function switchView(view) {
-  $('viewOverview').style.display = view === 'overview' ? '' : 'none';
-  $('viewWork').style.display = view === 'work' ? '' : 'none';
-  $('viewSettings').style.display = view === 'settings' ? '' : 'none';
-  $('navOverview').classList.toggle('active', view === 'overview');
-  $('navWork').classList.toggle('active', view === 'work');
-  $('navSettings').classList.toggle('active', view === 'settings');
+  const views = { overview: 'viewOverview', incidents: 'viewIncidents', work: 'viewWork',
+                  changes: 'viewChanges', settings: 'viewSettings' };
+  const nav = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
+                changes: 'navChanges', settings: 'navSettings' };
+  Object.entries(views).forEach(([v, id]) => $(id).style.display = v === view ? '' : 'none');
+  Object.entries(nav).forEach(([v, id]) => $(id).classList.toggle('active', v === view));
   if (view === 'overview') loadFleet();
+  if (view === 'incidents') loadIncidents();
+  if (view === 'changes') loadChanges();
   if (view === 'settings') { loadAdminInventory(); loadScripts(); }
 }
 $('navOverview').onclick = () => switchView('overview');
+$('navIncidents').onclick = () => switchView('incidents');
 $('navWork').onclick = () => switchView('work');
+$('navChanges').onclick = () => switchView('changes');
 $('navSettings').onclick = () => switchView('settings');
+
+/* ---------- incidents (SummitAI) ---------- */
+let incidentsCache = [];
+async function loadIncidents() {
+  const box = $('incList');
+  try {
+    const d = await (await fetch('/api/incidents')).json();
+    incidentsCache = d.incidents || [];
+    $('incSource').textContent = d.source || 'SummitAI';
+    box.classList.toggle('empty', !incidentsCache.length);
+    box.innerHTML = incidentsCache.length ? incidentsCache.map(i => {
+      const p = i.priority.toLowerCase();
+      return `<div class="inc-card p-${p}" onclick="openIncident('${escapeHtml(i.id)}')">
+        <div class="inc-top">
+          <span class="pri p-${p}">${escapeHtml(i.priority)}</span>
+          <span class="inc-id">${escapeHtml(i.id)}</span>
+          <span class="inc-stat">${escapeHtml(i.status)}</span>
+        </div>
+        <div class="inc-title">${escapeHtml(i.title)}</div>
+        <div class="inc-meta">
+          ${i.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(i.ci)}</b></span>` : ''}
+          ${i.reported_at ? `<span>${ic('clock', 11)} ${escapeHtml(fmtWhen(i.reported_at))}</span>` : ''}
+          ${i.assignee ? `<span>${escapeHtml(i.assignee)}</span>` : ''}
+        </div></div>`;
+    }).join('') : 'No active P1/P2 incidents right now.';
+  } catch (e) {
+    box.classList.remove('empty');
+    box.innerHTML = `<div class="empty">Could not load incidents: ${escapeHtml(e.message)}</div>`;
+  }
+}
+function fmtWhen(s) {
+  const t = Date.parse(s);
+  return isNaN(t) ? s : timeAgo(t / 1000);
+}
+
+async function openIncident(id) {
+  const d = $('incDetail');
+  d.className = 'open';
+  d.style.display = 'block';
+  d.innerHTML = `<div class="incd-panel"><div class="incd-body">Loading ${escapeHtml(id)}…</div></div>`;
+  d.onclick = (e) => { if (e.target === d) closeIncident(); };
+  let inc;
+  try { inc = await (await fetch(`/api/incidents/${encodeURIComponent(id)}`)).json(); }
+  catch { d.querySelector('.incd-body').textContent = 'Failed to load incident.'; return; }
+  const p = inc.priority.toLowerCase();
+  const matched = inventory.find(s => s.name === inc.ci
+    || (inc.ci && s.name.toLowerCase() === inc.ci.toLowerCase()));
+  const opts = inventory.map(s =>
+    `<option value="${escapeHtml(s.name)}" ${s.name === matched?.name ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
+  const prob = `[${inc.id}] ${inc.title}${inc.description ? '\n\n' + inc.description : ''}`;
+  d.innerHTML = `<div class="incd-panel">
+    <div class="incd-head">
+      <span class="pri p-${p}">${escapeHtml(inc.priority)}</span>
+      <span class="inc-id">${escapeHtml(inc.id)}</span>
+      <span style="font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(inc.status)}</span>
+      <button style="margin-left:auto" onclick="closeIncident()">✕</button>
+    </div>
+    <div class="incd-body">
+      <div style="font-size:15px;font-weight:700;line-height:1.4">${escapeHtml(inc.title)}</div>
+      <div class="inc-meta" style="margin-top:8px">
+        ${inc.raised_by ? `<span>Raised by <b>${escapeHtml(inc.raised_by)}</b></span>` : ''}
+        ${inc.assignee ? `<span>Assigned <b>${escapeHtml(inc.assignee)}</b></span>` : ''}
+        ${inc.category ? `<span>${escapeHtml(inc.category)}</span>` : ''}
+        ${inc.reported_at ? `<span>${escapeHtml(fmtWhen(inc.reported_at))}</span>` : ''}
+      </div>
+      <div style="border-top:1px solid var(--border);margin:14px 0"></div>
+      <div class="hint">Review and adjust before starting — these prefill the investigation.</div>
+      <div class="incd-field">
+        <label for="incdServer">Affected server</label>
+        <select id="incdServer">${opts || '<option value="">(no servers in inventory)</option>'}</select>
+        ${matched ? '' : `<div class="hint" style="color:var(--warn)">Incident CI "${escapeHtml(inc.ci || '—')}" not matched to inventory — pick the server.</div>`}
+      </div>
+      <div class="incd-field">
+        <label for="incdProblem">Problem statement</label>
+        <textarea id="incdProblem" style="min-height:120px">${escapeHtml(prob)}</textarea>
+      </div>
+      <div class="incd-field">
+        <label for="incdTime">Problem started at <span style="font-weight:normal">(approximate)</span></label>
+        <input id="incdTime" type="text" maxlength="64"
+          placeholder='e.g. "around 2:30pm today", "1 hour ago"'
+          value="${escapeHtml(inc.reported_at ? fmtWhen(inc.reported_at) : '')}">
+      </div>
+      <div class="incd-field">
+        <label>Investigation depth</label>
+        <div class="seg" id="incdDepth">
+          <button data-d="quick">Quick</button>
+          <button data-d="standard" class="active">Standard</button>
+          <button data-d="deep">Deep</button>
+        </div>
+      </div>
+    </div>
+    <div class="incd-foot">
+      <button class="primary" style="margin:0" onclick="startFromIncident('${escapeHtml(inc.id)}')">
+        ${ic('search', 12)} Start troubleshooting</button>
+    </div></div>`;
+  d.querySelectorAll('#incdDepth button').forEach(b => b.onclick = () => {
+    d.querySelectorAll('#incdDepth button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+  });
+}
+function closeIncident() {
+  $('incDetail').className = ''; $('incDetail').style.display = 'none'; $('incDetail').innerHTML = '';
+}
+
+async function startFromIncident(id) {
+  const server = $('incdServer').value;
+  const problem = $('incdProblem').value.trim();
+  const incidentTime = $('incdTime').value.trim();
+  const depth = $('incDetail').querySelector('#incdDepth .active')?.dataset.d || 'standard';
+  if (!server) { alert('Pick the affected server.'); return; }
+  if (problem.length < 10) { alert('Problem statement is too short.'); return; }
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server, mode: 'investigate', problem, depth,
+                             incident_time: incidentTime || null, incident_id: id }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const session = await res.json();
+    closeIncident();
+    await refreshSessions();
+    switchView('work');
+    openSession(session.id);
+  } catch (e) { alert('Failed to start: ' + e.message); }
+}
+
+/* ---------- changes (SummitAI · preview) ---------- */
+async function loadChanges() {
+  const box = $('chgList');
+  try {
+    const d = await (await fetch('/api/changes')).json();
+    $('chgSource').textContent = d.source || 'SummitAI';
+    const rows = d.changes || [];
+    box.classList.toggle('empty', !rows.length);
+    box.innerHTML = rows.length ? rows.map(c => `
+      <div class="inc-card p-p3" style="cursor:default">
+        <div class="inc-top">
+          <span class="pri p-p3">${escapeHtml(c.type || 'Change')}</span>
+          <span class="inc-id">${escapeHtml(c.id)}</span>
+          <span class="inc-stat" style="color:var(--ok)">${escapeHtml(c.status)}</span>
+        </div>
+        <div class="inc-title">${escapeHtml(c.title)}</div>
+        <div class="inc-meta" style="margin-bottom:8px">
+          ${c.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(c.ci)}</b></span>` : ''}
+          ${c.window ? `<span>${ic('clock', 11)} ${escapeHtml(c.window)}</span>` : ''}
+          <span>risk <b>${escapeHtml(c.risk)}</b></span>
+          ${c.implementer ? `<span>${escapeHtml(c.implementer)}</span>` : ''}
+        </div>
+        ${(c.plan || []).length ? `<details class="acc" style="margin:0">
+          <summary>${ic('terminal')}<span>Implementation plan</span>
+            <span class="count">${c.plan.length}</span><span class="chev">${ic('chevron-down', 13)}</span></summary>
+          <div class="acc-body"><ol style="margin:0 0 0 16px">${
+            c.plan.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol></div></details>` : ''}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="ghost" disabled title="Coming soon">${ic('zap', 11)} Implement change</button>
+          <span class="hint" style="align-self:center">implementer agent — coming soon</span>
+        </div>
+      </div>`).join('') : 'No approved changes.';
+  } catch (e) {
+    box.classList.remove('empty');
+    box.innerHTML = `<div class="empty">Could not load changes: ${escapeHtml(e.message)}</div>`;
+  }
+}
+$('incRefresh').onclick = loadIncidents;
+$('chgRefresh').onclick = loadChanges;
 
 /* ---------- settings: inventory manager ---------- */
 let adminServers = [];
@@ -2350,9 +2585,12 @@ function renderHead(s) {
   $('shMode').textContent = MODE_BADGE[s.mode] || MODE_BADGE.investigate;
   $('shStatus').className = `status ${s.status}`;
   $('shStatus').innerHTML = (s.status === 'running' ? '<span class="spinner"></span>' : '') + s.status;
-  $('shPills').innerHTML = (s.mode === 'healthcheck' ? '' :
-    `<span class="tag">${escapeHtml(s.depth)}</span>` +
-    (s.layers || []).map(l => `<span class="tag">${escapeHtml(l)}</span>`).join(''));
+  $('shPills').innerHTML =
+    (s.incident_id ? `<span class="tag" style="border-color:#6e2c2c;color:var(--err)"
+       title="Launched from SummitAI incident">${escapeHtml(s.incident_id)}</span>` : '') +
+    (s.mode === 'healthcheck' ? '' :
+      `<span class="tag">${escapeHtml(s.depth)}</span>` +
+      (s.layers || []).map(l => `<span class="tag">${escapeHtml(l)}</span>`).join(''));
   $('cancelBtn').style.display = s.status === 'running' ? '' : 'none';
   $('dlReport').style.display = (s.status === 'completed' || s.report) ? '' : 'none';
   renderStats(s);

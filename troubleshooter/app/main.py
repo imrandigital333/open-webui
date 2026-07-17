@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import cmdreview, db, healthprobe, orchestrator
+from . import cmdreview, db, healthprobe, itsm, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.26.4"
+APP_VERSION = "2.27.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -84,6 +84,8 @@ class SessionRequest(BaseModel):
     # Approximate time the problem started, as reported by the operator
     # (free-form; e.g. "2026-07-15T14:30" from the UI's datetime picker)
     incident_time: str | None = Field(None, max_length=64)
+    # optional ITSM incident this session was launched from (e.g. "INC-100482")
+    incident_id: str | None = Field(None, max_length=64)
 
 
 @app.get("/")
@@ -178,12 +180,49 @@ async def create_session(req: SessionRequest, request: Request):
         depth=req.depth,
         incident_time=(req.incident_time or "").strip() or None,
         mode=req.mode,
+        incident_id=(req.incident_id or "").strip() or None,
     )
     await asyncio.to_thread(
         db.audit, _actor(request), "session_started",
-        {"session": state.id, "server": req.server, "mode": req.mode},
+        {"session": state.id, "server": req.server, "mode": req.mode,
+         "incident_id": (req.incident_id or "").strip() or None},
     )
     return state.to_dict()
+
+
+@app.get("/api/itsm/status")
+async def itsm_status():
+    return itsm.status()
+
+
+@app.get("/api/incidents")
+async def incidents():
+    """Active P1/P2 incidents from SummitAI (demo data until configured)."""
+    try:
+        rows = await asyncio.to_thread(itsm.list_incidents)
+        return {"incidents": rows, **itsm.status()}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+
+
+@app.get("/api/incidents/{incident_id}")
+async def incident_detail(incident_id: str):
+    try:
+        inc = await asyncio.to_thread(itsm.get_incident, incident_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+    if inc is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return inc
+
+
+@app.get("/api/changes")
+async def changes():
+    """Approved changes from SummitAI (dummy view for now)."""
+    try:
+        return {"changes": await asyncio.to_thread(itsm.list_changes), **itsm.status()}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
 
 
 @app.get("/api/fleet")

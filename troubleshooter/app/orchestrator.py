@@ -324,6 +324,7 @@ class SessionState:
     layers: list[str] = field(default_factory=list)
     depth: str = "standard"
     incident_time: str | None = None
+    incident_id: str | None = None
     phase: str | None = None
     duration_ms: int | None = None
     cost_usd: float | None = None
@@ -383,6 +384,7 @@ class SessionState:
             "layers": self.layers,
             "depth": self.depth,
             "incident_time": self.incident_time,
+            "incident_id": self.incident_id,
             "phase": self.phase,
             "duration_ms": self.duration_ms,
             "cost_usd": self.cost_usd,
@@ -850,6 +852,7 @@ async def run_session(
             "max_turns": max_turns,
             "layers": [ds["name"] for ds in layer_sources],
             "incident_time": state.incident_time,
+            "incident_id": state.incident_id,
         }, indent=2))
         deadline = time.monotonic() + timeout_s
         phase_re = re.compile(r"^\s*PHASE:\s*([A-Za-z]+)\s*$", re.MULTILINE)
@@ -1087,6 +1090,7 @@ def start_session(
     incident_time: str | None = None,
     mode: str = "investigate",
     remediation: dict | None = None,
+    incident_id: str | None = None,
 ) -> SessionState:
     state = SessionState(
         id=uuid.uuid4().hex[:12],
@@ -1097,6 +1101,7 @@ def start_session(
         layers=[ds["name"] for ds in (layer_sources or [])],
         depth=depth if depth in DEPTH_TURNS else "standard",
         incident_time=incident_time,
+        incident_id=incident_id,
     )
     SESSIONS[state.id] = state
     state.workdir.mkdir(parents=True, exist_ok=True)

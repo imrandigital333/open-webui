@@ -47,6 +47,7 @@ sessions_t = Table(
     Column("depth", String(20)),
     Column("layers", Text),          # JSON list
     Column("incident_time", String(64), nullable=True),
+    Column("incident_id", String(64), nullable=True, index=True),
     Column("status", String(20), index=True),
     Column("phase", String(30), nullable=True),
     Column("created_at", Float, index=True),
@@ -133,6 +134,7 @@ def init_db() -> None:
     for ddl in (
         "ALTER TABLE sessions ADD COLUMN input_tokens INTEGER",
         "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER",
+        "ALTER TABLE sessions ADD COLUMN incident_id VARCHAR(64)",
     ):
         with _ctx.suppress(Exception), engine().begin() as conn:
             conn.execute(_text(ddl))
@@ -152,8 +154,8 @@ def session_started(s: dict) -> None:
         conn.execute(sessions_t.insert().values(
             id=s["id"], server=s["server"], mode=s["mode"], problem=s["problem"],
             depth=s["depth"], layers=json.dumps(s["layers"]),
-            incident_time=s["incident_time"], status="running",
-            created_at=s["created_at"],
+            incident_time=s["incident_time"], incident_id=s.get("incident_id"),
+            status="running", created_at=s["created_at"],
         ))
 
 
