@@ -24,7 +24,7 @@
   :root { --leftw: 360px; }
   main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px;
          padding: 16px calc(24px + var(--dockw, 0px)) 16px 24px;
-         margin: 0; align-items: start;
+         max-width: calc(1600px + var(--dockw, 0px)); margin: 0 auto; align-items: start;
          transition: padding-right .25s ease; }
   #viewOverview { transition: margin-right .25s ease; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
@@ -228,15 +228,10 @@
              max-width: calc(100vw - 40px); background: var(--panel);
              border: 1px solid #2b4a7a; border-radius: 14px;
              box-shadow: 0 12px 40px rgba(0,0,0,.55); display: none;
-             flex-direction: column; max-height: min(74vh, 680px); z-index: 60;
+             flex-direction: column; max-height: min(62vh, 560px); z-index: 60;
              overflow: hidden; }
   #remChat.open { display: flex; }
   #remChat.big { --rcw: min(820px, calc(100vw - 40px)); max-height: 90vh; }
-  /* docked mode on wide screens: the windows become full-height columns so
-     the reserved right-hand space is fully used, not just its bottom corner */
-  @media (min-width: 1101px) {
-    #remChat.open { top: 76px; max-height: none; }
-  }
   .rchat-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
                   cursor: ew-resize; z-index: 2; }
   .rchat-resize:hover { background: var(--accent); opacity: .4; }
