@@ -188,7 +188,8 @@ def _norm_change(raw: dict) -> dict:
 
 # ---------- transports ----------
 
-def _open(url: str, cfg: dict, data: bytes | None, headers: dict) -> tuple[int, str]:
+def _open(url: str, cfg: dict, data: bytes | None, headers: dict) -> tuple[int, str, str]:
+    """POST/GET and return (status, body_text, content_type)."""
     handlers = []
     if not cfg.get("use_proxy"):
         handlers.append(urllib.request.ProxyHandler({}))   # go DIRECT, ignore HTTP(S)_PROXY
@@ -203,11 +204,29 @@ def _open(url: str, cfg: dict, data: bytes | None, headers: dict) -> tuple[int, 
                                  method="POST" if data is not None else "GET")
     try:
         with opener.open(req, timeout=25) as resp:
-            return resp.status, resp.read().decode(errors="replace")
+            return resp.status, _decode_body(resp), resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")
+        return e.code, _decode_body(e), e.headers.get("Content-Type", "")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise RuntimeError(f"SummitAI request failed: {e}") from e
+
+
+def _decode_body(resp) -> str:
+    body = resp.read()
+    enc = (resp.headers.get("Content-Encoding") or "").lower()
+    if "gzip" in enc:
+        import gzip
+        try:
+            body = gzip.decompress(body)
+        except OSError:
+            pass
+    elif "deflate" in enc:
+        import zlib
+        try:
+            body = zlib.decompress(body)
+        except zlib.error:
+            body = zlib.decompress(body, -zlib.MAX_WBITS)
+    return body.decode(errors="replace")
 
 
 def _parse_json(raw: str):
@@ -266,10 +285,10 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
     op = str(cfg.get("wcf_operation") or "").strip().strip("/")
     if op and not url.lower().endswith("/" + op.lower()):
         url = f"{url}/{op}"
-    status, raw = _open(url, cfg,
-                        json.dumps(envelope).encode(),
-                        {"Content-Type": "application/json; charset=utf-8",
-                         "Accept": "application/json"})
+    status, raw, ctype = _open(url, cfg,
+                               json.dumps(envelope).encode(),
+                               {"Content-Type": "application/json; charset=utf-8",
+                                "Accept": "application/json"})
     if status >= 400:
         # surface Summit's own explanation (JSON error or proxy/WAF page text)
         snippet = " ".join(raw.split())[:220]
@@ -282,7 +301,14 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
                            + (f" — response: {snippet}" if snippet else "") + hint)
     data = _parse_json(raw)
     if data is None:
-        raise RuntimeError(f"SummitAI returned non-JSON for {service}: {raw[:160]}")
+        if not raw.strip():
+            raise RuntimeError(
+                f"SummitAI answered HTTP {status} with an EMPTY body for {service}"
+                f" (content-type: {ctype or 'none'}). Summit typically does this when"
+                " the ServiceName is unknown or not whitelisted for this API key —"
+                " confirm the exact list/detail ServiceNames with your Summit admin.")
+        raise RuntimeError(f"SummitAI returned non-JSON for {service}"
+                           f" (content-type: {ctype or 'none'}): {raw[:160]}")
     if isinstance(data, dict):
         err = data.get("Errors") or data.get("Error") or data.get("ErrorMessage")
         if err:
@@ -309,7 +335,7 @@ def _rest_get(path: str, cfg: dict):
     headers = {"Accept": "application/json"}
     if cfg["token"]:
         headers[cfg["auth_header"]] = f"{cfg['auth_prefix']}{cfg['token']}"
-    status, raw = _open(cfg["base_url"] + path, cfg, None, headers)
+    status, raw, _ctype = _open(cfg["base_url"] + path, cfg, None, headers)
     if status >= 400:
         snippet = " ".join(raw.split())[:220]
         raise RuntimeError(f"SummitAI returned HTTP {status}"
