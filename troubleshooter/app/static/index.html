@@ -24,7 +24,7 @@
   :root { --leftw: 360px; }
   main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px;
          padding: 16px calc(24px + var(--dockw, 0px)) 16px 24px;
-         max-width: calc(1600px + var(--dockw, 0px)); margin: 0 auto; align-items: start;
+         margin: 0; align-items: start;
          transition: padding-right .25s ease; }
   #viewOverview { transition: margin-right .25s ease; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
@@ -235,7 +235,7 @@
   /* docked mode on wide screens: the windows become full-height columns so
      the reserved right-hand space is fully used, not just its bottom corner */
   @media (min-width: 1101px) {
-    #remChat.open, #rcMap.open { top: 76px; max-height: none; }
+    #remChat.open { top: 76px; max-height: none; }
   }
   .rchat-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
                   cursor: ew-resize; z-index: 2; }
@@ -307,12 +307,12 @@
                  display: none; }
   #rcMini.unread .dot { display: block; }
   /* remediation roadmap panel (docks left of the chat) */
-  #rcMap { position: fixed; bottom: 22px; width: var(--rmw, 320px); max-width: calc(100vw - 60px);
+  #rcMap { position: fixed; bottom: 22px; width: var(--rmw, 480px); max-width: calc(100vw - 60px);
            background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
            box-shadow: 0 12px 40px rgba(0,0,0,.55); display: none; flex-direction: column;
-           max-height: min(64vh, 580px); z-index: 59; overflow: hidden; }
+           max-height: 290px; z-index: 59; overflow: hidden; }
   #rcMap.open { display: flex; }
-  #rcMap.wide { --rmw: min(620px, calc(100vw - 60px)); max-height: 84vh; }
+  #rcMap.wide { max-height: calc(100vh - 98px); }
   #rcMapMini { position: fixed; bottom: 22px; width: 46px; height: 46px; border-radius: 12px;
                background: var(--panel2); border: 1px solid #2b4a7a; color: var(--accent2);
                display: none; place-items: center; cursor: pointer; z-index: 59; padding: 0;
@@ -392,7 +392,8 @@
   #healthStrip.o-critical .hs-overall { color: var(--err); }
   #healthStrip.o-running .hs-ring { border-color: var(--accent); color: var(--accent);
                                     animation: pulse 1.4s infinite; }
-  .hs-nodes { display: flex; flex-wrap: wrap; gap: 8px 10px; flex: 1; min-width: 0;
+  .hs-nodes { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin;
+              gap: 8px 10px; flex: 1; min-width: 0;
               position: relative; padding-left: 14px; }
   .hs-nodes::before { content: ''; position: absolute; left: 0; top: 15px; width: 12px;
                       height: 2px; background: var(--border); }
@@ -437,8 +438,7 @@
   #healthStrip:not(.compact) #hsDensity svg { transform: rotate(180deg); }
   /* compact density: one slim row, rings only, labels via tooltip/click */
   #healthStrip.compact { padding: 6px 12px; gap: 10px; }
-  #healthStrip.compact .hs-nodes { gap: 4px 6px; padding-left: 10px;
-    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  #healthStrip.compact .hs-nodes { gap: 4px 6px; padding-left: 10px; }
   #healthStrip.compact .hs-nodes::before { top: 10px; }
   #healthStrip.compact .hs-node { width: 24px; gap: 0; }
   #healthStrip.compact .hs-node .lbl { display: none; }
@@ -1352,6 +1352,9 @@ function renderRcMap() {
       </div></div>`;
   });
   $('rcMapBody').innerHTML = html;
+  // short window shows ~one step — keep the active one in view
+  if (live) $('rcMapBody').querySelector('.rm-item.cur')
+    ?.scrollIntoView({ block: 'nearest' });
 }
 function rcMapCopy(i, btn) {
   navigator.clipboard.writeText((rcCurrentPlan()[i] || {}).command || '').then(() => {
