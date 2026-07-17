@@ -272,12 +272,12 @@ _ALL_ASPECTS = [
 ]
 
 
-async def run_probe(server: Server) -> None:
+async def run_probe(server: Server, force: bool = False) -> None:
     """Probe the server group by group, updating PROBES[server.name] live."""
     st = PROBES.setdefault(server.name, {})
     if st.get("running"):
         return
-    if st.get("complete") and time.time() - st.get("ts", 0) < FRESH_SECONDS:
+    if not force and st.get("complete") and time.time() - st.get("ts", 0) < FRESH_SECONDS:
         return
     st.update(running=True, complete=False, ts=time.time(), checks={})
     try:

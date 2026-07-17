@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.25.2"
+APP_VERSION = "2.26.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -621,14 +621,15 @@ async def get_audit(limit: int = 200):
 
 
 @app.post("/api/servers/{name}/probe")
-async def start_probe(name: str):
+async def start_probe(name: str, force: bool = False):
     """Kick an agentless live health probe (six SSH command groups, scored
     deterministically — no agent, no tokens). Returns the current state;
-    poll GET to watch it fill group by group."""
+    poll GET to watch it fill group by group. force=1 bypasses the
+    freshness cache for an on-demand re-probe."""
     server = load_inventory().get(name)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not in inventory")
-    asyncio.get_running_loop().create_task(healthprobe.run_probe(server))
+    asyncio.get_running_loop().create_task(healthprobe.run_probe(server, force=force))
     return healthprobe.state(name)
 
 

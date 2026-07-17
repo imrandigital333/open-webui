@@ -22,9 +22,10 @@
   header .sub { color: var(--muted); font-size: 12px; }
   header .right { margin-left: auto; font-size: 12px; color: var(--muted); }
   :root { --leftw: 360px; }
-  main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px; padding: 16px 24px;
-         max-width: 1600px; margin: 0 auto; align-items: start;
-         transition: margin-right .25s ease; }
+  main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px;
+         padding: 16px calc(24px + var(--dockw, 0px)) 16px 24px;
+         max-width: calc(1600px + var(--dockw, 0px)); margin: 0 auto; align-items: start;
+         transition: padding-right .25s ease; }
   #viewOverview { transition: margin-right .25s ease; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
   .resizer:hover, .resizer.dragging { background: var(--accent); opacity: .55; }
@@ -412,9 +413,34 @@
   .hs-gauge span { width: 22px; height: 22px; border-radius: 50%; background: var(--panel2);
                    display: grid; place-items: center; font-size: 8px; font-weight: 700;
                    color: var(--text); }
-  .hs-note { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; max-width: 170px;
-             text-align: right; line-height: 1.35; }
+  .hs-note { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; max-width: 190px;
+             text-align: right; line-height: 1.5; }
   #hsDetail { margin: -6px 0 12px 4px; }
+  /* live/snapshot/scanning status chips */
+  .hchip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px;
+           padding: 1px 8px; font-size: 9px; font-weight: 800; letter-spacing: .07em;
+           vertical-align: middle; }
+  .hchip.live { background: #12291a; color: var(--ok); border: 1px solid #2b5a37; }
+  .hchip.live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+                  animation: pulse 1.4s infinite; }
+  .hchip.scan { background: #16203a; color: var(--accent2); border: 1px solid #2b4a7a; }
+  .hchip.hist { background: #3a2f14; color: var(--warn); border: 1px solid #6e5a1e; }
+  .hchip-re { padding: 1px 6px !important; font-size: 10px !important; width: auto !important;
+              margin-left: 3px; vertical-align: middle; }
+  #hsDensity { flex: 0 0 auto; width: auto; padding: 3px 8px; font-size: 11px; }
+  #hsDensity svg { transition: transform .2s; }
+  #healthStrip:not(.compact) #hsDensity svg { transform: rotate(180deg); }
+  /* compact density: one slim row, rings only, labels via tooltip/click */
+  #healthStrip.compact { padding: 6px 12px; gap: 10px; }
+  #healthStrip.compact .hs-nodes { gap: 4px 6px; padding-left: 10px;
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  #healthStrip.compact .hs-nodes::before { top: 10px; }
+  #healthStrip.compact .hs-node { width: 24px; gap: 0; }
+  #healthStrip.compact .hs-node .lbl { display: none; }
+  #healthStrip.compact .hs-dot { width: 20px; height: 20px; font-size: 10px; border-width: 2px; }
+  #healthStrip.compact .hs-gauge span { width: 14px; height: 14px; font-size: 0; }
+  #healthStrip.compact .hs-server { flex-direction: row; gap: 7px; }
+  #healthStrip.compact .hs-ring { width: 26px; height: 26px; font-size: 11px; border-width: 2px; }
   /* top nav */
   .nav { display: flex; gap: 6px; margin-left: 26px; }
   .nav button { width: auto; background: none; border: 1px solid transparent; color: var(--muted);
@@ -634,6 +660,7 @@
         </div>
         <div class="hs-nodes" id="hsNodes"></div>
         <div class="hs-note" id="hpNote"></div>
+        <button class="ghost" id="hsDensity" title="Expand / compact the health strip"></button>
       </div>
       <div id="hsDetail" class="hint" style="display:none"></div>
       <div class="tabs" id="tabs" style="display:none">
@@ -1199,6 +1226,7 @@ function closeRemChat() {
   $('remChat').classList.remove('open');
   $('rcMini').classList.remove('show', 'unread');
   toggleRcMap(false);
+  reserveDock();
 }
 function rcScroll() { const b = $('rchatBody'); b.scrollTop = b.scrollHeight; }
 function rcBot(html) {
@@ -1241,11 +1269,23 @@ function renderRcProg() {
 /* ---------- remediation steps panel: review ALL steps at once; live statuses when the chat runs ---------- */
 let rcMapOpen = false, rcMapWasOpen = false, rcMapMin = false;
 function rcCurrentPlan() { return (rc && rc.plan) || window._plan || []; }
+/* reserve layout space for the docked windows so the report (root cause!)
+   stays fully visible instead of being covered by the overlays */
+function reserveDock() {
+  let w = 0;
+  if (window.innerWidth > 1100) {
+    if ($('remChat').classList.contains('open')) w += $('remChat').offsetWidth + 18;
+    if ($('rcMap').classList.contains('open')) w += $('rcMap').offsetWidth + 14;
+  }
+  document.documentElement.style.setProperty('--dockw', w + 'px');
+}
+window.addEventListener('resize', () => { reserveDock(); if (rcMapOpen) positionRcMap(); });
 function positionRcMap() {
   const chat = $('remChat');
   const off = (chat.classList.contains('open') ? chat.offsetWidth + 34 : 22) + 'px';
   $('rcMap').style.right = off;
   $('rcMapMini').style.right = off;
+  reserveDock();
 }
 function applyRcMap() {
   const has = rcCurrentPlan().length > 0;
@@ -1656,7 +1696,7 @@ $('rcSize').onclick = () => {
   const chat = $('remChat');
   chat.style.removeProperty('--rcw');
   chat.classList.toggle('big');
-  if (rcMapOpen) requestAnimationFrame(positionRcMap);
+  requestAnimationFrame(() => { if (rcMapOpen) positionRcMap(); else reserveDock(); });
 };
 $('rcMapBtn').innerHTML = ic('map', 14);
 $('rcMapBtn').onclick = () => toggleRcMap();
@@ -1682,6 +1722,7 @@ $('rcMapSize').onclick = () => {
     const off = parseInt(panel.style.right || '22', 10);
     const w = Math.min(760, Math.max(280, window.innerWidth - off - e.clientX));
     panel.style.setProperty('--rmw', w + 'px');
+    reserveDock();
   });
   rz.addEventListener('pointerup', () => {
     dragging = false; document.body.style.userSelect = '';
@@ -1693,11 +1734,13 @@ $('rcMin').onclick = () => {
   toggleRcMap(false);
   $('remChat').classList.remove('open');
   $('rcMini').classList.add('show');
+  reserveDock();
 };
 $('rcMini').onclick = () => {
   $('rcMini').classList.remove('show', 'unread');
   $('remChat').classList.add('open');
   if (rcMapWasOpen) toggleRcMap(true);
+  reserveDock();
   rcScroll();
 };
 (() => {  // drag the chat's left edge to any width
@@ -1712,7 +1755,7 @@ $('rcMini').onclick = () => {
     chat.classList.remove('big');
     const w = Math.min(920, Math.max(340, window.innerWidth - 22 - e.clientX));
     chat.style.setProperty('--rcw', w + 'px');
-    if (rcMapOpen) positionRcMap();
+    if (rcMapOpen) positionRcMap(); else reserveDock();
   });
   rz.addEventListener('pointerup', () => {
     dragging = false; document.body.style.userSelect = '';
@@ -2105,6 +2148,23 @@ const HC_GROUPS = [
 const HC_GROUP_NAMES = ['basics', 'compute', 'storage', 'runtime', 'security', 'logs'];
 let lastHealthJson = '';
 
+/* status chip in the strip: LIVE (pulsing, re-probe button) / SCANNING / SNAPSHOT */
+function healthNote(kind, text) {
+  const n = $('hpNote');
+  if (kind === 'live') n.innerHTML = `<span class="hchip live"><i></i>LIVE</span>
+      ${escapeHtml(text)} <button class="ghost hchip-re" title="Re-probe the server now"
+      onclick="reProbe()">${ic('refresh', 10)}</button>`;
+  else if (kind === 'scan') n.innerHTML = `<span class="hchip scan"><span class="spin">⟳</span>
+      SCANNING</span> ${escapeHtml(text)}`;
+  else if (kind === 'hist') n.innerHTML = `<span class="hchip hist">SNAPSHOT</span> ${escapeHtml(text)}`;
+  else n.textContent = text || '';
+}
+async function reProbe() {
+  if (!currentSessionInfo) return;
+  healthNote('scan', 'starting a fresh probe…');
+  probeServer(currentSessionInfo.server, true);
+}
+
 function healthNodeHtml(key, icon, check, state) {
   const st = (check?.status || 'unknown').toLowerCase();
   const checking = state === 'checking';
@@ -2137,16 +2197,17 @@ function renderHealth(health, running) {
                 : !assessed.length ? 'unknown'
                 : (running && !allDone) ? 'unknown'   // mid-scan, nothing bad yet
                 : 'ok';
-  strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`;
+  strip.className = `o-${running && overall === 'unknown' ? 'running' : overall}`
+    + (hsDensity === 'compact' ? ' compact' : '');
   strip.style.display = healthCollapsed ? 'none' : 'flex';
   $('hsOverall').textContent = overall === 'unknown' ? (running ? 'scanning' : 'health') : overall;
   // group being checked right now (first group with an unknown aspect)
   const activeG = running
     ? HC_GROUPS.findIndex(g => g.some(k => (checks[k]?.status || 'unknown') === 'unknown'))
     : -1;
-  if (running) $('hpNote').textContent = assessed.length
+  if (running) healthNote('scan', assessed.length
     ? `checking ${HC_GROUP_NAMES[activeG] || '…'} · ${assessed.length}/${ASPECTS.length} assessed`
-    : 'connecting to the server…';
+    : 'connecting to the server…');
   $('hsRing').innerHTML = overall === 'ok' ? '✓' : overall === 'critical' ? '✕'
     : overall === 'warning' ? '!' : (running ? '<span class="spin">⟳</span>' : '◎');
 
@@ -2183,6 +2244,20 @@ $('healthBtn').onclick = () => {
   $('healthStrip').style.display = healthCollapsed ? 'none' : 'flex';
   $('hsDetail').style.display = 'none';
 };
+/* strip density: compact one-row rings by default; expand for labels + big gauges */
+let hsDensity = localStorage.getItem('hsDensity') || 'compact';
+function applyHsDensity() {
+  $('healthStrip').classList.toggle('compact', hsDensity === 'compact');
+  $('hsDensity').innerHTML = ic('chevron-down', 13);
+  $('hsDensity').title = hsDensity === 'compact'
+    ? 'Expand the health strip (labels + gauges)' : 'Compact the health strip';
+}
+$('hsDensity').onclick = () => {
+  hsDensity = hsDensity === 'compact' ? 'full' : 'compact';
+  localStorage.setItem('hsDensity', hsDensity);
+  applyHsDensity();
+};
+applyHsDensity();
 
 /* ---------- resizable left column ---------- */
 (() => {
@@ -2219,10 +2294,11 @@ let probeTimer = null, probeFor = null;
 
 /* agentless live probe: the backend SSHes the six groups directly (no agent,
    no tokens) and the strip animates group by group as results land */
-async function probeServer(name) {
+async function probeServer(name, force) {
   clearInterval(probeTimer);
   probeFor = name;
-  const kick = await fetch(`/api/servers/${encodeURIComponent(name)}/probe`, { method: 'POST' });
+  const kick = await fetch(`/api/servers/${encodeURIComponent(name)}/probe${force ? '?force=1' : ''}`,
+    { method: 'POST' });
   if (!kick.ok) throw new Error('probe unavailable');
   const poll = async () => {
     if (probeFor !== name) { clearInterval(probeTimer); return; }
@@ -2230,7 +2306,7 @@ async function probeServer(name) {
     renderHealth({ checks: st.checks || {} }, !st.complete, name);
     if (st.complete) {
       clearInterval(probeTimer);
-      $('hpNote').textContent = `live · probed ${new Date((st.ts || 0) * 1000).toLocaleTimeString()}`;
+      healthNote('live', `probed ${new Date((st.ts || 0) * 1000).toLocaleTimeString()}`);
     }
   };
   poll();
@@ -2244,14 +2320,14 @@ async function loadHealth(id, running, serverName, mode) {
     // the session produced its own health data (agent health check)
     probeFor = null; clearInterval(probeTimer);
     renderHealth(health, live, serverName);
-    if (!live) $('hpNote').textContent = '';   // live note (progress) set by renderHealth
+    if (!live) healthNote('', '');   // live note (progress) set by renderHealth
     return;
   }
   if (live) {
     // agent scan just starting — NEVER show stale data; show scanning state
     probeFor = null; clearInterval(probeTimer);
     renderHealth(null, true, serverName);
-    $('hpNote').textContent = 'connecting to the server…';
+    healthNote('scan', 'connecting to the server…');
     return;
   }
   // investigations / historical views: probe the server LIVE right now
@@ -2264,13 +2340,12 @@ async function loadHealth(id, running, serverName, mode) {
     if (history && history.length) {
       const snap = history[history.length - 1];
       renderHealth({ checks: snap.checks }, false, serverName);
-      $('hpNote').textContent =
-        `from last health check · ${new Date(snap.ts * 1000).toLocaleString()}`;
+      healthNote('hist', `last health check · ${new Date(snap.ts * 1000).toLocaleString()}`);
       return;
     }
   } catch (e) { /* fall through to empty state */ }
   renderHealth(null, false, serverName);
-  $('hpNote').textContent = 'No health data yet — run a 🩺 Health check from the Overview.';
+  healthNote('', 'No health data yet — run a 🩺 Health check from the Overview.');
 }
 
 /* ---------- session open / head ---------- */
