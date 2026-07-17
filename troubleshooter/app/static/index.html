@@ -23,9 +23,7 @@
   header .right { margin-left: auto; font-size: 12px; color: var(--muted); }
   :root { --leftw: 360px; }
   main { display: grid; grid-template-columns: var(--leftw) 6px 1fr; gap: 12px;
-         padding: 16px calc(24px + var(--dockw, 0px)) 16px 24px;
-         max-width: calc(1600px + var(--dockw, 0px)); margin: 0 auto; align-items: start;
-         transition: padding-right .25s ease; }
+         padding: 16px 24px; max-width: 1600px; margin: 0 auto; align-items: start; }
   #viewOverview { transition: margin-right .25s ease; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
   .resizer:hover, .resizer.dragging { background: var(--accent); opacity: .55; }
@@ -1269,16 +1267,9 @@ function renderRcProg() {
 /* ---------- remediation steps panel: review ALL steps at once; live statuses when the chat runs ---------- */
 let rcMapOpen = false, rcMapWasOpen = false, rcMapMin = false;
 function rcCurrentPlan() { return (rc && rc.plan) || window._plan || []; }
-/* reserve layout space for the docked windows so the report (root cause!)
-   stays fully visible instead of being covered by the overlays */
-function reserveDock() {
-  let w = 0;
-  if (window.innerWidth > 1100) {
-    if ($('remChat').classList.contains('open')) w += $('remChat').offsetWidth + 18;
-    if ($('rcMap').classList.contains('open')) w += $('rcMap').offsetWidth + 14;
-  }
-  document.documentElement.style.setProperty('--dockw', w + 'px');
-}
+/* overlay mode: the assistant/steps windows float on top of the page
+   (operator preference) — no layout space is reserved for them */
+function reserveDock() {}
 window.addEventListener('resize', () => { reserveDock(); if (rcMapOpen) positionRcMap(); });
 function positionRcMap() {
   const chat = $('remChat');
