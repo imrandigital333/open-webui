@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.28.0"
+APP_VERSION = "2.29.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -196,11 +196,20 @@ async def itsm_status():
 
 
 class ItsmConfigRequest(BaseModel):
+    api_style: str = Field("summit_wcf", pattern="^(summit_wcf|rest)$")
     base_url: str = Field("", max_length=500)
-    token: str = Field("", max_length=1000)          # empty = keep the stored token
+    token: str = Field("", max_length=1000)          # empty = keep the stored key
+    verify_tls: bool = True
+    # summit_wcf style
+    org_id: int = Field(1, ge=0, le=10_000)
+    proxy_id: int = Field(0, ge=0, le=10_000)
+    incidents_service: str = Field("IM_FetchIncidents", max_length=100)
+    incident_detail_service: str = Field("IM_GetIncidentDetails", max_length=100)
+    changes_service: str = Field("CM_FetchChanges", max_length=100)
+    incidents_params: str = Field("", max_length=2000)
+    # rest style
     auth_header: str = Field("Authorization", max_length=100)
     auth_prefix: str = Field("Bearer ", max_length=50)
-    verify_tls: bool = True
     incidents_path: str = Field("/incidents", max_length=200)
     changes_path: str = Field("/changes", max_length=200)
 

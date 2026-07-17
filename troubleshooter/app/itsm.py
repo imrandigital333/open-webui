@@ -1,22 +1,26 @@
 """ITSM integration — SummitAI (Symphony SUMMIT) service-management adapter.
 
-Pulls active incidents (P1/P2 focus) and approved changes so the operator can
-launch a troubleshooting session straight from an incident, with its context
-pre-filled. Configuration is entirely env-driven; when nothing is configured
-the adapter serves realistic DEMO data so the dashboard works out of the box
-and can be wired to the real API later without any UI change.
+Two API styles are supported, selectable in Settings:
 
-Environment (all optional — unset => demo mode):
-    SUMMITAI_BASE_URL        e.g. https://summit.bial.internal/api/v1
-    SUMMITAI_TOKEN           bearer token / API key
-    SUMMITAI_AUTH_HEADER     header carrying the token   (default: Authorization)
-    SUMMITAI_AUTH_PREFIX     value prefix                (default: "Bearer ")
-    SUMMITAI_VERIFY_TLS      "0" to disable cert verification (default: verify)
-    SUMMITAI_INCIDENTS_PATH  path appended to base for incidents (default: /incidents)
-    SUMMITAI_CHANGES_PATH    path for changes            (default: /changes)
+- summit_wcf (default): SummitAI's web-service endpoint, e.g.
+      https://10.x.x.x/Chatbotproxy/REST/Summit_RESTWCF.svc
+  Every operation is a POST of a JSON envelope:
+      {"ServiceName": "<op>", "objCommonParameters": {"_ProxyDetails": {
+          "AuthType": "APIKEY", "APIKey": "...", "ProxyID": 0,
+          "ReturnType": "JSON", "OrgID": 1}, ...op params...}}
+  The ServiceNames for listing/fetching differ per deployment, so they are
+  configurable (IM_GetIncidentDetails etc.).
 
-Field names differ across SummitAI versions, so responses are normalised
-defensively: several likely source keys are tried for each output field.
+- rest: a plain REST API (GET base+path with a bearer-style header) for
+  proxies/middleware that expose Summit data that way.
+
+Configuration lives in itsm.yaml (managed from the Settings UI, chmod 600,
+gitignored) with SUMMITAI_* environment variables as fallback. When no base
+URL is configured, realistic DEMO data powers the dashboards so the UI works
+before the integration is wired.
+
+Responses are normalised defensively: SummitAI field names vary by version,
+so several likely source keys are tried for every output field.
 """
 
 import json
@@ -31,19 +35,41 @@ import yaml
 from .inventory import BASE_DIR
 
 # UI-managed settings live here (chmod 600, gitignored); environment variables
-# act as fallback so existing env-based deployments keep working.
+# act as fallback so env-based deployments keep working.
 CONFIG_PATH = BASE_DIR / "itsm.yaml"
 
 DEFAULTS = {
-    "base_url": "", "token": "", "auth_header": "Authorization",
-    "auth_prefix": "Bearer ", "verify_tls": True,
-    "incidents_path": "/incidents", "changes_path": "/changes",
+    "api_style": "summit_wcf",          # summit_wcf | rest
+    "base_url": "",
+    "token": "",                        # API key (wcf) or bearer token (rest)
+    "verify_tls": True,
+    # summit_wcf style
+    "org_id": 1,
+    "proxy_id": 0,
+    "incidents_service": "IM_FetchIncidents",
+    "incident_detail_service": "IM_GetIncidentDetails",
+    "changes_service": "CM_FetchChanges",
+    "incidents_params": "",             # optional JSON merged into objCommonParameters
+    # rest style
+    "auth_header": "Authorization",
+    "auth_prefix": "Bearer ",
+    "incidents_path": "/incidents",
+    "changes_path": "/changes",
 }
 
 _ENV_MAP = {
-    "base_url": "SUMMITAI_BASE_URL", "token": "SUMMITAI_TOKEN",
-    "auth_header": "SUMMITAI_AUTH_HEADER", "auth_prefix": "SUMMITAI_AUTH_PREFIX",
-    "incidents_path": "SUMMITAI_INCIDENTS_PATH", "changes_path": "SUMMITAI_CHANGES_PATH",
+    "api_style": "SUMMITAI_API_STYLE",
+    "base_url": "SUMMITAI_BASE_URL",
+    "token": "SUMMITAI_TOKEN",
+    "org_id": "SUMMITAI_ORG_ID",
+    "proxy_id": "SUMMITAI_PROXY_ID",
+    "incidents_service": "SUMMITAI_INCIDENTS_SERVICE",
+    "incident_detail_service": "SUMMITAI_DETAIL_SERVICE",
+    "changes_service": "SUMMITAI_CHANGES_SERVICE",
+    "auth_header": "SUMMITAI_AUTH_HEADER",
+    "auth_prefix": "SUMMITAI_AUTH_PREFIX",
+    "incidents_path": "SUMMITAI_INCIDENTS_PATH",
+    "changes_path": "SUMMITAI_CHANGES_PATH",
 }
 
 
@@ -65,18 +91,22 @@ def load_config() -> dict:
     except (OSError, yaml.YAMLError):
         pass
     cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
+    if cfg["api_style"] not in ("summit_wcf", "rest"):
+        cfg["api_style"] = "summit_wcf"
     return cfg
 
 
 def save_config(cfg: dict) -> None:
     clean = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
     CONFIG_PATH.write_text(yaml.safe_dump(clean, sort_keys=False))
-    os.chmod(CONFIG_PATH, 0o600)   # the token lives in this file
+    os.chmod(CONFIG_PATH, 0o600)   # the API key lives in this file
 
 
 def configured(cfg: dict | None = None) -> bool:
     return bool((cfg or load_config())["base_url"])
 
+
+# ---------- field normalisation ----------
 
 def _first(d: dict, *keys, default=""):
     for k in keys:
@@ -91,82 +121,180 @@ def _norm_priority(v) -> str:
     for p in ("P1", "P2", "P3", "P4", "P5"):
         if p in s:
             return p
-    # SummitAI sometimes uses "Critical/High/Medium/Low" or numeric urgency
     return {"CRITICAL": "P1", "HIGH": "P2", "MEDIUM": "P3", "LOW": "P4",
             "1": "P1", "2": "P2", "3": "P3", "4": "P4"}.get(s, s or "P3")
 
 
 def _norm_incident(raw: dict) -> dict:
     return {
-        "id": str(_first(raw, "IncidentID", "IncidentId", "id", "number", "Number",
+        "id": str(_first(raw, "TicketNo", "Ticket_No", "TicketNumber", "IncidentID",
+                         "IncidentId", "IncidentNo", "id", "number", "Number",
                          "RequestID", "ticket")),
-        "priority": _norm_priority(_first(raw, "Priority", "priority", "PriorityName")),
+        "priority": _norm_priority(_first(raw, "Priority", "Priority_Name", "priority",
+                                          "PriorityName")),
         "status": _first(raw, "Status", "status", "StatusName", default="Open"),
-        "title": _first(raw, "Subject", "Title", "title", "summary", "ShortDescription",
-                        default="(no subject)"),
-        "description": _first(raw, "Description", "description", "Details", "Symptom",
-                              "detail", default=""),
-        "ci": _first(raw, "CI", "CIName", "AffectedCI", "Asset", "ConfigurationItem",
-                     "Server", "Hostname", "host", default=""),
-        "reported_at": _first(raw, "CreatedDateTime", "LoggedTime", "ReportedOn",
-                              "createdAt", "OpenedTime", default=""),
-        "raised_by": _first(raw, "Caller", "RaisedBy", "Requester", "ReportedBy",
-                            "AffectedUser", default=""),
-        "assignee": _first(raw, "AssignedTo", "Analyst", "Owner", "assignee",
-                           "AssignedAnalyst", default="Unassigned"),
-        "category": _first(raw, "Category", "category", "ClassName", default=""),
+        "title": _first(raw, "Symptom", "Subject", "Title", "title", "summary",
+                        "ShortDescription", default="(no subject)"),
+        "description": _first(raw, "Description", "description", "Details",
+                              "TicketInformation", "detail", default=""),
+        "ci": _first(raw, "CI_Value", "CI", "CIName", "AffectedCI", "Asset",
+                     "ConfigurationItem", "Server", "Hostname", "host", default=""),
+        "reported_at": _first(raw, "LoggedTime", "Log_Time", "CreatedDateTime",
+                              "CreatedTime", "ReportedOn", "createdAt", "OpenedTime",
+                              default=""),
+        "raised_by": _first(raw, "Caller", "Caller_EmailID", "CallerName", "RaisedBy",
+                            "Requester", "ReportedBy", "AffectedUser", default=""),
+        "assignee": _first(raw, "AssignedTo", "Assigned_Analyst", "AssignedEngineer",
+                           "Analyst", "Owner", "assignee", "Assigned_WorkGroup_Name",
+                           default="Unassigned"),
+        "category": _first(raw, "Category", "Category_Name", "category",
+                           "Classification_Name", "ClassName", default=""),
         "url": _first(raw, "URL", "url", "Link", default=""),
     }
 
 
 def _norm_change(raw: dict) -> dict:
     return {
-        "id": str(_first(raw, "ChangeID", "id", "number", "Number", default="")),
-        "title": _first(raw, "Subject", "Title", "title", default="(no subject)"),
+        "id": str(_first(raw, "ChangeNo", "Change_No", "ChangeID", "id", "number",
+                         "Number", default="")),
+        "title": _first(raw, "Symptom", "Subject", "Title", "title", default="(no subject)"),
         "status": _first(raw, "Status", "status", default="Approved"),
         "risk": _first(raw, "Risk", "RiskLevel", "risk", default="Medium"),
-        "type": _first(raw, "ChangeType", "Type", default="Normal"),
-        "window": _first(raw, "ScheduledWindow", "Window", "PlannedStart", default=""),
-        "ci": _first(raw, "CI", "CIName", "AffectedCI", "Server", default=""),
-        "implementer": _first(raw, "Implementer", "AssignedTo", "Owner", default=""),
+        "type": _first(raw, "ChangeType", "Change_Type", "Type", default="Normal"),
+        "window": _first(raw, "ScheduledWindow", "Window", "PlannedStart",
+                         "Planned_Start_Time", default=""),
+        "ci": _first(raw, "CI_Value", "CI", "CIName", "AffectedCI", "Server", default=""),
+        "implementer": _first(raw, "Implementer", "AssignedTo", "Assigned_Analyst",
+                              "Owner", default=""),
         "approver": _first(raw, "Approver", "ApprovedBy", default=""),
         "plan": raw.get("plan") or raw.get("ImplementationPlan") or [],
     }
 
 
-def _get(path: str, cfg: dict | None = None):
-    cfg = cfg or load_config()
-    headers = {"Accept": "application/json"}
-    if cfg["token"]:
-        headers[cfg["auth_header"]] = f"{cfg['auth_prefix']}{cfg['token']}"
-    url = cfg["base_url"] + path
+# ---------- transports ----------
+
+def _open(url: str, cfg: dict, data: bytes | None, headers: dict) -> tuple[int, str]:
     ctx = None
     if url.startswith("https"):
         ctx = ssl.create_default_context()
         if not cfg["verify_tls"]:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method="POST" if data is not None else "GET")
     try:
-        with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
-            status, raw = resp.status, resp.read().decode(errors="replace")
+        with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
+            return resp.status, resp.read().decode(errors="replace")
     except urllib.error.HTTPError as e:
-        status, raw = e.code, e.read().decode(errors="replace")
+        return e.code, e.read().decode(errors="replace")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise RuntimeError(f"SummitAI request failed: {e}") from e
-    if status >= 400:
-        raise RuntimeError(f"SummitAI returned HTTP {status}")
+
+
+def _parse_json(raw: str):
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        data = []
-    # accept either a bare list or a wrapped {data|result|items|Incidents: [...]}
+        return None
+    # Summit sometimes double-encodes: a JSON string containing JSON
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            return data
+    return data
+
+
+def _find_rows(data, depth: int = 0):
+    """Find the first list of dicts anywhere in a (possibly wrapped) response."""
+    if depth > 6:
+        return None
+    if isinstance(data, list):
+        if all(isinstance(x, dict) for x in data) and data:
+            return data
+        return [] if not data else None
     if isinstance(data, dict):
-        for k in ("data", "result", "results", "items", "Incidents", "Changes", "value"):
-            if isinstance(data.get(k), list):
-                return data[k]
-        return [data]
-    return data if isinstance(data, list) else []
+        for key in ("IncidentList", "TicketList", "Incidents", "Changes", "ChangeList",
+                    "OutputObject", "Output", "Data", "data", "result", "results",
+                    "items", "value", "Details", "TicketDetails"):
+            if key in data:
+                rows = _find_rows(data[key], depth + 1)
+                if rows is not None:
+                    return rows
+        for v in data.values():
+            if isinstance(v, (list, dict)):
+                rows = _find_rows(v, depth + 1)
+                if rows is not None:
+                    return rows
+    return None
+
+
+def _wcf_call(service: str, params: dict | None, cfg: dict):
+    envelope = {
+        "ServiceName": service,
+        "objCommonParameters": {
+            "_ProxyDetails": {
+                "AuthType": "APIKEY",
+                "APIKey": cfg["token"],
+                "ProxyID": int(cfg.get("proxy_id") or 0),
+                "ReturnType": "JSON",
+                "OrgID": int(cfg.get("org_id") or 1),
+            },
+            **(params or {}),
+        },
+    }
+    status, raw = _open(cfg["base_url"], cfg,
+                        json.dumps(envelope).encode(),
+                        {"Content-Type": "application/json", "Accept": "application/json"})
+    if status >= 400:
+        raise RuntimeError(f"SummitAI returned HTTP {status} for {service}")
+    data = _parse_json(raw)
+    if data is None:
+        raise RuntimeError(f"SummitAI returned non-JSON for {service}: {raw[:160]}")
+    if isinstance(data, dict):
+        err = data.get("Errors") or data.get("Error") or data.get("ErrorMessage")
+        if err:
+            raise RuntimeError(f"SummitAI error from {service}: {str(err)[:300]}")
+    rows = _find_rows(data)
+    if rows is None:
+        # a single-object response (e.g. one ticket) — wrap it
+        if isinstance(data, dict):
+            inner = data.get("OutputObject") or data.get("Output") or data
+            return [inner] if isinstance(inner, dict) else []
+        return []
+    return rows
+
+
+def _extra_params(cfg: dict) -> dict:
+    try:
+        extra = json.loads(cfg.get("incidents_params") or "{}")
+        return extra if isinstance(extra, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _rest_get(path: str, cfg: dict):
+    headers = {"Accept": "application/json"}
+    if cfg["token"]:
+        headers[cfg["auth_header"]] = f"{cfg['auth_prefix']}{cfg['token']}"
+    status, raw = _open(cfg["base_url"] + path, cfg, None, headers)
+    if status >= 400:
+        raise RuntimeError(f"SummitAI returned HTTP {status}")
+    data = _parse_json(raw)
+    rows = _find_rows(data)
+    return rows if rows is not None else []
+
+
+def _fetch_incident_rows(cfg: dict) -> list[dict]:
+    if cfg["api_style"] == "rest":
+        return _rest_get(cfg["incidents_path"], cfg)
+    return _wcf_call(cfg["incidents_service"], _extra_params(cfg), cfg)
+
+
+def _fetch_change_rows(cfg: dict) -> list[dict]:
+    if cfg["api_style"] == "rest":
+        return _rest_get(cfg["changes_path"], cfg)
+    return _wcf_call(cfg["changes_service"], None, cfg)
 
 
 # ---------- public API ----------
@@ -176,7 +304,7 @@ def list_incidents(priorities: tuple[str, ...] = ("P1", "P2")) -> list[dict]:
     if not configured(cfg):
         rows = _demo_incidents()
     else:
-        rows = [_norm_incident(r) for r in _get(cfg["incidents_path"], cfg)]
+        rows = [_norm_incident(r) for r in _fetch_incident_rows(cfg)]
     active = [i for i in rows
               if i["priority"] in priorities
               and str(i["status"]).lower() not in ("closed", "resolved", "cancelled")]
@@ -189,7 +317,18 @@ def get_incident(incident_id: str) -> dict | None:
     cfg = load_config()
     if not configured(cfg):
         return next((i for i in _demo_incidents() if i["id"] == incident_id), None)
-    rows = [_norm_incident(r) for r in _get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
+    if cfg["api_style"] == "summit_wcf":
+        try:
+            rows = _wcf_call(cfg["incident_detail_service"],
+                             {"TicketNo": incident_id}, cfg)
+            if rows:
+                return _norm_incident(rows[0])
+        except RuntimeError:
+            pass   # fall back to searching the listing
+        return next((i for i in
+                     (_norm_incident(r) for r in _fetch_incident_rows(cfg))
+                     if i["id"] == str(incident_id)), None)
+    rows = [_norm_incident(r) for r in _rest_get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
     return rows[0] if rows else None
 
 
@@ -197,7 +336,7 @@ def list_changes() -> list[dict]:
     cfg = load_config()
     if not configured(cfg):
         return _demo_changes()
-    return [_norm_change(r) for r in _get(cfg["changes_path"], cfg)]
+    return [_norm_change(r) for r in _fetch_change_rows(cfg)]
 
 
 def status() -> dict:
@@ -207,7 +346,7 @@ def status() -> dict:
 
 
 def public_config() -> dict:
-    "Config for the settings UI; the token never leaves the server."
+    "Config for the settings UI; the API key never leaves the server."
     cfg = load_config()
     return {**{k: cfg[k] for k in DEFAULTS if k != "token"},
             "token_set": bool(cfg["token"]), "configured": configured(cfg)}
@@ -225,20 +364,21 @@ def test_config(overrides: dict | None = None) -> dict:
     cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
     if not cfg["base_url"]:
         return {"ok": False, "error": "Base URL is required"}
-    out = {"ok": True, "incidents": None, "changes": None}
+    out = {"ok": True, "incidents": None, "changes": None, "changes_error": None}
     try:
-        out["incidents"] = len(_get(cfg["incidents_path"], cfg))
+        out["incidents"] = len(_fetch_incident_rows(cfg))
     except Exception as exc:  # noqa: BLE001
-        out.update(ok=False, error=f"incidents endpoint: {exc}")
+        out.update(ok=False, error=f"incidents: {exc}")
         return out
     try:
-        out["changes"] = len(_get(cfg["changes_path"], cfg))
+        out["changes"] = len(_fetch_change_rows(cfg))
     except Exception as exc:  # noqa: BLE001
-        out.update(ok=False, error=f"changes endpoint: {exc}")
+        # incidents worked — a wrong changes ServiceName shouldn't fail the test
+        out["changes_error"] = str(exc)[:300]
     return out
 
 
-# ---------- demo data (used until SUMMITAI_BASE_URL is set) ----------
+# ---------- demo data (used until a base URL is configured) ----------
 
 def _demo_incidents() -> list[dict]:
     now = time.time()

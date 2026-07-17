@@ -662,19 +662,42 @@
           your SummitAI API. Until a Base URL is saved, those tabs show demo data. The token is
           stored server-side (chmod 600) and never sent back to the browser.</div>
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
-          <div style="grid-column:1/-1"><label>Base URL *</label>
-            <input id="it_base_url" maxlength="500" placeholder="https://summit.bial.internal/api/v1"></div>
-          <div style="grid-column:1/-1"><label>API token / key
+          <div style="grid-column:1/-1"><label>API style</label>
+            <select id="it_api_style">
+              <option value="summit_wcf">SummitAI web service (.svc envelope + APIKey)</option>
+              <option value="rest">Generic REST (GET paths + bearer header)</option>
+            </select></div>
+          <div style="grid-column:1/-1"><label>Service URL *</label>
+            <input id="it_base_url" maxlength="500"
+              placeholder="https://10.11.1.105/Chatbotproxy/REST/Summit_RESTWCF.svc"></div>
+          <div style="grid-column:1/-1"><label>API key
             <span style="font-weight:normal" id="it_token_hint"></span></label>
-            <input id="it_token" type="password" maxlength="1000" placeholder="paste token to set / change"></div>
+            <input id="it_token" type="password" maxlength="1000" placeholder="paste key to set / change"></div>
+        </div>
+        <div id="itsmWcfFields" style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
+          <div><label>OrgID</label><input id="it_org_id" type="number" value="1" min="0" max="10000"></div>
+          <div><label>ProxyID</label><input id="it_proxy_id" type="number" value="0" min="0" max="10000"></div>
+          <div><label>Incidents list ServiceName</label>
+            <input id="it_incidents_service" maxlength="100" placeholder="IM_FetchIncidents"></div>
+          <div><label>Incident detail ServiceName</label>
+            <input id="it_incident_detail_service" maxlength="100" placeholder="IM_GetIncidentDetails"></div>
+          <div><label>Changes ServiceName</label>
+            <input id="it_changes_service" maxlength="100" placeholder="CM_FetchChanges"></div>
+          <div><label>Extra params for the list call <span style="font-weight:normal">(JSON, optional)</span></label>
+            <input id="it_incidents_params" maxlength="2000" placeholder='{"incidentParamsJSON": {...}}'></div>
+          <div class="hint" style="grid-column:1/-1;margin-top:2px">Confirm the exact ServiceNames for
+            fetching incident/change lists with your Summit admin — the log/update operation is
+            IM_LogOrUpdateIncident, and list operations vary per deployment.</div>
+        </div>
+        <div id="itsmRestFields" style="display:none; grid-template-columns: 1fr 1fr; gap: 0 14px;">
           <div><label>Auth header</label><input id="it_auth_header" maxlength="100" placeholder="Authorization"></div>
           <div><label>Token prefix</label><input id="it_auth_prefix" maxlength="50" placeholder="Bearer "></div>
           <div><label>Incidents path</label><input id="it_incidents_path" maxlength="200" placeholder="/incidents"></div>
           <div><label>Changes path</label><input id="it_changes_path" maxlength="200" placeholder="/changes"></div>
-          <div style="grid-column:1/-1"><label class="layer" style="border:none;padding:6px 0;cursor:pointer">
-            <input type="checkbox" id="it_verify_tls"> <span class="name" style="font-weight:600">Verify TLS certificate</span>
-            <span class="desc">— uncheck only for an internal/self-signed endpoint</span></label></div>
         </div>
+        <div><label class="layer" style="border:none;padding:6px 0;cursor:pointer">
+          <input type="checkbox" id="it_verify_tls"> <span class="name" style="font-weight:600">Verify TLS certificate</span>
+          <span class="desc">— uncheck for an IP/self-signed endpoint (e.g. https://10.x.x.x/…)</span></label></div>
         <div style="display:flex; gap:10px; margin-top:14px;">
           <button class="primary" id="saveItsmBtn" style="flex:1; margin-top:0">Save</button>
           <button class="ghost" id="testItsmBtn">Test connection</button>
@@ -1944,9 +1967,21 @@ function switchView(view) {
 }
 
 /* ---------- settings: SummitAI config ---------- */
+function itsmStyleFields() {
+  const wcf = $('it_api_style').value === 'summit_wcf';
+  $('itsmWcfFields').style.display = wcf ? 'grid' : 'none';
+  $('itsmRestFields').style.display = wcf ? 'none' : 'grid';
+}
 async function loadItsmConfig() {
   const c = await (await fetch('/api/admin/itsm')).json();
+  $('it_api_style').value = c.api_style || 'summit_wcf';
   $('it_base_url').value = c.base_url || '';
+  $('it_org_id').value = c.org_id ?? 1;
+  $('it_proxy_id').value = c.proxy_id ?? 0;
+  $('it_incidents_service').value = c.incidents_service || 'IM_FetchIncidents';
+  $('it_incident_detail_service').value = c.incident_detail_service || 'IM_GetIncidentDetails';
+  $('it_changes_service').value = c.changes_service || 'CM_FetchChanges';
+  $('it_incidents_params').value = c.incidents_params || '';
   $('it_auth_header').value = c.auth_header || 'Authorization';
   $('it_auth_prefix').value = c.auth_prefix || 'Bearer ';
   $('it_incidents_path').value = c.incidents_path || '/incidents';
@@ -1954,21 +1989,30 @@ async function loadItsmConfig() {
   $('it_verify_tls').checked = c.verify_tls !== false;
   $('it_token').value = '';
   $('it_token_hint').textContent = c.token_set
-    ? '(a token is stored — leave blank to keep it)' : '(required)';
+    ? '(a key is stored — leave blank to keep it)' : '(required)';
   $('itsmState').textContent = c.configured ? 'live' : 'demo data';
   $('itsmState').style.color = c.configured ? 'var(--ok)' : 'var(--warn)';
+  itsmStyleFields();
 }
 function itsmForm() {
   return {
+    api_style: $('it_api_style').value,
     base_url: $('it_base_url').value.trim(),
     token: $('it_token').value,
+    verify_tls: $('it_verify_tls').checked,
+    org_id: parseInt($('it_org_id').value, 10) || 1,
+    proxy_id: parseInt($('it_proxy_id').value, 10) || 0,
+    incidents_service: $('it_incidents_service').value.trim() || 'IM_FetchIncidents',
+    incident_detail_service: $('it_incident_detail_service').value.trim() || 'IM_GetIncidentDetails',
+    changes_service: $('it_changes_service').value.trim() || 'CM_FetchChanges',
+    incidents_params: $('it_incidents_params').value.trim(),
     auth_header: $('it_auth_header').value.trim() || 'Authorization',
     auth_prefix: $('it_auth_prefix').value || 'Bearer ',
-    verify_tls: $('it_verify_tls').checked,
     incidents_path: $('it_incidents_path').value.trim() || '/incidents',
     changes_path: $('it_changes_path').value.trim() || '/changes',
   };
 }
+$('it_api_style').onchange = itsmStyleFields;
 $('testItsmBtn').onclick = async () => {
   const msg = $('itsmMsg');
   if (!$('it_base_url').value.trim()) { msg.style.color = 'var(--warn)'; msg.textContent = 'Enter a Base URL first.'; return; }
@@ -1980,7 +2024,9 @@ $('testItsmBtn').onclick = async () => {
     })).json();
     if (r.ok) {
       msg.style.color = 'var(--ok)';
-      msg.textContent = `✓ Connected — ${r.incidents} incidents, ${r.changes} changes returned.`;
+      msg.textContent = `✓ Connected — ${r.incidents} incidents returned`
+        + (r.changes !== null ? `, ${r.changes} changes.` : '.')
+        + (r.changes_error ? ` (changes call failed: ${r.changes_error} — check the Changes ServiceName)` : '');
     } else {
       msg.style.color = 'var(--err)';
       msg.textContent = '✕ ' + (r.error || 'connection failed');
