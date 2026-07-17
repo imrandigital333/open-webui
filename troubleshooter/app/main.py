@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.33.0"
+APP_VERSION = "2.34.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -263,9 +263,10 @@ async def discover_itsm_services(req: ItsmDiscoverRequest, request: Request):
 
 @app.get("/api/incidents")
 async def incidents():
-    """Active P1/P2 incidents from SummitAI (demo data until configured)."""
+    """All incidents from SummitAI's configured window (demo data until
+    configured) — priority/status slicing happens client-side."""
     try:
-        rows = await asyncio.to_thread(itsm.list_incidents)
+        rows = await asyncio.to_thread(itsm.list_incidents, None, True)
         return {"incidents": rows, **itsm.status()}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")

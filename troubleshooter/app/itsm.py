@@ -177,6 +177,9 @@ def _norm_incident(raw: dict) -> dict:
         "assignee": _first(raw, "AssignedTo", "Assigned_Analyst", "AssignedEngineer",
                            "Analyst", "Owner", "assignee", "Assigned_WorkGroup_Name",
                            default="Unassigned"),
+        "workgroup": _first(raw, "Assigned_WorkGroup_Name", "WorkgroupName",
+                            "Workgroup_Name", "Workgroup", "AssignedWorkgroup",
+                            default=""),
         "category": _first(raw, "Category", "Category_Name", "category",
                            "Classification_Name", "ClassName", default=""),
         "url": _first(raw, "URL", "url", "Link", default=""),
@@ -400,18 +403,27 @@ def _fetch_change_rows(cfg: dict) -> list[dict]:
 
 # ---------- public API ----------
 
-def list_incidents(priorities: tuple[str, ...] = ("P1", "P2")) -> list[dict]:
+def list_incidents(priorities: tuple[str, ...] | None = ("P1", "P2"),
+                   include_closed: bool = False) -> list[dict]:
+    """Incidents from the configured window. priorities=None means all
+    priorities; closed/resolved rows are kept only when include_closed."""
     cfg = load_config()
     if not configured(cfg):
         rows = _demo_incidents()
     else:
         rows = [_norm_incident(r) for r in _fetch_incident_rows(cfg)]
-    active = [i for i in rows
-              if i["priority"] in priorities
-              and str(i["status"]).lower() not in ("closed", "resolved", "cancelled")]
+    kept = [i for i in rows
+            if (not priorities or i["priority"] in priorities)
+            and (include_closed
+                 or str(i["status"]).lower() not in ("closed", "resolved", "cancelled"))]
     order = {p: n for n, p in enumerate(("P1", "P2", "P3", "P4", "P5"))}
-    active.sort(key=lambda i: (order.get(i["priority"], 9), i["id"]))
-    return active
+
+    def newest_first(i):
+        s = str(i["id"])
+        return -int(s) if s.isdigit() else 0
+
+    kept.sort(key=lambda i: (order.get(i["priority"], 9), newest_first(i), i["id"]))
+    return kept
 
 
 def get_incident(incident_id: str) -> dict | None:

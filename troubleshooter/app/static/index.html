@@ -478,6 +478,32 @@
   .pri.p-p1 { background: #3d1d1d; color: var(--err); }
   .pri.p-p2 { background: #3a2f14; color: var(--warn); }
   .pri.p-p3 { background: #16203a; color: var(--accent2); }
+  .pri.p-p4, .pri.p-p5 { background: #20242e; color: var(--muted); }
+  .inc-card.p-p4, .inc-card.p-p5 { border-left-color: #3a4150; }
+  .inc-card.closed { opacity: .62; }
+  .inc-card.closed:hover { opacity: 1; }
+  .inc-stat.done { color: var(--ok); }
+  .inc-cat { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+             padding: 0 7px; font-size: 10.5px; }
+  .inc-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                  margin-bottom: 16px; }
+  .inc-controls .seg button { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
+  .inc-chips { display: flex; gap: 6px; }
+  .ichip { border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+           border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+  .ichip:hover { border-color: var(--accent); color: var(--text); }
+  .ichip.active { background: var(--accent); border-color: var(--accent); color: #fff;
+                  font-weight: 650; }
+  #incSearch { flex: 1; min-width: 180px; max-width: 320px; margin: 0; padding: 6px 12px;
+               font-size: 12.5px; }
+  .inc-sec { margin-bottom: 22px; }
+  .inc-sech { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .inc-secl { font-size: 12.5px; font-weight: 750; text-transform: uppercase;
+              letter-spacing: .06em; }
+  .inc-secn { font-size: 11.5px; font-weight: 700; background: var(--panel2);
+              border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px;
+              color: var(--muted); font-variant-numeric: tabular-nums; }
+  .inc-secrule { flex: 1; height: 1px; background: var(--border); }
   .inc-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .inc-stat { margin-left: auto; font-size: 11px; font-weight: 700; text-transform: uppercase;
               color: var(--muted); }
@@ -583,14 +609,34 @@
 
 <div id="viewIncidents" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
-    <h2 style="margin:0">Active incidents</h2>
+    <h2 style="margin:0">Incidents</h2>
     <span class="tag" id="incSource"></span>
-    <span class="hint" style="margin:0">P1 &amp; P2 · from SummitAI</span>
+    <span class="hint" style="margin:0" id="incUpdated"></span>
     <button class="ghost" id="incRefresh" style="margin-left:auto">↻ Refresh</button>
   </div>
-  <div class="hint" style="margin-bottom:14px">Click an incident to see its details and launch a
-    troubleshooting session with the incident context pre-filled.</div>
-  <div class="incgrid" id="incList"><div class="empty">Loading incidents…</div></div>
+  <div class="hint" style="margin-bottom:12px">Every incident in the configured SummitAI window.
+    Click one to see its details and launch a troubleshooting session with the incident context
+    pre-filled.</div>
+  <div class="kpis" id="incKpis" style="margin-bottom:14px"></div>
+  <div class="inc-controls">
+    <div class="seg" id="incGroupSeg" style="margin-top:0">
+      <button data-g="priority" class="active">By priority</button>
+      <button data-g="status">By status</button>
+      <button data-g="category">By category</button>
+      <button data-g="workgroup">By workgroup</button>
+    </div>
+    <div class="inc-chips" id="incPriChips">
+      <button class="ichip active" data-p="">All</button>
+      <button class="ichip" data-p="P1">P1</button>
+      <button class="ichip" data-p="P2">P2</button>
+      <button class="ichip" data-p="P3">P3</button>
+      <button class="ichip" data-p="P4">P4</button>
+    </div>
+    <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); cursor:pointer; margin:0">
+      <input type="checkbox" id="incShowClosed" style="width:auto; margin:0"> resolved &amp; closed</label>
+    <input id="incSearch" placeholder="Search id, title, CI, workgroup…">
+  </div>
+  <div id="incList"><div class="empty">Loading incidents…</div></div>
 </div>
 
 <div id="viewChanges" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
@@ -2113,33 +2159,121 @@ $('navSettings').onclick = () => switchView('settings');
 
 /* ---------- incidents (SummitAI) ---------- */
 let incidentsCache = [];
+const incUI = { group: 'priority', pri: '', closed: false, q: '' };
+const incClosed = (s) => ['closed', 'resolved', 'cancelled'].includes(String(s || '').toLowerCase());
+
 async function loadIncidents() {
   const box = $('incList');
   try {
     const d = await (await fetch('/api/incidents')).json();
     incidentsCache = d.incidents || [];
     $('incSource').textContent = d.source || 'SummitAI';
-    box.classList.toggle('empty', !incidentsCache.length);
-    box.innerHTML = incidentsCache.length ? incidentsCache.map(i => {
-      const p = i.priority.toLowerCase();
-      return `<div class="inc-card p-${p}" onclick="openIncident('${escapeHtml(i.id)}')">
-        <div class="inc-top">
-          <span class="pri p-${p}">${escapeHtml(i.priority)}</span>
-          <span class="inc-id">${escapeHtml(i.id)}</span>
-          <span class="inc-stat">${escapeHtml(i.status)}</span>
-        </div>
-        <div class="inc-title">${escapeHtml(i.title)}</div>
-        <div class="inc-meta">
-          ${i.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(i.ci)}</b></span>` : ''}
-          ${i.reported_at ? `<span>${ic('clock', 11)} ${escapeHtml(fmtWhen(i.reported_at))}</span>` : ''}
-          ${i.assignee ? `<span>${escapeHtml(i.assignee)}</span>` : ''}
-        </div></div>`;
-    }).join('') : 'No active P1/P2 incidents right now.';
+    $('incUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    renderIncidents();
   } catch (e) {
     box.classList.remove('empty');
     box.innerHTML = `<div class="empty">Could not load incidents: ${escapeHtml(e.message)}</div>`;
   }
 }
+
+function incCard(i) {
+  const p = (i.priority || 'p3').toLowerCase();
+  const closed = incClosed(i.status);
+  const who = i.workgroup || i.assignee;
+  return `<div class="inc-card p-${p}${closed ? ' closed' : ''}" onclick="openIncident('${escapeHtml(i.id)}')">
+    <div class="inc-top">
+      <span class="pri p-${p}">${escapeHtml(i.priority || '—')}</span>
+      <span class="inc-id">${escapeHtml(i.id)}</span>
+      <span class="inc-stat${closed ? ' done' : ''}">${closed ? '✓ ' : ''}${escapeHtml(i.status)}</span>
+    </div>
+    <div class="inc-title">${escapeHtml(i.title)}</div>
+    <div class="inc-meta">
+      ${i.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(i.ci)}</b></span>` : ''}
+      ${i.reported_at ? `<span>${ic('clock', 11)} ${escapeHtml(fmtWhen(i.reported_at))}</span>` : ''}
+      ${who ? `<span>${escapeHtml(who)}</span>` : ''}
+      ${i.category ? `<span class="inc-cat">${escapeHtml(i.category)}</span>` : ''}
+    </div></div>`;
+}
+
+function renderIncidents() {
+  const all = incidentsCache;
+  const active = all.filter(i => !incClosed(i.status));
+  const unassigned = active.filter(i =>
+    !String(i.assignee || '').trim() || /^unassigned$/i.test(String(i.assignee).trim()));
+  $('incKpis').innerHTML = [
+    [all.length, 'In window', ''],
+    [active.filter(i => i.priority === 'P1').length, 'P1 active', 'var(--err)'],
+    [active.filter(i => i.priority === 'P2').length, 'P2 active', 'var(--warn)'],
+    [active.length, 'Total active', ''],
+    [unassigned.length, 'Unassigned', ''],
+    [all.length - active.length, 'Resolved / closed', 'var(--ok)'],
+  ].map(([n, l, c]) =>
+    `<div class="kpi"><div class="n"${c ? ` style="color:${c}"` : ''}>${n}</div><div class="l">${l}</div></div>`).join('');
+
+  const q = incUI.q.toLowerCase();
+  const rows = all.filter(i =>
+    (incUI.closed || !incClosed(i.status)) &&
+    (!incUI.pri || i.priority === incUI.pri) &&
+    (!q || [i.id, i.title, i.ci, i.status, i.category, i.workgroup, i.assignee]
+      .join(' ').toLowerCase().includes(q)));
+
+  const box = $('incList');
+  box.classList.remove('empty');
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty">${all.length
+      ? 'No incidents match the current filters.'
+      : 'No incidents in the configured window.'}</div>`;
+    return;
+  }
+
+  const keyOf = {
+    priority: (i) => i.priority || 'P?',
+    status: (i) => i.status || 'Unknown',
+    category: (i) => i.category || 'Uncategorised',
+    workgroup: (i) => i.workgroup || i.assignee || 'Unassigned',
+  }[incUI.group];
+  const groups = new Map();
+  rows.forEach(i => {
+    const k = keyOf(i);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(i);
+  });
+  const keys = [...groups.keys()];
+  if (incUI.group === 'priority') {
+    const o = { P1: 0, P2: 1, P3: 2, P4: 3, P5: 4 };
+    keys.sort((a, b) => (o[a] ?? 9) - (o[b] ?? 9) || a.localeCompare(b));
+  } else if (incUI.group === 'status') {
+    const o = { 'new': 0, 'in-progress': 1, 'in progress': 1, 'assigned': 2, 'pending': 3,
+                'on-hold': 4, 'resolved': 5, 'closed': 6, 'cancelled': 7 };
+    keys.sort((a, b) => (o[a.toLowerCase()] ?? 8) - (o[b.toLowerCase()] ?? 8) || a.localeCompare(b));
+  } else {
+    keys.sort((a, b) => groups.get(b).length - groups.get(a).length || a.localeCompare(b));
+  }
+
+  const PRI_LABEL = { P1: 'P1 — Critical', P2: 'P2 — High', P3: 'P3 — Medium',
+                      P4: 'P4 — Low', P5: 'P5 — Planning' };
+  box.innerHTML = keys.map(k => {
+    const list = groups.get(k);
+    const label = incUI.group === 'priority' ? (PRI_LABEL[k] || k) : k;
+    return `<div class="inc-sec">
+      <div class="inc-sech"><span class="inc-secl">${escapeHtml(label)}</span>
+        <span class="inc-secn">${list.length}</span><span class="inc-secrule"></span></div>
+      <div class="incgrid">${list.map(incCard).join('')}</div></div>`;
+  }).join('');
+}
+
+$('incGroupSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+  incUI.group = b.dataset.g;
+  $('incGroupSeg').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+  renderIncidents();
+});
+$('incPriChips').querySelectorAll('button').forEach(b => b.onclick = () => {
+  incUI.pri = b.dataset.p;
+  $('incPriChips').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+  renderIncidents();
+});
+$('incShowClosed').onchange = (e) => { incUI.closed = e.target.checked; renderIncidents(); };
+$('incSearch').oninput = (e) => { incUI.q = e.target.value.trim(); renderIncidents(); };
 function fmtWhen(s) {
   const t = Date.parse(s);
   return isNaN(t) ? s : timeAgo(t / 1000);
