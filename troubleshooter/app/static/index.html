@@ -232,6 +232,11 @@
              overflow: hidden; }
   #remChat.open { display: flex; }
   #remChat.big { --rcw: min(820px, calc(100vw - 40px)); max-height: 90vh; }
+  /* docked mode on wide screens: the windows become full-height columns so
+     the reserved right-hand space is fully used, not just its bottom corner */
+  @media (min-width: 1101px) {
+    #remChat.open, #rcMap.open { top: 76px; max-height: none; }
+  }
   .rchat-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 7px;
                   cursor: ew-resize; z-index: 2; }
   .rchat-resize:hover { background: var(--accent); opacity: .4; }
