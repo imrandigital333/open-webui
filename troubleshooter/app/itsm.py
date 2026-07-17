@@ -43,6 +43,10 @@ DEFAULTS = {
     "base_url": "",
     "token": "",                        # API key (wcf) or bearer token (rest)
     "verify_tls": True,
+    # internal endpoints must NOT be routed via the corporate proxy: the
+    # system HTTP(S)_PROXY (set for Claude's internet access) would send
+    # 10.x.x.x calls to the URL filter, which answers 403. Off by default.
+    "use_proxy": False,
     # summit_wcf style
     "org_id": 1,
     "proxy_id": 0,
@@ -81,6 +85,8 @@ def load_config() -> dict:
             cfg[key] = val
     if os.environ.get("SUMMITAI_VERIFY_TLS") == "0":
         cfg["verify_tls"] = False
+    if os.environ.get("SUMMITAI_USE_PROXY") == "1":
+        cfg["use_proxy"] = True
     try:
         file_cfg = yaml.safe_load(CONFIG_PATH.read_text()) or {}
         for key in DEFAULTS:
@@ -88,6 +94,8 @@ def load_config() -> dict:
                 cfg[key] = file_cfg[key]
         if isinstance(file_cfg.get("verify_tls"), bool):
             cfg["verify_tls"] = file_cfg["verify_tls"]
+        if isinstance(file_cfg.get("use_proxy"), bool):
+            cfg["use_proxy"] = file_cfg["use_proxy"]
     except (OSError, yaml.YAMLError):
         pass
     cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
@@ -174,16 +182,20 @@ def _norm_change(raw: dict) -> dict:
 # ---------- transports ----------
 
 def _open(url: str, cfg: dict, data: bytes | None, headers: dict) -> tuple[int, str]:
-    ctx = None
+    handlers = []
+    if not cfg.get("use_proxy"):
+        handlers.append(urllib.request.ProxyHandler({}))   # go DIRECT, ignore HTTP(S)_PROXY
     if url.startswith("https"):
         ctx = ssl.create_default_context()
         if not cfg["verify_tls"]:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(url, data=data, headers=headers,
                                  method="POST" if data is not None else "GET")
     try:
-        with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
+        with opener.open(req, timeout=25) as resp:
             return resp.status, resp.read().decode(errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")

@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.29.2"
+APP_VERSION = "2.30.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -200,6 +200,7 @@ class ItsmConfigRequest(BaseModel):
     base_url: str = Field("", max_length=500)
     token: str = Field("", max_length=1000)          # empty = keep the stored key
     verify_tls: bool = True
+    use_proxy: bool = False
     # summit_wcf style
     org_id: int = Field(1, ge=0, le=10_000)
     proxy_id: int = Field(0, ge=0, le=10_000)

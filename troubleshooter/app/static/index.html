@@ -698,6 +698,10 @@
         <div><label class="layer" style="border:none;padding:6px 0;cursor:pointer">
           <input type="checkbox" id="it_verify_tls"> <span class="name" style="font-weight:600">Verify TLS certificate</span>
           <span class="desc">— uncheck for an IP/self-signed endpoint (e.g. https://10.x.x.x/…)</span></label></div>
+        <div><label class="layer" style="border:none;padding:6px 0;cursor:pointer">
+          <input type="checkbox" id="it_use_proxy"> <span class="name" style="font-weight:600">Route via system proxy</span>
+          <span class="desc">— leave OFF for internal endpoints: the corporate proxy (HTTP(S)_PROXY)
+            answers them with a "Policy: URL Filtering" 403 block page</span></label></div>
         <div style="display:flex; gap:10px; margin-top:14px;">
           <button class="primary" id="saveItsmBtn" style="flex:1; margin-top:0">Save</button>
           <button class="ghost" id="testItsmBtn">Test connection</button>
@@ -1987,6 +1991,7 @@ async function loadItsmConfig() {
   $('it_incidents_path').value = c.incidents_path || '/incidents';
   $('it_changes_path').value = c.changes_path || '/changes';
   $('it_verify_tls').checked = c.verify_tls !== false;
+  $('it_use_proxy').checked = c.use_proxy === true;
   $('it_token').value = '';
   $('it_token_hint').textContent = c.token_set
     ? '(a key is stored — leave blank to keep it)' : '(required)';
@@ -2000,6 +2005,7 @@ function itsmForm() {
     base_url: $('it_base_url').value.trim(),
     token: $('it_token').value,
     verify_tls: $('it_verify_tls').checked,
+    use_proxy: $('it_use_proxy').checked,
     org_id: parseInt($('it_org_id').value, 10) || 1,
     proxy_id: parseInt($('it_proxy_id').value, 10) || 0,
     incidents_service: $('it_incidents_service').value.trim() || 'IM_FetchIncidents',
