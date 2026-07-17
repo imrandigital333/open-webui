@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.31.1"
+APP_VERSION = "2.32.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -239,6 +239,20 @@ async def test_itsm_config(req: ItsmConfigRequest, request: Request):
     result = await asyncio.to_thread(itsm.test_config, req.model_dump())
     await asyncio.to_thread(db.audit, _actor(request), "itsm_config_tested",
                             {"base_url": req.base_url, "ok": result.get("ok")})
+    return result
+
+
+class ItsmDiscoverRequest(ItsmConfigRequest):
+    ticket_no: str = Field("", max_length=64)   # known ticket → also probe detail services
+
+
+@app.post("/api/admin/itsm/discover")
+async def discover_itsm_services(req: ItsmDiscoverRequest, request: Request):
+    """Read-only sweep of common SummitAI ServiceNames with the form values."""
+    result = await asyncio.to_thread(itsm.discover_services, req.model_dump(), req.ticket_no)
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_services_probed",
+                            {"base_url": req.base_url,
+                             "hits": sum(1 for r in result.get("results", []) if r.get("ok"))})
     return result
 
 

@@ -708,8 +708,12 @@
         <div style="display:flex; gap:10px; margin-top:14px;">
           <button class="primary" id="saveItsmBtn" style="flex:1; margin-top:0">Save</button>
           <button class="ghost" id="testItsmBtn">Test connection</button>
+          <button class="ghost" id="probeItsmBtn" title="Try the common SummitAI list/detail ServiceNames and show which ones this endpoint + key actually answer">Probe ServiceNames</button>
         </div>
+        <div style="margin-top:8px"><label>Known ticket no <span style="font-weight:normal">(optional — lets the probe also verify the detail service)</span></label>
+          <input id="it_probe_ticket" maxlength="64" placeholder="e.g. INC12345 or 12345"></div>
         <div class="hint" id="itsmMsg" style="margin-top:8px"></div>
+        <div id="itsmProbeOut" style="display:none; margin-top:8px; padding:10px 12px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--line, #2a3140); border-radius:8px; font-size:12.5px; line-height:1.9"></div>
       </div>
     </div>
   </div>
@@ -2049,6 +2053,33 @@ $('testItsmBtn').onclick = async () => {
       msg.textContent = err;
     }
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+};
+$('probeItsmBtn').onclick = async () => {
+  const out = $('itsmProbeOut');
+  if (!$('it_base_url').value.trim()) {
+    out.style.display = 'block'; out.textContent = 'Enter a Base URL first.'; return;
+  }
+  out.style.display = 'block';
+  out.innerHTML = '<span class="spinner"></span> probing common SummitAI ServiceNames — each wrong name just answers empty, so this is read-only and safe…';
+  try {
+    const r = await (await fetch('/api/admin/itsm/discover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...itsmForm(), ticket_no: $('it_probe_ticket').value.trim() }),
+    })).json();
+    if (r.error) { out.textContent = '✕ ' + r.error; return; }
+    const line = (x) => {
+      const tag = x.kind === 'detail' ? ' <span style="color:var(--muted)">(detail)</span>' : '';
+      if (x.ok && x.rows > 0) return `<div style="color:var(--ok)">✓ <b>${escapeHtml(x.service)}</b>${tag} — ${x.rows} row(s) returned</div>`;
+      if (x.ok) return `<div style="color:var(--warn)">△ ${escapeHtml(x.service)}${tag} — answered, but 0 rows (may need extra params, or there are simply no matching tickets)</div>`;
+      if (x.empty) return `<div style="color:var(--muted)">○ ${escapeHtml(x.service)}${tag} — empty (not recognised / not whitelisted for this key)</div>`;
+      return `<div style="color:var(--err)">✕ ${escapeHtml(x.service)}${tag} — ${escapeHtml(x.error || 'error')}</div>`;
+    };
+    const hits = r.results.filter(x => x.ok).length;
+    out.innerHTML = r.results.map(line).join('')
+      + `<div class="desc" style="margin-top:6px">${hits
+          ? 'Paste a ✓ name into the matching ServiceName field above, then Test and Save.'
+          : 'No candidate answered — the list/detail ServiceNames for this deployment must be whitelisted for your API key by the Summit admin.'}</div>`;
+  } catch (e) { out.textContent = '✕ ' + e.message; }
 };
 $('saveItsmBtn').onclick = async () => {
   const msg = $('itsmMsg');

@@ -412,16 +412,23 @@ def public_config() -> dict:
             "token_set": bool(cfg["token"]), "configured": configured(cfg)}
 
 
-def test_config(overrides: dict | None = None) -> dict:
-    """Try the API with (unsaved) form values so the operator can verify
-    before saving. An empty token in overrides means: use the stored one."""
+def _merged(overrides: dict | None) -> dict:
+    """Stored config overlaid with (unsaved) form values; empty token in
+    overrides means: use the stored one."""
     cfg = load_config()
     for k, v in (overrides or {}).items():
-        if k == "verify_tls":
+        if k in ("verify_tls", "use_proxy"):
             cfg[k] = bool(v)
         elif k in DEFAULTS and v not in (None, ""):
             cfg[k] = v
     cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
+    return cfg
+
+
+def test_config(overrides: dict | None = None) -> dict:
+    """Try the API with (unsaved) form values so the operator can verify
+    before saving."""
+    cfg = _merged(overrides)
     if not cfg["base_url"]:
         return {"ok": False, "error": "Base URL is required"}
     out = {"ok": True, "incidents": None, "changes": None, "changes_error": None}
@@ -436,6 +443,47 @@ def test_config(overrides: dict | None = None) -> dict:
         # incidents worked — a wrong changes ServiceName shouldn't fail the test
         out["changes_error"] = str(exc)[:300]
     return out
+
+
+# ServiceNames seen across SummitAI deployments; wrong ones are harmless
+# (Summit answers them with an empty body), so probing is read-only and safe.
+_CANDIDATE_LIST_SERVICES = [
+    "IM_FetchIncidents", "IM_GetIncidentList", "IM_GetIncidentDetailsList",
+    "IM_FetchIncidentList", "GetIncidentsList", "IM_GetIncidents",
+    "IM_GetMyIncidentList", "IM_FetchAssignedIncidents", "IM_GetTicketList",
+]
+_CANDIDATE_DETAIL_SERVICES = [
+    "IM_GetIncidentDetails", "IM_FetchIncidentDetails", "GetIncidentDetails",
+]
+
+
+def discover_services(overrides: dict | None = None, ticket_no: str = "") -> dict:
+    """Probe common SummitAI ServiceNames so the operator can find the ones
+    their deployment/key actually answers. List services are tried always;
+    detail services only when a known ticket number is supplied."""
+    cfg = _merged(overrides)
+    if not cfg["base_url"]:
+        return {"results": [], "error": "Base URL is required"}
+    if cfg["api_style"] != "summit_wcf":
+        return {"results": [], "error": "ServiceName discovery applies to the summit_wcf style"}
+
+    def probe(name: str, kind: str, params: dict | None) -> dict:
+        try:
+            rows = _wcf_call(name, params, cfg)
+            return {"service": name, "kind": kind, "ok": True, "rows": len(rows)}
+        except RuntimeError as exc:
+            msg = str(exc)
+            empty = "EMPTY body" in msg
+            return {"service": name, "kind": kind, "ok": False, "empty": empty,
+                    "error": None if empty else msg[:180]}
+
+    results = []
+    for name in dict.fromkeys([cfg["incidents_service"], *_CANDIDATE_LIST_SERVICES]):
+        results.append(probe(name, "list", _extra_params(cfg)))
+    if ticket_no.strip():
+        for name in dict.fromkeys([cfg["incident_detail_service"], *_CANDIDATE_DETAIL_SERVICES]):
+            results.append(probe(name, "detail", {"TicketNo": ticket_no.strip()}))
+    return {"results": results}
 
 
 # ---------- demo data (used until a base URL is configured) ----------
