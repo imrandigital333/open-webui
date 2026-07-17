@@ -655,6 +655,32 @@
           border:1px solid var(--border); border-radius:8px; padding:10px 12px;
           max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
       </div>
+
+      <div class="panel" style="margin-top:16px">
+        <h2>SummitAI (ITSM) integration <span class="tag" id="itsmState" style="float:right"></span></h2>
+        <div class="hint" style="margin-bottom:12px">Connect the Incidents and Changes dashboards to
+          your SummitAI API. Until a Base URL is saved, those tabs show demo data. The token is
+          stored server-side (chmod 600) and never sent back to the browser.</div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
+          <div style="grid-column:1/-1"><label>Base URL *</label>
+            <input id="it_base_url" maxlength="500" placeholder="https://summit.bial.internal/api/v1"></div>
+          <div style="grid-column:1/-1"><label>API token / key
+            <span style="font-weight:normal" id="it_token_hint"></span></label>
+            <input id="it_token" type="password" maxlength="1000" placeholder="paste token to set / change"></div>
+          <div><label>Auth header</label><input id="it_auth_header" maxlength="100" placeholder="Authorization"></div>
+          <div><label>Token prefix</label><input id="it_auth_prefix" maxlength="50" placeholder="Bearer "></div>
+          <div><label>Incidents path</label><input id="it_incidents_path" maxlength="200" placeholder="/incidents"></div>
+          <div><label>Changes path</label><input id="it_changes_path" maxlength="200" placeholder="/changes"></div>
+          <div style="grid-column:1/-1"><label class="layer" style="border:none;padding:6px 0;cursor:pointer">
+            <input type="checkbox" id="it_verify_tls"> <span class="name" style="font-weight:600">Verify TLS certificate</span>
+            <span class="desc">— uncheck only for an internal/self-signed endpoint</span></label></div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:14px;">
+          <button class="primary" id="saveItsmBtn" style="flex:1; margin-top:0">Save</button>
+          <button class="ghost" id="testItsmBtn">Test connection</button>
+        </div>
+        <div class="hint" id="itsmMsg" style="margin-top:8px"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -1914,8 +1940,64 @@ function switchView(view) {
   if (view === 'overview') loadFleet();
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
-  if (view === 'settings') { loadAdminInventory(); loadScripts(); }
+  if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); }
 }
+
+/* ---------- settings: SummitAI config ---------- */
+async function loadItsmConfig() {
+  const c = await (await fetch('/api/admin/itsm')).json();
+  $('it_base_url').value = c.base_url || '';
+  $('it_auth_header').value = c.auth_header || 'Authorization';
+  $('it_auth_prefix').value = c.auth_prefix || 'Bearer ';
+  $('it_incidents_path').value = c.incidents_path || '/incidents';
+  $('it_changes_path').value = c.changes_path || '/changes';
+  $('it_verify_tls').checked = c.verify_tls !== false;
+  $('it_token').value = '';
+  $('it_token_hint').textContent = c.token_set
+    ? '(a token is stored — leave blank to keep it)' : '(required)';
+  $('itsmState').textContent = c.configured ? 'live' : 'demo data';
+  $('itsmState').style.color = c.configured ? 'var(--ok)' : 'var(--warn)';
+}
+function itsmForm() {
+  return {
+    base_url: $('it_base_url').value.trim(),
+    token: $('it_token').value,
+    auth_header: $('it_auth_header').value.trim() || 'Authorization',
+    auth_prefix: $('it_auth_prefix').value || 'Bearer ',
+    verify_tls: $('it_verify_tls').checked,
+    incidents_path: $('it_incidents_path').value.trim() || '/incidents',
+    changes_path: $('it_changes_path').value.trim() || '/changes',
+  };
+}
+$('testItsmBtn').onclick = async () => {
+  const msg = $('itsmMsg');
+  if (!$('it_base_url').value.trim()) { msg.style.color = 'var(--warn)'; msg.textContent = 'Enter a Base URL first.'; return; }
+  msg.style.color = 'var(--muted)'; msg.innerHTML = '<span class="spinner"></span> testing…';
+  try {
+    const r = await (await fetch('/api/admin/itsm/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(itsmForm()),
+    })).json();
+    if (r.ok) {
+      msg.style.color = 'var(--ok)';
+      msg.textContent = `✓ Connected — ${r.incidents} incidents, ${r.changes} changes returned.`;
+    } else {
+      msg.style.color = 'var(--err)';
+      msg.textContent = '✕ ' + (r.error || 'connection failed');
+    }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+};
+$('saveItsmBtn').onclick = async () => {
+  const msg = $('itsmMsg');
+  try {
+    await fetch('/api/admin/itsm', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(itsmForm()),
+    });
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ Saved.';
+    loadItsmConfig();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+};
 $('navOverview').onclick = () => switchView('overview');
 $('navIncidents').onclick = () => switchView('incidents');
 $('navWork').onclick = () => switchView('work');

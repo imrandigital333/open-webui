@@ -26,23 +26,56 @@ import time
 import urllib.error
 import urllib.request
 
-DEMO = not os.environ.get("SUMMITAI_BASE_URL")
+import yaml
+
+from .inventory import BASE_DIR
+
+# UI-managed settings live here (chmod 600, gitignored); environment variables
+# act as fallback so existing env-based deployments keep working.
+CONFIG_PATH = BASE_DIR / "itsm.yaml"
+
+DEFAULTS = {
+    "base_url": "", "token": "", "auth_header": "Authorization",
+    "auth_prefix": "Bearer ", "verify_tls": True,
+    "incidents_path": "/incidents", "changes_path": "/changes",
+}
+
+_ENV_MAP = {
+    "base_url": "SUMMITAI_BASE_URL", "token": "SUMMITAI_TOKEN",
+    "auth_header": "SUMMITAI_AUTH_HEADER", "auth_prefix": "SUMMITAI_AUTH_PREFIX",
+    "incidents_path": "SUMMITAI_INCIDENTS_PATH", "changes_path": "SUMMITAI_CHANGES_PATH",
+}
 
 
-def configured() -> bool:
-    return not DEMO
+def load_config() -> dict:
+    cfg = dict(DEFAULTS)
+    for key, var in _ENV_MAP.items():
+        val = os.environ.get(var)
+        if val not in (None, ""):
+            cfg[key] = val
+    if os.environ.get("SUMMITAI_VERIFY_TLS") == "0":
+        cfg["verify_tls"] = False
+    try:
+        file_cfg = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        for key in DEFAULTS:
+            if file_cfg.get(key) not in (None, ""):
+                cfg[key] = file_cfg[key]
+        if isinstance(file_cfg.get("verify_tls"), bool):
+            cfg["verify_tls"] = file_cfg["verify_tls"]
+    except (OSError, yaml.YAMLError):
+        pass
+    cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
+    return cfg
 
 
-def _cfg():
-    return {
-        "base": os.environ.get("SUMMITAI_BASE_URL", "").rstrip("/"),
-        "token": os.environ.get("SUMMITAI_TOKEN", ""),
-        "auth_header": os.environ.get("SUMMITAI_AUTH_HEADER", "Authorization"),
-        "auth_prefix": os.environ.get("SUMMITAI_AUTH_PREFIX", "Bearer "),
-        "verify": os.environ.get("SUMMITAI_VERIFY_TLS", "1") != "0",
-        "incidents_path": os.environ.get("SUMMITAI_INCIDENTS_PATH", "/incidents"),
-        "changes_path": os.environ.get("SUMMITAI_CHANGES_PATH", "/changes"),
-    }
+def save_config(cfg: dict) -> None:
+    clean = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    CONFIG_PATH.write_text(yaml.safe_dump(clean, sort_keys=False))
+    os.chmod(CONFIG_PATH, 0o600)   # the token lives in this file
+
+
+def configured(cfg: dict | None = None) -> bool:
+    return bool((cfg or load_config())["base_url"])
 
 
 def _first(d: dict, *keys, default=""):
@@ -101,16 +134,16 @@ def _norm_change(raw: dict) -> dict:
     }
 
 
-def _get(path: str):
-    cfg = _cfg()
+def _get(path: str, cfg: dict | None = None):
+    cfg = cfg or load_config()
     headers = {"Accept": "application/json"}
     if cfg["token"]:
         headers[cfg["auth_header"]] = f"{cfg['auth_prefix']}{cfg['token']}"
-    url = cfg["base"] + path
+    url = cfg["base_url"] + path
     ctx = None
     if url.startswith("https"):
         ctx = ssl.create_default_context()
-        if not cfg["verify"]:
+        if not cfg["verify_tls"]:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(url, headers=headers, method="GET")
@@ -139,10 +172,11 @@ def _get(path: str):
 # ---------- public API ----------
 
 def list_incidents(priorities: tuple[str, ...] = ("P1", "P2")) -> list[dict]:
-    if DEMO:
+    cfg = load_config()
+    if not configured(cfg):
         rows = _demo_incidents()
     else:
-        rows = [_norm_incident(r) for r in _get(_cfg()["incidents_path"])]
+        rows = [_norm_incident(r) for r in _get(cfg["incidents_path"], cfg)]
     active = [i for i in rows
               if i["priority"] in priorities
               and str(i["status"]).lower() not in ("closed", "resolved", "cancelled")]
@@ -152,21 +186,56 @@ def list_incidents(priorities: tuple[str, ...] = ("P1", "P2")) -> list[dict]:
 
 
 def get_incident(incident_id: str) -> dict | None:
-    if DEMO:
+    cfg = load_config()
+    if not configured(cfg):
         return next((i for i in _demo_incidents() if i["id"] == incident_id), None)
-    rows = [_norm_incident(r) for r in _get(f"{_cfg()['incidents_path']}/{incident_id}")]
+    rows = [_norm_incident(r) for r in _get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
     return rows[0] if rows else None
 
 
 def list_changes() -> list[dict]:
-    if DEMO:
+    cfg = load_config()
+    if not configured(cfg):
         return _demo_changes()
-    return [_norm_change(r) for r in _get(_cfg()["changes_path"])]
+    return [_norm_change(r) for r in _get(cfg["changes_path"], cfg)]
 
 
 def status() -> dict:
-    return {"configured": configured(), "demo": DEMO,
-            "source": "SummitAI" + (" (demo data)" if DEMO else "")}
+    ok = configured()
+    return {"configured": ok, "demo": not ok,
+            "source": "SummitAI" + ("" if ok else " (demo data)")}
+
+
+def public_config() -> dict:
+    "Config for the settings UI; the token never leaves the server."
+    cfg = load_config()
+    return {**{k: cfg[k] for k in DEFAULTS if k != "token"},
+            "token_set": bool(cfg["token"]), "configured": configured(cfg)}
+
+
+def test_config(overrides: dict | None = None) -> dict:
+    """Try the API with (unsaved) form values so the operator can verify
+    before saving. An empty token in overrides means: use the stored one."""
+    cfg = load_config()
+    for k, v in (overrides or {}).items():
+        if k == "verify_tls":
+            cfg[k] = bool(v)
+        elif k in DEFAULTS and v not in (None, ""):
+            cfg[k] = v
+    cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
+    if not cfg["base_url"]:
+        return {"ok": False, "error": "Base URL is required"}
+    out = {"ok": True, "incidents": None, "changes": None}
+    try:
+        out["incidents"] = len(_get(cfg["incidents_path"], cfg))
+    except Exception as exc:  # noqa: BLE001
+        out.update(ok=False, error=f"incidents endpoint: {exc}")
+        return out
+    try:
+        out["changes"] = len(_get(cfg["changes_path"], cfg))
+    except Exception as exc:  # noqa: BLE001
+        out.update(ok=False, error=f"changes endpoint: {exc}")
+    return out
 
 
 # ---------- demo data (used until SUMMITAI_BASE_URL is set) ----------

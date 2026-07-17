@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.27.0"
+APP_VERSION = "2.28.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -193,6 +193,42 @@ async def create_session(req: SessionRequest, request: Request):
 @app.get("/api/itsm/status")
 async def itsm_status():
     return itsm.status()
+
+
+class ItsmConfigRequest(BaseModel):
+    base_url: str = Field("", max_length=500)
+    token: str = Field("", max_length=1000)          # empty = keep the stored token
+    auth_header: str = Field("Authorization", max_length=100)
+    auth_prefix: str = Field("Bearer ", max_length=50)
+    verify_tls: bool = True
+    incidents_path: str = Field("/incidents", max_length=200)
+    changes_path: str = Field("/changes", max_length=200)
+
+
+@app.get("/api/admin/itsm")
+async def get_itsm_config():
+    return itsm.public_config()
+
+
+@app.put("/api/admin/itsm")
+async def save_itsm_config(req: ItsmConfigRequest, request: Request):
+    cfg = req.model_dump()
+    if not cfg["token"]:
+        cfg["token"] = itsm.load_config()["token"]   # keep the stored secret
+    await asyncio.to_thread(itsm.save_config, cfg)
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_config_saved",
+                            {"base_url": cfg["base_url"],
+                             "token_changed": bool(req.token)})
+    return itsm.public_config()
+
+
+@app.post("/api/admin/itsm/test")
+async def test_itsm_config(req: ItsmConfigRequest, request: Request):
+    """Probe the API with the (possibly unsaved) form values."""
+    result = await asyncio.to_thread(itsm.test_config, req.model_dump())
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_config_tested",
+                            {"base_url": req.base_url, "ok": result.get("ok")})
+    return result
 
 
 @app.get("/api/incidents")
