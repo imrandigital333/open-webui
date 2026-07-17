@@ -56,9 +56,16 @@ DEFAULTS = {
     "wcf_operation": "RESTService/CommonWS_JsonObjCall",
     "org_id": 1,
     "proxy_id": 0,
-    "incidents_service": "IM_FetchIncidents",
+    "incidents_service": "IM_GetIncidentList",
     "incident_detail_service": "IM_GetIncidentDetails",
     "changes_service": "CM_FetchChanges",
+    # IM_GetIncidentList requires an objIncidentCommonFilter block; these
+    # feed its mandatory fields (the full status string matches the vendor
+    # sample — P1/P2 + active filtering happens client-side afterwards).
+    "instance": "IT",
+    "incident_statuses": "New,In-Progress,Assigned,Pending,Resolved,Closed",
+    "lookback_days": 30,
+    "page_size": 100,
     "incidents_params": "",             # optional JSON merged into objCommonParameters
     # rest style
     "auth_header": "Authorization",
@@ -72,6 +79,10 @@ _ENV_MAP = {
     "base_url": "SUMMITAI_BASE_URL",
     "token": "SUMMITAI_TOKEN",
     "wcf_operation": "SUMMITAI_WCF_OPERATION",
+    "instance": "SUMMITAI_INSTANCE",
+    "incident_statuses": "SUMMITAI_INCIDENT_STATUSES",
+    "lookback_days": "SUMMITAI_LOOKBACK_DAYS",
+    "page_size": "SUMMITAI_PAGE_SIZE",
     "org_id": "SUMMITAI_ORG_ID",
     "proxy_id": "SUMMITAI_PROXY_ID",
     "incidents_service": "SUMMITAI_INCIDENTS_SERVICE",
@@ -108,6 +119,10 @@ def load_config() -> dict:
     cfg["base_url"] = str(cfg["base_url"]).rstrip("/")
     if cfg["api_style"] not in ("summit_wcf", "rest"):
         cfg["api_style"] = "summit_wcf"
+    if cfg["incidents_service"] == "IM_FetchIncidents":
+        # pre-2.33 placeholder default that no deployment answers — configs
+        # saved with it migrate to the real Summit list service.
+        cfg["incidents_service"] = "IM_GetIncidentList"
     return cfg
 
 
@@ -272,11 +287,12 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
         "ServiceName": service,
         "objCommonParameters": {
             "_ProxyDetails": {
-                "AuthType": "APIKEY",
+                "AuthType": "APIKey",
                 "APIKey": cfg["token"],
                 "ProxyID": int(cfg.get("proxy_id") or 0),
                 "ReturnType": "JSON",
                 "OrgID": int(cfg.get("org_id") or 1),
+                "TokenID": "",
             },
             **(params or {}),
         },
@@ -331,6 +347,31 @@ def _extra_params(cfg: dict) -> dict:
         return {}
 
 
+def _incident_list_params(cfg: dict) -> dict:
+    """IM_GetIncidentList refuses to answer without an objIncidentCommonFilter
+    block — build it from config, letting incidents_params override any key."""
+    today = time.time()
+    lookback = int(cfg.get("lookback_days") or 30)
+    fmt = lambda ts: time.strftime("%Y-%m-%d", time.localtime(ts))  # noqa: E731
+    flt = {
+        "WorkgroupName": "",
+        "CurrentPageIndex": 0,
+        "PageSize": int(cfg.get("page_size") or 100),
+        "OrgID": str(cfg.get("org_id") or 1),
+        "Instance": cfg.get("instance") or "IT",
+        "Status": cfg.get("incident_statuses")
+                  or "New,In-Progress,Assigned,Pending,Resolved,Closed",
+        "strUpdatedFromDate": fmt(today - lookback * 86400),
+        "strUpdatedToDate": fmt(today + 86400),   # inclusive of today
+        "IsWebServiceRequest": True,
+    }
+    extra = dict(_extra_params(cfg))
+    override = extra.pop("objIncidentCommonFilter", None)
+    if isinstance(override, dict):
+        flt.update(override)
+    return {"objIncidentCommonFilter": flt, **extra}
+
+
 def _rest_get(path: str, cfg: dict):
     headers = {"Accept": "application/json"}
     if cfg["token"]:
@@ -348,7 +389,7 @@ def _rest_get(path: str, cfg: dict):
 def _fetch_incident_rows(cfg: dict) -> list[dict]:
     if cfg["api_style"] == "rest":
         return _rest_get(cfg["incidents_path"], cfg)
-    return _wcf_call(cfg["incidents_service"], _extra_params(cfg), cfg)
+    return _wcf_call(cfg["incidents_service"], _incident_list_params(cfg), cfg)
 
 
 def _fetch_change_rows(cfg: dict) -> list[dict]:
@@ -479,7 +520,7 @@ def discover_services(overrides: dict | None = None, ticket_no: str = "") -> dic
 
     results = []
     for name in dict.fromkeys([cfg["incidents_service"], *_CANDIDATE_LIST_SERVICES]):
-        results.append(probe(name, "list", _extra_params(cfg)))
+        results.append(probe(name, "list", _incident_list_params(cfg)))
     if ticket_no.strip():
         for name in dict.fromkeys([cfg["incident_detail_service"], *_CANDIDATE_DETAIL_SERVICES]):
             results.append(probe(name, "detail", {"TicketNo": ticket_no.strip()}))

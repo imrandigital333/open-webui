@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.32.0"
+APP_VERSION = "2.33.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -205,9 +205,14 @@ class ItsmConfigRequest(BaseModel):
     wcf_operation: str = Field("RESTService/CommonWS_JsonObjCall", max_length=200)
     org_id: int = Field(1, ge=0, le=10_000)
     proxy_id: int = Field(0, ge=0, le=10_000)
-    incidents_service: str = Field("IM_FetchIncidents", max_length=100)
+    incidents_service: str = Field("IM_GetIncidentList", max_length=100)
     incident_detail_service: str = Field("IM_GetIncidentDetails", max_length=100)
     changes_service: str = Field("CM_FetchChanges", max_length=100)
+    instance: str = Field("IT", max_length=50)
+    incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",
+                                   max_length=300)
+    lookback_days: int = Field(30, ge=1, le=365)
+    page_size: int = Field(100, ge=1, le=1000)
     incidents_params: str = Field("", max_length=2000)
     # rest style
     auth_header: str = Field("Authorization", max_length=100)

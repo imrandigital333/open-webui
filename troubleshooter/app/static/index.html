@@ -681,16 +681,23 @@
           <div><label>OrgID</label><input id="it_org_id" type="number" value="1" min="0" max="10000"></div>
           <div><label>ProxyID</label><input id="it_proxy_id" type="number" value="0" min="0" max="10000"></div>
           <div><label>Incidents list ServiceName</label>
-            <input id="it_incidents_service" maxlength="100" placeholder="IM_FetchIncidents"></div>
+            <input id="it_incidents_service" maxlength="100" placeholder="IM_GetIncidentList"></div>
           <div><label>Incident detail ServiceName</label>
             <input id="it_incident_detail_service" maxlength="100" placeholder="IM_GetIncidentDetails"></div>
           <div><label>Changes ServiceName</label>
             <input id="it_changes_service" maxlength="100" placeholder="CM_FetchChanges"></div>
+          <div><label>Instance</label>
+            <input id="it_instance" maxlength="50" placeholder="IT"></div>
+          <div style="grid-column:1/-1"><label>Status filter <span style="font-weight:normal">(comma-separated, sent in objIncidentCommonFilter)</span></label>
+            <input id="it_incident_statuses" maxlength="300" placeholder="New,In-Progress,Assigned,Pending,Resolved,Closed"></div>
+          <div><label>Look-back window (days)</label>
+            <input id="it_lookback_days" type="number" value="30" min="1" max="365"></div>
           <div><label>Extra params for the list call <span style="font-weight:normal">(JSON, optional)</span></label>
-            <input id="it_incidents_params" maxlength="2000" placeholder='{"incidentParamsJSON": {...}}'></div>
-          <div class="hint" style="grid-column:1/-1;margin-top:2px">Confirm the exact ServiceNames for
-            fetching incident/change lists with your Summit admin — the log/update operation is
-            IM_LogOrUpdateIncident, and list operations vary per deployment.</div>
+            <input id="it_incidents_params" maxlength="2000" placeholder='{"objIncidentCommonFilter": {"WorkgroupName": "..."}}'></div>
+          <div class="hint" style="grid-column:1/-1;margin-top:2px">The list call sends an
+            objIncidentCommonFilter built from Instance, the status filter and the look-back
+            window (updated-date range ending today). Any key can be overridden via the extra
+            params JSON, e.g. {"objIncidentCommonFilter": {"WorkgroupName": "Server Team"}}.</div>
         </div>
         <div id="itsmRestFields" style="display:none; grid-template-columns: 1fr 1fr; gap: 0 14px;">
           <div><label>Auth header</label><input id="it_auth_header" maxlength="100" placeholder="Authorization"></div>
@@ -1990,9 +1997,12 @@ async function loadItsmConfig() {
   $('it_wcf_operation').value = c.wcf_operation ?? 'RESTService/CommonWS_JsonObjCall';
   $('it_org_id').value = c.org_id ?? 1;
   $('it_proxy_id').value = c.proxy_id ?? 0;
-  $('it_incidents_service').value = c.incidents_service || 'IM_FetchIncidents';
+  $('it_incidents_service').value = c.incidents_service || 'IM_GetIncidentList';
   $('it_incident_detail_service').value = c.incident_detail_service || 'IM_GetIncidentDetails';
   $('it_changes_service').value = c.changes_service || 'CM_FetchChanges';
+  $('it_instance').value = c.instance || 'IT';
+  $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
+  $('it_lookback_days').value = c.lookback_days ?? 30;
   $('it_incidents_params').value = c.incidents_params || '';
   $('it_auth_header').value = c.auth_header || 'Authorization';
   $('it_auth_prefix').value = c.auth_prefix || 'Bearer ';
@@ -2017,9 +2027,12 @@ function itsmForm() {
     wcf_operation: $('it_wcf_operation').value.trim(),
     org_id: parseInt($('it_org_id').value, 10) || 1,
     proxy_id: parseInt($('it_proxy_id').value, 10) || 0,
-    incidents_service: $('it_incidents_service').value.trim() || 'IM_FetchIncidents',
+    incidents_service: $('it_incidents_service').value.trim() || 'IM_GetIncidentList',
     incident_detail_service: $('it_incident_detail_service').value.trim() || 'IM_GetIncidentDetails',
     changes_service: $('it_changes_service').value.trim() || 'CM_FetchChanges',
+    instance: $('it_instance').value.trim() || 'IT',
+    incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',
+    lookback_days: parseInt($('it_lookback_days').value, 10) || 30,
     incidents_params: $('it_incidents_params').value.trim(),
     auth_header: $('it_auth_header').value.trim() || 'Authorization',
     auth_prefix: $('it_auth_prefix').value || 'Bearer ',
