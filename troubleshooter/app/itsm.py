@@ -247,7 +247,10 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
                         json.dumps(envelope).encode(),
                         {"Content-Type": "application/json", "Accept": "application/json"})
     if status >= 400:
-        raise RuntimeError(f"SummitAI returned HTTP {status} for {service}")
+        # surface Summit's own explanation (JSON error or proxy/WAF page text)
+        snippet = " ".join(raw.split())[:220]
+        raise RuntimeError(f"SummitAI returned HTTP {status} for {service}"
+                           + (f" — response: {snippet}" if snippet else ""))
     data = _parse_json(raw)
     if data is None:
         raise RuntimeError(f"SummitAI returned non-JSON for {service}: {raw[:160]}")
@@ -279,7 +282,9 @@ def _rest_get(path: str, cfg: dict):
         headers[cfg["auth_header"]] = f"{cfg['auth_prefix']}{cfg['token']}"
     status, raw = _open(cfg["base_url"] + path, cfg, None, headers)
     if status >= 400:
-        raise RuntimeError(f"SummitAI returned HTTP {status}")
+        snippet = " ".join(raw.split())[:220]
+        raise RuntimeError(f"SummitAI returned HTTP {status}"
+                           + (f" — response: {snippet}" if snippet else ""))
     data = _parse_json(raw)
     rows = _find_rows(data)
     return rows if rows is not None else []
