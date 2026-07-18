@@ -2440,7 +2440,7 @@ async function ibotStart() {
 
 function ibotAskCI() {
   ibot.step = 'ci';
-  ibotAdd('Which server / CI is affected? (optional)');
+  ibotAdd('Which server / CI is affected? (optional — must match the hostname registered in Summit\'s CMDB, otherwise Summit rejects the link)');
   ibotChips([...(inventory || []).slice(0, 5).map(s => s.name), 'Skip']);
 }
 
@@ -2471,8 +2471,14 @@ async function ibotSubmit() {
       loadIncidents();
     } else {
       ibot.step = 'confirm';
-      ibotAdd('✕ Summit rejected the request: ' + (r.error || 'unknown error'));
-      ibotChips(['✓ Create incident', 'Start over']);
+      const err = r.error || 'unknown error';
+      ibotAdd('✕ Summit rejected the request: ' + err);
+      if (/CI ID|Invalid Host/i.test(err) && ibot.data.ci) {
+        ibotAdd(`Summit could not match "${ibot.data.ci}" to a CI hostname in its CMDB. You can retry without the CI link (the ticket is still created — mention the server in the description), or start over with the exact CMDB hostname.`);
+        ibotChips(['Retry without CI', 'Start over']);
+      } else {
+        ibotChips(['✓ Create incident', 'Start over']);
+      }
     }
   } catch (e) {
     ibot.step = 'confirm';
@@ -2534,7 +2540,14 @@ function ibotHandle(text) {
       ibotSummary();
       break;
     case 'confirm':
-      if (/create|yes|confirm|✓/i.test(text)) ibotSubmit();
+      if (/without ci/i.test(text)) {
+        if (ibot.data.ci && !ibot.data.description.includes(ibot.data.ci)) {
+          ibot.data.description += `\nAffected server (not linked in CMDB): ${ibot.data.ci}`;
+        }
+        delete ibot.data.ci;
+        ibotSubmit();
+      }
+      else if (/create|yes|confirm|✓/i.test(text)) ibotSubmit();
       else if (/start over|restart|reset/i.test(text)) ibotStart();
       else ibotAdd('Choose "✓ Create incident" to submit, or "Start over" to begin again.');
       break;
