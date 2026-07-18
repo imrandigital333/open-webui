@@ -504,6 +504,44 @@
               border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px;
               color: var(--muted); font-variant-numeric: tabular-nums; }
   .inc-secrule { flex: 1; height: 1px; background: var(--border); }
+  /* incident-raising assistant */
+  #ibot { display: none; position: fixed; right: 24px; bottom: 24px; width: 390px;
+          max-width: calc(100vw - 40px); height: 540px; max-height: calc(100vh - 90px);
+          flex-direction: column; background: var(--panel); border: 1px solid var(--border);
+          border-radius: 14px; box-shadow: 0 18px 50px rgba(0,0,0,.5); z-index: 60;
+          overflow: hidden; }
+  .ibot-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+               border-bottom: 1px solid var(--border); background: var(--panel2);
+               font-size: 13px; }
+  .ibot-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok);
+              box-shadow: 0 0 8px var(--ok); }
+  .ibot-head b, .ibot-head span { white-space: nowrap; }
+  .ibot-x { width: auto; margin-left: auto; border: none; background: none; color: var(--muted);
+            font-size: 15px; cursor: pointer; padding: 0 4px; }
+  .ibot-x:hover { color: var(--text); }
+  .ibot-msgs { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex;
+               flex-direction: column; gap: 8px; }
+  .ib-m { max-width: 86%; padding: 8px 12px; border-radius: 12px; font-size: 13px;
+          line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .ib-m.bot { align-self: flex-start; background: var(--panel2);
+              border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .ib-m.user { align-self: flex-end; background: var(--accent); color: #fff;
+               border-bottom-right-radius: 4px; }
+  .ib-m .sumrow { display: flex; gap: 8px; font-size: 12.5px; }
+  .ib-m .sumrow b { min-width: 88px; color: var(--muted); font-weight: 600; }
+  .ibot-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 8px; }
+  .ibot-chips:empty { padding: 0; }
+  .ibot-chips button { width: auto; flex: 0 0 auto; margin: 0; border: 1px solid var(--accent);
+                       background: none; color: var(--accent); border-radius: 999px;
+                       padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .ibot-chips button:hover { background: var(--accent); color: #fff; }
+  .ibot-inrow { display: flex; gap: 8px; padding: 10px 12px;
+                border-top: 1px solid var(--border); }
+  .ibot-inrow input { flex: 1; width: auto; min-width: 0; margin: 0; padding: 8px 12px;
+                      font-size: 13px; }
+  .ibot-inrow button { width: auto; flex: 0 0 auto; margin: 0; padding: 8px 14px;
+                       border-radius: 8px; border: none; background: var(--accent);
+                       color: #fff; font-size: 12.5px; cursor: pointer; }
   .inc-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .inc-stat { margin-left: auto; font-size: 11px; font-weight: 700; text-transform: uppercase;
               color: var(--muted); }
@@ -612,7 +650,8 @@
     <h2 style="margin:0">Incidents</h2>
     <span class="tag" id="incSource"></span>
     <span class="hint" style="margin:0" id="incUpdated"></span>
-    <button class="ghost" id="incRefresh" style="margin-left:auto">↻ Refresh</button>
+    <button class="primary" id="ibotOpenBtn" style="margin:0 0 0 auto;width:auto;padding:7px 14px">＋ Raise incident</button>
+    <button class="ghost" id="incRefresh">↻ Refresh</button>
   </div>
   <div class="hint" style="margin-bottom:12px">Every incident in the configured SummitAI window.
     Click one to see its details and launch a troubleshooting session with the incident context
@@ -637,6 +676,21 @@
     <input id="incSearch" placeholder="Search id, title, CI, workgroup…">
   </div>
   <div id="incList"><div class="empty">Loading incidents…</div></div>
+
+  <!-- incident-raising assistant -->
+  <div id="ibot">
+    <div class="ibot-head">
+      <span class="ibot-dot"></span><b>Incident Assistant</b>
+      <span style="font-size:11px;color:var(--muted)">raises a SummitAI ticket</span>
+      <button class="ibot-x" title="Minimise" onclick="ibotClose()">—</button>
+    </div>
+    <div class="ibot-msgs" id="ibotMsgs"></div>
+    <div class="ibot-chips" id="ibotChips"></div>
+    <div class="ibot-inrow">
+      <input id="ibotIn" placeholder="Type your answer…" autocomplete="off">
+      <button id="ibotSend">Send</button>
+    </div>
+  </div>
 </div>
 
 <div id="viewChanges" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
@@ -2349,6 +2403,153 @@ $('incPriChips').querySelectorAll('button').forEach(b => b.onclick = () => {
 });
 $('incShowClosed').onchange = (e) => { incUI.closed = e.target.checked; renderIncidents(); };
 $('incSearch').oninput = (e) => { incUI.q = e.target.value.trim(); renderIncidents(); };
+
+/* ---------- incident-raising assistant (guided chat) ---------- */
+const ibot = { step: null, data: {}, cfgEmail: '' };
+
+function ibotAdd(text, who = 'bot', html = false) {
+  const m = document.createElement('div');
+  m.className = 'ib-m ' + who;
+  if (html) m.innerHTML = text; else m.textContent = text;
+  $('ibotMsgs').appendChild(m);
+  $('ibotMsgs').scrollTop = $('ibotMsgs').scrollHeight;
+}
+function ibotChips(list) {
+  $('ibotChips').innerHTML = list.map(c =>
+    `<button type="button">${escapeHtml(c)}</button>`).join('');
+  $('ibotChips').querySelectorAll('button').forEach(b =>
+    b.onclick = () => ibotHandle(b.textContent));
+}
+function ibotOpenPanel() {
+  $('ibot').style.display = 'flex';
+  if (!ibot.step) ibotStart();
+  $('ibotIn').focus();
+}
+function ibotClose() { $('ibot').style.display = 'none'; }
+
+async function ibotStart() {
+  ibot.step = 'description'; ibot.data = {};
+  $('ibotMsgs').innerHTML = ''; ibotChips([]);
+  try {
+    const c = await (await fetch('/api/admin/itsm')).json();
+    ibot.cfgEmail = c.caller_email || '';
+  } catch { ibot.cfgEmail = ''; }
+  ibotAdd("Hi — I'll help you raise an incident in SummitAI. A few quick questions; answer with the chips or type, and type skip for any optional one.");
+  ibotAdd('First: describe the issue — what happened, where, since when?');
+}
+
+function ibotAskCI() {
+  ibot.step = 'ci';
+  ibotAdd('Which server / CI is affected? (optional)');
+  ibotChips([...(inventory || []).slice(0, 5).map(s => s.name), 'Skip']);
+}
+
+function ibotSummary() {
+  ibot.step = 'confirm';
+  const d = ibot.data;
+  const row = (k, v) => v ? `<div class="sumrow"><b>${k}</b><span>${escapeHtml(v)}</span></div>` : '';
+  ibotAdd(`<div style="font-weight:700;margin-bottom:6px">Review before creating:</div>
+    ${row('Description', d.description)}${row('CI / server', d.ci)}${row('Priority', d.priority)}
+    ${row('Urgency', d.urgency)}${row('Impact', d.impact)}${row('Category', d.category)}
+    ${row('Workgroup', d.workgroup)}${row('Caller email', d.caller_email)}
+    <div class="hint" style="margin:6px 0 0">Blank optional fields are left for Summit's own routing/SLA rules.</div>`, 'bot', true);
+  ibotChips(['✓ Create incident', 'Start over']);
+}
+
+async function ibotSubmit() {
+  ibot.step = 'submitting'; ibotChips([]);
+  ibotAdd('Creating the ticket in SummitAI…');
+  try {
+    const r = await (await fetch('/api/incidents/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ibot.data),
+    })).json();
+    if (r.ok) {
+      ibot.step = 'done';
+      ibotAdd(`✓ Incident${r.ticket ? ' <b>' + escapeHtml(r.ticket) + '</b>' : ''} created successfully.`, 'bot', true);
+      ibotChips(['Raise another', 'Close']);
+      loadIncidents();
+    } else {
+      ibot.step = 'confirm';
+      ibotAdd('✕ Summit rejected the request: ' + (r.error || 'unknown error'));
+      ibotChips(['✓ Create incident', 'Start over']);
+    }
+  } catch (e) {
+    ibot.step = 'confirm';
+    ibotAdd('✕ Request failed: ' + e.message);
+    ibotChips(['✓ Create incident', 'Start over']);
+  }
+}
+
+function ibotHandle(text) {
+  text = String(text).trim();
+  if (!text || ibot.step === 'submitting') return;
+  ibotAdd(text, 'user');
+  const skip = /^skip$/i.test(text);
+  switch (ibot.step) {
+    case 'description':
+      if (text.length < 5) { ibotAdd('A little more detail, please — a one-line summary at minimum.'); break; }
+      ibot.data.description = text;
+      ibotAskCI();
+      break;
+    case 'ci':
+      if (!skip) ibot.data.ci = text;
+      ibot.step = 'priority';
+      ibotAdd('Priority? (optional — Summit applies its own matrix if skipped)');
+      ibotChips(['Critical', 'High', 'Medium', 'Low', 'Skip']);
+      break;
+    case 'priority':
+      if (!skip) ibot.data.priority = text;
+      ibot.step = 'urgency';
+      ibotAdd('Urgency? (optional)');
+      ibotChips(['High', 'Medium', 'Low', 'Skip']);
+      break;
+    case 'urgency':
+      if (!skip) ibot.data.urgency = text;
+      ibot.step = 'impact';
+      ibotAdd('Impact? (optional)');
+      ibotChips(['High', 'Medium', 'Low', 'Skip']);
+      break;
+    case 'impact':
+      if (!skip) ibot.data.impact = text;
+      ibot.step = 'category';
+      ibotAdd('Category name in Summit? (optional — must match an existing category)');
+      ibotChips(['Skip']);
+      break;
+    case 'category':
+      if (!skip) ibot.data.category = text;
+      ibot.step = 'workgroup';
+      ibotAdd('Assign to a workgroup? (optional — must match a Summit workgroup name)');
+      ibotChips(['Skip']);
+      break;
+    case 'workgroup':
+      if (!skip) ibot.data.workgroup = text;
+      ibot.step = 'caller';
+      ibotAdd('Caller email — who is this incident raised for?');
+      ibotChips(ibot.cfgEmail ? [ibot.cfgEmail] : []);
+      break;
+    case 'caller':
+      if (!text.includes('@')) { ibotAdd('That does not look like an email address — please retype it.'); break; }
+      ibot.data.caller_email = text;
+      ibotSummary();
+      break;
+    case 'confirm':
+      if (/create|yes|confirm|✓/i.test(text)) ibotSubmit();
+      else if (/start over|restart|reset/i.test(text)) ibotStart();
+      else ibotAdd('Choose "✓ Create incident" to submit, or "Start over" to begin again.');
+      break;
+    case 'done':
+      if (/another|new/i.test(text)) ibotStart();
+      else if (/close/i.test(text)) ibotClose();
+      break;
+  }
+}
+
+$('ibotOpenBtn').onclick = ibotOpenPanel;
+$('ibotSend').onclick = () => { ibotHandle($('ibotIn').value); $('ibotIn').value = ''; };
+$('ibotIn').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { ibotHandle($('ibotIn').value); $('ibotIn').value = ''; }
+});
 function fmtWhen(s) {
   const t = Date.parse(s);
   return isNaN(t) ? s : timeAgo(t / 1000);

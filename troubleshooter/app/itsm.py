@@ -27,6 +27,7 @@ so several likely source keys are tried for every output field.
 
 import json
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -485,6 +486,83 @@ def get_incident(incident_id: str) -> dict | None:
         return detail or base
     rows = [_norm_incident(r) for r in _rest_get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
     return rows[0] if rows else None
+
+
+def _find_ticket_no(data, depth: int = 0) -> str:
+    """Pull the (new) ticket number out of a LogOrUpdateIncident response."""
+    if depth > 5:
+        return ""
+    if isinstance(data, dict):
+        for k in ("TicketNo", "Ticket_No", "TicketNumber", "IncidentID", "TicketID"):
+            if data.get(k):
+                return str(data[k])
+        for v in data.values():
+            found = _find_ticket_no(v, depth + 1)
+            if found:
+                return found
+    if isinstance(data, str):
+        m = re.search(r"\b(\d{4,})\b", data)   # e.g. "Ticket 318417 logged successfully"
+        return m.group(1) if m else ""
+    return ""
+
+
+def create_incident(f: dict) -> dict:
+    """Raise a new ticket via IM_LogOrUpdateIncident (the create variant of
+    the vendor sample: Status New, no TicketNo). Only description and caller
+    email are mandatory; every other field is passed through when supplied."""
+    cfg = load_config()
+    if not configured(cfg):
+        return {"ok": False, "error": "SummitAI is not configured"}
+    desc = str(f.get("description") or "").strip()
+    caller = str(f.get("caller_email") or cfg.get("caller_email") or "").strip()
+    if not desc:
+        return {"ok": False, "error": "A description of the issue is required"}
+    if "@" not in caller:
+        return {"ok": False, "error": "A valid caller email is required"}
+    ticket = {
+        "IsFromWebService": True,
+        "Priority_Name": str(f.get("priority") or ""),
+        "Classification_Name": str(f.get("classification") or ""),
+        "Sup_Function": "IT",
+        "Caller_EmailID": caller,
+        "Status": "New",
+        "Urgency_Name": str(f.get("urgency") or ""),
+        "Assigned_WorkGroup_Name": str(f.get("workgroup") or ""),
+        "Medium": "Web",
+        "Impact_Name": str(f.get("impact") or ""),
+        "Category_Name": str(f.get("category") or ""),
+        "CI_ID": "",
+        "SLA_Name": "",
+        "OpenCategory_Name": "",
+        "Source": "Person",
+        "Description": desc,
+        "PageName": "LogTicket",
+    }
+    params = {
+        "incidentParamsJSON": {
+            "IncidentContainerJsonObj": {
+                "Updater": "Caller",
+                "CI_Key": "hostname",
+                "CI_Value": str(f.get("ci") or ""),
+                "Ticket": ticket,
+                "TicketInformation": {
+                    "Information": desc,
+                    "InternalLog": "",
+                    "UserLog": "",
+                    "Solution": "",
+                },
+                "CustomFields": [],
+            },
+            "RequestType": "RemoteCall",
+        }
+    }
+    try:
+        data = _wcf_raw(cfg.get("update_service") or "IM_LogOrUpdateIncident",
+                        params, cfg)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)[:400]}
+    reply = data if isinstance(data, str) else json.dumps(data, default=str)
+    return {"ok": True, "ticket": _find_ticket_no(data), "response": reply[:400]}
 
 
 def update_incident(incident_id: str, information: str,

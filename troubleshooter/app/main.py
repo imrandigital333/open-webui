@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.35.0"
+APP_VERSION = "2.36.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -283,6 +283,31 @@ async def incident_detail(incident_id: str):
     if inc is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return inc
+
+
+class IncidentCreateRequest(BaseModel):
+    description: str = Field(..., min_length=5, max_length=4000)
+    caller_email: str = Field("", max_length=200)   # empty = configured default
+    priority: str = Field("", max_length=40)
+    urgency: str = Field("", max_length=40)
+    impact: str = Field("", max_length=40)
+    category: str = Field("", max_length=100)
+    classification: str = Field("", max_length=100)
+    workgroup: str = Field("", max_length=100)
+    ci: str = Field("", max_length=100)
+
+
+@app.post("/api/incidents/create")
+async def create_incident_ticket(req: IncidentCreateRequest, request: Request):
+    """Raise a new SummitAI ticket — operator-driven via the incident
+    assistant; every creation is audited."""
+    result = await asyncio.to_thread(itsm.create_incident, req.model_dump())
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_ticket_created",
+                            {"ok": result.get("ok"),
+                             "ticket": result.get("ticket") or "(unknown)",
+                             "priority": req.priority or "(unset)",
+                             "ci": req.ci or "(unset)"})
+    return result
 
 
 class TicketUpdateRequest(BaseModel):
