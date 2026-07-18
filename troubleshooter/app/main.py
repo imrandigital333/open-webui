@@ -23,7 +23,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.34.1"
+APP_VERSION = "2.35.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -206,8 +206,10 @@ class ItsmConfigRequest(BaseModel):
     org_id: int = Field(1, ge=0, le=10_000)
     proxy_id: int = Field(0, ge=0, le=10_000)
     incidents_service: str = Field("IM_GetIncidentList", max_length=100)
-    incident_detail_service: str = Field("IM_GetIncidentDetails", max_length=100)
+    incident_detail_service: str = Field("IM_GetIncidentDetailsAndChangeHistory", max_length=100)
+    update_service: str = Field("IM_LogOrUpdateIncident", max_length=100)
     changes_service: str = Field("CM_FetchChanges", max_length=100)
+    caller_email: str = Field("", max_length=200)
     instance: str = Field("IT", max_length=50)
     incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",
                                    max_length=300)
@@ -281,6 +283,25 @@ async def incident_detail(incident_id: str):
     if inc is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return inc
+
+
+class TicketUpdateRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    status: str = Field("", max_length=40)       # empty = leave the status alone
+    solution: str = Field("", max_length=4000)
+
+
+@app.post("/api/incidents/{incident_id}/update")
+async def update_incident_ticket(incident_id: str, req: TicketUpdateRequest, request: Request):
+    """Post a work-log entry (optionally with a status change) to the SummitAI
+    ticket via IM_LogOrUpdateIncident. Always operator-initiated and reviewed."""
+    result = await asyncio.to_thread(
+        itsm.update_incident, incident_id, req.message, req.status, req.solution)
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_ticket_updated",
+                            {"ticket": incident_id, "ok": result.get("ok"),
+                             "status": req.status or "(unchanged)",
+                             "chars": len(req.message)})
+    return result
 
 
 @app.get("/api/changes")

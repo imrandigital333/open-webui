@@ -57,8 +57,11 @@ DEFAULTS = {
     "org_id": 1,
     "proxy_id": 0,
     "incidents_service": "IM_GetIncidentList",
-    "incident_detail_service": "IM_GetIncidentDetails",
+    "incident_detail_service": "IM_GetIncidentDetailsAndChangeHistory",
+    "update_service": "IM_LogOrUpdateIncident",
     "changes_service": "CM_FetchChanges",
+    # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
+    "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
     # feed its mandatory fields (the full status string matches the vendor
     # sample — P1/P2 + active filtering happens client-side afterwards).
@@ -87,7 +90,9 @@ _ENV_MAP = {
     "proxy_id": "SUMMITAI_PROXY_ID",
     "incidents_service": "SUMMITAI_INCIDENTS_SERVICE",
     "incident_detail_service": "SUMMITAI_DETAIL_SERVICE",
+    "update_service": "SUMMITAI_UPDATE_SERVICE",
     "changes_service": "SUMMITAI_CHANGES_SERVICE",
+    "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
     "incidents_path": "SUMMITAI_INCIDENTS_PATH",
@@ -123,6 +128,9 @@ def load_config() -> dict:
         # pre-2.33 placeholder default that no deployment answers — configs
         # saved with it migrate to the real Summit list service.
         cfg["incidents_service"] = "IM_GetIncidentList"
+    if cfg["incident_detail_service"] == "IM_GetIncidentDetails":
+        # pre-2.35 placeholder — the vendor-confirmed detail service
+        cfg["incident_detail_service"] = "IM_GetIncidentDetailsAndChangeHistory"
     return cfg
 
 
@@ -285,7 +293,27 @@ def _find_rows(data, depth: int = 0):
     return None
 
 
+def _ticket_no(incident_id):
+    """Summit's samples pass TicketNo as a number — convert when possible."""
+    s = str(incident_id).strip()
+    return int(s) if s.isdigit() else s
+
+
 def _wcf_call(service: str, params: dict | None, cfg: dict):
+    """WCF call that expects row-shaped data back (lists/details)."""
+    data = _wcf_raw(service, params, cfg)
+    rows = _find_rows(data)
+    if rows is None:
+        # a single-object response (e.g. one ticket) — wrap it
+        if isinstance(data, dict):
+            inner = data.get("OutputObject") or data.get("Output") or data
+            return [inner] if isinstance(inner, dict) else []
+        return []
+    return rows
+
+
+def _wcf_raw(service: str, params: dict | None, cfg: dict):
+    """WCF call returning the parsed response as-is (raises on any error)."""
     envelope = {
         "ServiceName": service,
         "objCommonParameters": {
@@ -332,14 +360,7 @@ def _wcf_call(service: str, params: dict | None, cfg: dict):
         err = data.get("Errors") or data.get("Error") or data.get("ErrorMessage")
         if err:
             raise RuntimeError(f"SummitAI error from {service}: {str(err)[:300]}")
-    rows = _find_rows(data)
-    if rows is None:
-        # a single-object response (e.g. one ticket) — wrap it
-        if isinstance(data, dict):
-            inner = data.get("OutputObject") or data.get("Output") or data
-            return [inner] if isinstance(inner, dict) else []
-        return []
-    return rows
+    return data
 
 
 def _extra_params(cfg: dict) -> dict:
@@ -441,7 +462,8 @@ def get_incident(incident_id: str) -> dict | None:
         detail = None
         try:
             rows = _wcf_call(cfg["incident_detail_service"],
-                             {"TicketNo": incident_id}, cfg)
+                             {"TicketNo": _ticket_no(incident_id),
+                              "RequestType": "RemoteCall"}, cfg)
             for r in rows:
                 n = _norm_incident(r)
                 looks_real = n["title"] != "(no subject)" or n["description"]
@@ -463,6 +485,55 @@ def get_incident(incident_id: str) -> dict | None:
         return detail or base
     rows = [_norm_incident(r) for r in _rest_get(f"{cfg['incidents_path']}/{incident_id}", cfg)]
     return rows[0] if rows else None
+
+
+def update_incident(incident_id: str, information: str,
+                    status: str = "", solution: str = "") -> dict:
+    """Write a work-log entry (and optionally a status/solution) to a ticket
+    via IM_LogOrUpdateIncident — the operation this key is provisioned for.
+    The envelope mirrors the vendor sample; only non-empty fields are sent."""
+    cfg = load_config()
+    if not configured(cfg):
+        return {"ok": False, "error": "SummitAI is not configured"}
+    if not str(information).strip():
+        return {"ok": False, "error": "Update text is empty"}
+    ticket = {
+        "IsFromWebService": True,
+        "TicketNo": _ticket_no(incident_id),
+        "Sup_Function": "IT",
+        "Medium": "Web",
+        "Source": "Person",
+        "PageName": "LogTicket",
+    }
+    if cfg.get("caller_email"):
+        ticket["Caller_EmailID"] = cfg["caller_email"]
+    if status:
+        ticket["Status"] = status
+    params = {
+        "incidentParamsJSON": {
+            "IncidentContainerJsonObj": {
+                "Updater": "Caller",
+                "CI_Key": "hostname",
+                "CI_Value": "",
+                "Ticket": ticket,
+                "TicketInformation": {
+                    "Information": information,
+                    "InternalLog": "",
+                    "UserLog": "",
+                    "Solution": solution or "",
+                },
+                "CustomFields": [],
+            },
+            "RequestType": "RemoteCall",
+        }
+    }
+    try:
+        data = _wcf_raw(cfg.get("update_service") or "IM_LogOrUpdateIncident",
+                        params, cfg)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)[:400]}
+    reply = data if isinstance(data, str) else json.dumps(data, default=str)
+    return {"ok": True, "ticket": str(incident_id), "response": reply[:400]}
 
 
 def list_changes() -> list[dict]:
@@ -526,7 +597,8 @@ _CANDIDATE_LIST_SERVICES = [
     "IM_GetMyIncidentList", "IM_FetchAssignedIncidents", "IM_GetTicketList",
 ]
 _CANDIDATE_DETAIL_SERVICES = [
-    "IM_GetIncidentDetails", "IM_FetchIncidentDetails", "GetIncidentDetails",
+    "IM_GetIncidentDetailsAndChangeHistory", "IM_GetIncidentDetails",
+    "IM_FetchIncidentDetails", "GetIncidentDetails",
 ]
 
 
@@ -555,7 +627,9 @@ def discover_services(overrides: dict | None = None, ticket_no: str = "") -> dic
         results.append(probe(name, "list", _incident_list_params(cfg)))
     if ticket_no.strip():
         for name in dict.fromkeys([cfg["incident_detail_service"], *_CANDIDATE_DETAIL_SERVICES]):
-            results.append(probe(name, "detail", {"TicketNo": ticket_no.strip()}))
+            results.append(probe(name, "detail",
+                                 {"TicketNo": _ticket_no(ticket_no),
+                                  "RequestType": "RemoteCall"}))
     return {"results": results}
 
 

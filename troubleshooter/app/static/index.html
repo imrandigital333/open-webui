@@ -729,9 +729,13 @@
           <div><label>Incidents list ServiceName</label>
             <input id="it_incidents_service" maxlength="100" placeholder="IM_GetIncidentList"></div>
           <div><label>Incident detail ServiceName</label>
-            <input id="it_incident_detail_service" maxlength="100" placeholder="IM_GetIncidentDetails"></div>
+            <input id="it_incident_detail_service" maxlength="100" placeholder="IM_GetIncidentDetailsAndChangeHistory"></div>
+          <div><label>Update ServiceName</label>
+            <input id="it_update_service" maxlength="100" placeholder="IM_LogOrUpdateIncident"></div>
           <div><label>Changes ServiceName</label>
             <input id="it_changes_service" maxlength="100" placeholder="CM_FetchChanges"></div>
+          <div><label>Caller email <span style="font-weight:normal">(sent on ticket updates)</span></label>
+            <input id="it_caller_email" maxlength="200" placeholder="ops.user@company.com"></div>
           <div><label>Instance</label>
             <input id="it_instance" maxlength="50" placeholder="IT"></div>
           <div style="grid-column:1/-1"><label>Status filter <span style="font-weight:normal">(comma-separated, sent in objIncidentCommonFilter)</span></label>
@@ -916,6 +920,7 @@ const ICONS = {
   'shield': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
   'help-circle': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   'zap': '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  'edit': '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
   'flag': '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   'check-circle': '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
   'alert-triangle': '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
@@ -1278,13 +1283,79 @@ function renderActionBox(report) {
         <button class="primary" style="margin-top:8px" onclick="startReinvestigation(this)">Start deeper re-investigation</button>
       </div>`;
   }
+  let ticket = '';
+  if (currentSessionInfo.incident_id) {
+    const tid = currentSessionInfo.incident_id;
+    ticket = `<div class="verdict-bar" style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:12.5px;color:var(--muted)">${ic('file-text', 12)}
+          Launched from SummitAI ticket <b style="color:var(--text)">${escapeHtml(tid)}</b></span>
+        <button class="ghost" style="flex:0 0 auto" onclick="toggleTicketBox()">${ic('edit', 12)} Post update to ticket</button>
+      </div>
+      <div id="ticketBox" style="display:none;margin-top:10px">
+        <label style="font-size:12px">Work-log entry <span style="font-weight:normal">(review before posting — nothing is sent automatically)</span></label>
+        <textarea id="ticketMsg" style="min-height:130px">${escapeHtml(draftTicketUpdate(report))}</textarea>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <label style="margin:0;font-size:12px;display:flex;align-items:center;gap:6px">Status
+            <select id="ticketStatus" style="width:auto;margin:0;padding:5px 8px">
+              <option value="">Leave unchanged</option>
+              <option value="In-Progress">In-Progress</option>
+              <option value="Pending">Pending</option>
+              <option value="Resolved">Resolved</option>
+            </select></label>
+          <button class="primary" style="margin:0;width:auto;padding:7px 14px"
+            onclick="postTicketUpdate('${escapeHtml(tid)}', this)">${ic('zap', 12)} Post to ${escapeHtml(tid)}</button>
+          <span id="ticketMsgOut" class="hint" style="margin:0"></span>
+        </div>
+      </div>
+    </div>`;
+  }
   return `<div class="action-box">
     <div class="ab-head">${ic('zap', 15)}<span class="ab-title">Next actions</span>
       <span class="ab-sub">${plan.length
         ? `${plan.length}-step remediation plan — backups first · verification · rollback ready`
         : 'no remediation plan was generated for this analysis'}</span></div>
-    <div class="ab-body">${rem}<div class="verdict-bar">${verdict}</div></div>
+    <div class="ab-body">${rem}<div class="verdict-bar">${verdict}</div>${ticket}</div>
   </div>`;
+}
+function draftTicketUpdate(report) {
+  const lines = [`[AI Troubleshooter] Investigation completed on ${currentSessionInfo?.server || ''}.`];
+  if (report.probable_root_cause) {
+    lines.push('', `Probable root cause (${report.confidence || 'unrated'} confidence): ${report.probable_root_cause}`);
+  }
+  if (report.root_cause_layer) lines.push(`Layer: ${report.root_cause_layer}`);
+  const plan = report.remediation_plan || [];
+  if (plan.length) {
+    lines.push('', `Remediation plan (${plan.length} steps):`);
+    plan.forEach((s, i) => lines.push(`${i + 1}. [${s.phase || 'step'}] ${s.description || s.command || ''}`));
+  }
+  return lines.join('\n');
+}
+function toggleTicketBox() {
+  const b = $('ticketBox');
+  b.style.display = b.style.display === 'none' ? '' : 'none';
+}
+async function postTicketUpdate(tid, btn) {
+  const msg = $('ticketMsg').value.trim();
+  const out = $('ticketMsgOut');
+  if (!msg) { out.textContent = 'The update text is empty.'; return; }
+  if (!confirm(`Post this work-log entry to SummitAI ticket ${tid}?`)) return;
+  btn.disabled = true;
+  out.style.color = 'var(--muted)'; out.innerHTML = '<span class="spinner"></span> posting…';
+  try {
+    const r = await (await fetch(`/api/incidents/${encodeURIComponent(tid)}/update`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, status: $('ticketStatus').value }),
+    })).json();
+    if (r.ok) {
+      out.style.color = 'var(--ok)';
+      out.textContent = `✓ Posted to ${tid}.` + ($('ticketStatus').value ? ` Status → ${$('ticketStatus').value}.` : '');
+    } else {
+      out.style.color = 'var(--err)';
+      out.textContent = '✕ ' + (r.error || 'update failed');
+    }
+  } catch (e) { out.style.color = 'var(--err)'; out.textContent = '✕ ' + e.message; }
+  btn.disabled = false;
 }
 async function runStep(i, btn) {
   const s = window._plan[i];
@@ -2044,8 +2115,10 @@ async function loadItsmConfig() {
   $('it_org_id').value = c.org_id ?? 1;
   $('it_proxy_id').value = c.proxy_id ?? 0;
   $('it_incidents_service').value = c.incidents_service || 'IM_GetIncidentList';
-  $('it_incident_detail_service').value = c.incident_detail_service || 'IM_GetIncidentDetails';
+  $('it_incident_detail_service').value = c.incident_detail_service || 'IM_GetIncidentDetailsAndChangeHistory';
+  $('it_update_service').value = c.update_service || 'IM_LogOrUpdateIncident';
   $('it_changes_service').value = c.changes_service || 'CM_FetchChanges';
+  $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
   $('it_lookback_days').value = c.lookback_days ?? 30;
@@ -2074,8 +2147,10 @@ function itsmForm() {
     org_id: parseInt($('it_org_id').value, 10) || 1,
     proxy_id: parseInt($('it_proxy_id').value, 10) || 0,
     incidents_service: $('it_incidents_service').value.trim() || 'IM_GetIncidentList',
-    incident_detail_service: $('it_incident_detail_service').value.trim() || 'IM_GetIncidentDetails',
+    incident_detail_service: $('it_incident_detail_service').value.trim() || 'IM_GetIncidentDetailsAndChangeHistory',
+    update_service: $('it_update_service').value.trim() || 'IM_LogOrUpdateIncident',
     changes_service: $('it_changes_service').value.trim() || 'CM_FetchChanges',
+    caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',
     lookback_days: parseInt($('it_lookback_days').value, 10) || 30,
