@@ -74,9 +74,15 @@ DEFAULTS = {
     # sample); deployment-specific, so it's configurable.
     "change_support_function": "IT",
     "change_support_function_name": "BIAL Services",
-    # initial workflow status for a NEW CR (varies per Summit workflow; the
-    # sample's "Initial Authorization" is an update status, not a create one)
-    "change_create_status": "Draft",
+    # Create-time values mirroring the vendor's working sample. These are
+    # deployment-specific record IDs/names — adjust in Settings if a create
+    # is rejected for one of them.
+    "change_create_status": "Initial Authorization",
+    "change_category_id": 132,
+    "change_executive_id": "2",
+    "change_owner_workgroup_id": "12",
+    "change_default_workgroup": "Windows Server Support",
+    "change_classification": "Normal",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -118,6 +124,11 @@ _ENV_MAP = {
     "change_support_function": "SUMMITAI_CHANGE_SUPPORT_FUNCTION",
     "change_support_function_name": "SUMMITAI_CHANGE_SUPPORT_FUNCTION_NAME",
     "change_create_status": "SUMMITAI_CHANGE_CREATE_STATUS",
+    "change_category_id": "SUMMITAI_CHANGE_CATEGORY_ID",
+    "change_executive_id": "SUMMITAI_CHANGE_EXECUTIVE_ID",
+    "change_owner_workgroup_id": "SUMMITAI_CHANGE_OWNER_WORKGROUP_ID",
+    "change_default_workgroup": "SUMMITAI_CHANGE_DEFAULT_WORKGROUP",
+    "change_classification": "SUMMITAI_CHANGE_CLASSIFICATION",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -709,38 +720,16 @@ def get_change(change_id: str) -> dict | None:
     return next((c for c in list_changes() if str(c["id"]) == str(change_id)), None)
 
 
-# The vendor's CMContainerJson carries ~70 keys; these are the defaults from
-# the working sample — create_change overlays the operator's values on top.
-_CM_CONTAINER_DEFAULTS = {
-    "Status": "Initial Authorization",
-    "Support_Function": "IT",
-    "ChangeTypeName": "Normal",
-    "Category": "Minor",
-    "Classification": "Normal",
-    "Risk": "Medium",
-    "Impact": "Medium",
-    "Priority_Name": "P3",
-    "Criticality_Name": "Medium",
-    "Downtime_Required": False,
-    "CustomerName": "All",
-    "Customer": -1,
-    "Information": "",
-    "Description": "",
-    "CabApprovalType": "After CAB Approval",
-    "CustomerApprovalRequired": False,
-    "CustomerTestRequired": False,
-    "Communication_Plan_Required": False,
-    "Communication_Plan_Details": "",
-    "Back_Out_Plan": "",
-    "BackoutPlanTested": False,
-    "Is_ChangeSucessful": "No",
-    "Information_Log": "",
-}
+def _fmt_dt(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
 
 
 def create_change(f: dict) -> dict:
-    """Raise a change request via CM_LogOrUpdateCR. CMContainerJson is a
-    JSON-ENCODED STRING inside cmParamsJSON, per the vendor sample."""
+    """Raise a change request via CM_LogOrUpdateCR. The envelope mirrors the
+    vendor's working sample as closely as possible — all CR fields and the
+    sibling containers (release/test/resource/…) — so Summit's create-time
+    workflow validation passes. Operator values overlay the defaults; the
+    deployment-specific IDs come from config."""
     cfg = load_config()
     if not configured(cfg):
         return {"ok": False, "error": "SummitAI is not configured"}
@@ -750,35 +739,88 @@ def create_change(f: dict) -> dict:
         return {"ok": False, "error": "A change title/summary is required"}
     if "@" not in requestor:
         return {"ok": False, "error": "A valid requestor email is required"}
-    container = dict(_CM_CONTAINER_DEFAULTS)
-    container.update({
-        "Information": title,
-        "Description": str(f.get("description") or ""),
-        "ChangeTypeName": str(f.get("type") or "Normal"),
+
+    workgroup = str(f.get("workgroup") or cfg.get("change_default_workgroup") or "Windows Server Support")
+    wg_id = str(cfg.get("change_owner_workgroup_id") or "12")
+    now = time.time()
+    start = str(f.get("start") or "").strip() or _fmt_dt(now + 86400)
+    end = str(f.get("end") or "").strip() or _fmt_dt(now + 2 * 86400)
+    pir_planned = _fmt_dt(now + 3 * 86400)
+
+    # full CR container mirroring the working sample (order/keys preserved)
+    container = {
+        "Status": str(cfg.get("change_create_status") or "Initial Authorization"),
+        "Support_Function": str(cfg.get("change_support_function") or "IT"),
+        "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
         "Category": str(f.get("category") or "Minor"),
+        "ChangeTypeName": str(f.get("type") or "Normal"),
+        "Requestor_Name": requestor,
+        "Requested_By_Name": requestor,
+        "Owner_Workgroup": workgroup,
+        "Assigned_Workgroup": workgroup,
+        "Classification": str(cfg.get("change_classification") or "Normal"),
+        "Change_CategoryID": int(cfg.get("change_category_id") or 132),
+        "TriggerForChange": "",
         "Risk": str(f.get("risk") or "Medium"),
         "Impact": str(f.get("impact") or "Medium"),
         "Priority_Name": str(f.get("priority") or "P3"),
+        "Criticality_Name": str(f.get("impact") or "Medium"),
         "Downtime_Required": bool(f.get("downtime")),
+        "CustomerName": "All",
+        "Customer": -1,
+        "Information": title,
+        "Description": str(f.get("description") or ""),
+        "CurrencyName": "",
+        "CustomerApprovalRequired": False,
+        "CustomerTestRequired": False,
+        "CabApprovalType": "After CAB Approval",
+        "Communication_Plan_Required": False,
+        "Communication_Plan_Details": "",
+        "BusinessRisk": None, "OperationalRisk": None, "OverallRisk": None,
+        "Closure_Code": "", "ClosureCategoryName": None, "CancelReason": None,
+        "Risk_Of_Change_Failure": "",
+        "Business_Impact_As_Per_User": "",
+        "Business_Impact_Of_Change_Failure": "",
         "Back_Out_Plan": str(f.get("backout") or ""),
-        "Requestor_Name": requestor,
-        "Requested_By_Name": requestor,
-        # required by Summit on create (deployment-specific display name)
-        "Support_Function": str(cfg.get("change_support_function") or "IT"),
-        "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
-        "Status": str(cfg.get("change_create_status") or "Draft"),
-    })
-    if f.get("workgroup"):
-        container["Owner_Workgroup"] = str(f["workgroup"])
-        container["Assigned_Workgroup"] = str(f["workgroup"])
-    if f.get("start"):
-        container["Actual_Start_Time"] = str(f["start"])
-    if f.get("end"):
-        container["Actual_End_Time"] = str(f["end"])
+        "BackoutPlanTested": False,
+        "BackOutPlanNotTestedReason": "Not yet tested",
+        "SystemImpactRemarks": "",
+        "Impact_Of_Not_Implementing_Change": "",
+        "Information_Log": "", "Configuration_Team_Log": "",
+        "Change_Manager_Log": "", "Change_Advisory_Board_Member_Log": "",
+        "Justification": None, "ProposedTemplateName": None, "ProposalJustification": None,
+        "PreImplementationSteps": None, "PostImplementationSteps": None, "RescheduleReason": None,
+        "Is_Change_Implemented_Or_Rolledback": "",
+        "Is_ChangeSucessful": "No",
+        "Solution": "", "ChangeScope": "", "ChangeOutOfScope": "",
+        "BusinessBenefits": "", "FinancialBenefits": "",
+        "Assigned_Executive_Id": str(cfg.get("change_executive_id") or "2"),
+        "Actual_Start_Time": start,
+        "Actual_End_Time": end,
+        "Planned_PIR_Date": pir_planned,
+        "Actual_PIR_Date": pir_planned,
+        "RleasePlanned_StartTime": None, "IsCIUpdation": None,
+        "ManualEscalationLevelID": 0, "ManualEscalationRemarks": None,
+    }
     params = {
         "cmParamsJSON": {
             "CMContainerJson": json.dumps(container),
             "CR_CI_Details": "[]",
+            "CRReleaseDetails": {
+                "RleasePlanned_StartTime": start, "RleasePlanned_EndTime": end,
+                "ReleaseActual_StartTime": start, "ReleaseActual_EndTime": end,
+                "ReleasePlan": "As per implementation plan", "ReleaseAttachments": "",
+                "ReleaseDocs": "", "ReleaseNotes": "", "Release_Workgroup": "",
+                "Owner_Workgroup_Id": wg_id, "ReleaseAnalyst": "", "UserID": "0",
+            },
+            "CRTestDetails": {
+                "TestPlanned_Time": end, "TestActual_Time": "",
+                "TestResults": "", "TestPlan": "As per implementation plan",
+                "TestOwnerEmail": requestor, "WorkgroupName": workgroup,
+                "Owner_Workgroup_Id": wg_id, "Status": "", "Has_Attachments": "0",
+                "Test_Stage": "NTP", "TestURL": "", "Test_Name": "Test Plan",
+                "Org_Id": str(cfg.get("org_id") or 1), "UserID": "0",
+            },
             "CR_ResourceRequirement": "[]",
             "CR_FinancialRequirement": "[]",
             "CR_TechnicalRequirement": "[]",

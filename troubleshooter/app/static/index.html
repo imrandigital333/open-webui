@@ -910,7 +910,18 @@
             <div><label>Support function name <span style="font-weight:normal">(required on create)</span></label>
               <input id="it_change_support_function_name" maxlength="120" placeholder="BIAL Services"></div>
             <div><label>Initial status for new CRs</label>
-              <input id="it_change_create_status" maxlength="60" placeholder="Draft"></div>
+              <input id="it_change_create_status" maxlength="60" placeholder="Initial Authorization"></div>
+            <div><label>Default owner workgroup</label>
+              <input id="it_change_default_workgroup" maxlength="120" placeholder="Windows Server Support"></div>
+            <div><label>Owner workgroup ID</label>
+              <input id="it_change_owner_workgroup_id" maxlength="20" placeholder="12"></div>
+            <div><label>Change category ID</label>
+              <input id="it_change_category_id" type="number" placeholder="132"></div>
+            <div><label>Assigned executive ID</label>
+              <input id="it_change_executive_id" maxlength="20" placeholder="2"></div>
+            <div class="hint" style="grid-column:1/-1;margin-top:2px">The category/executive/workgroup
+              IDs are internal Summit record IDs from your instance (the sample used 132 / 2 / 12).
+              If a create is rejected for one of these, get the correct value from your change admin.</div>
             <div><label>Known CR number <span style="font-weight:normal">(optional — tests the detail service)</span></label>
               <input id="it_change_test_cr" maxlength="64" placeholder="e.g. 1842"></div>
           </div>
@@ -2275,7 +2286,11 @@ async function loadItsmConfig() {
   $('it_change_statuses').value = c.change_statuses || '';
   $('it_change_support_function').value = c.change_support_function || 'IT';
   $('it_change_support_function_name').value = c.change_support_function_name || 'BIAL Services';
-  $('it_change_create_status').value = c.change_create_status || 'Draft';
+  $('it_change_create_status').value = c.change_create_status || 'Initial Authorization';
+  $('it_change_default_workgroup').value = c.change_default_workgroup || 'Windows Server Support';
+  $('it_change_owner_workgroup_id').value = c.change_owner_workgroup_id || '12';
+  $('it_change_category_id').value = c.change_category_id ?? 132;
+  $('it_change_executive_id').value = c.change_executive_id || '2';
   $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
@@ -2320,7 +2335,11 @@ function itsmForm() {
     change_statuses: $('it_change_statuses').value.trim(),
     change_support_function: $('it_change_support_function').value.trim() || 'IT',
     change_support_function_name: $('it_change_support_function_name').value.trim() || 'BIAL Services',
-    change_create_status: $('it_change_create_status').value.trim() || 'Draft',
+    change_create_status: $('it_change_create_status').value.trim() || 'Initial Authorization',
+    change_default_workgroup: $('it_change_default_workgroup').value.trim() || 'Windows Server Support',
+    change_owner_workgroup_id: $('it_change_owner_workgroup_id').value.trim() || '12',
+    change_category_id: parseInt($('it_change_category_id').value, 10) || 132,
+    change_executive_id: $('it_change_executive_id').value.trim() || '2',
     caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',
