@@ -162,7 +162,7 @@ Do ALL of this:
 Keep the author's intended scope — refine and correct, do not invent new work.
 
 Reply with ONLY this JSON (no fences, no prose outside it):
-{"title": "one-line change title",
+{"title": "clear industry-standard change title — concise, action-first, names the target system, notes reboot/downtime if any (rewrite the operator's rough wording; e.g. 'Apply monthly kernel security patch to app-02 (reboot required)')",
  "summary": "2-3 sentences: what this change does",
  "steps": [{"order": 1, "phase": "pre|implement|verify|rollback",
             "description": "what this step does",
@@ -192,8 +192,12 @@ this description (and any fields so far):
 %s
 
 Recommend sensible CR attributes and an outline plan to reduce the chance of a
-failed change. Reply with ONLY this JSON (no fences):
-{"category": "Minor|Major|Significant", "type": "Normal|Standard|Emergency",
+failed change. Also rewrite the operator's rough summary into a clear,
+industry-standard change TITLE (concise, action-first, includes the target
+system; e.g. "Apply monthly kernel security patch to app-02 (reboot required)").
+Reply with ONLY this JSON (no fences):
+{"title": "polished change title",
+ "category": "Minor|Major|Significant", "type": "Normal|Standard|Emergency",
  "risk": "Low|Medium|High", "impact": "Low|Medium|High", "priority": "P1|P2|P3|P4",
  "downtime_required": false, "workgroup": "suggested owner workgroup or ''",
  "rationale": "2-3 sentences on why these were chosen",
@@ -221,7 +225,8 @@ patches and reboots ALWAYS need downtime unless live patching), score the risk
 and success rate, and note anything the operator must confirm before running.
 
 Reply with ONLY this JSON (identical schema to a refined plan; no fences):
-{"title": "...", "summary": "...",
+{"title": "clear industry-standard change title — concise, action-first, names the target host, notes reboot/downtime if any",
+ "summary": "...",
  "steps": [{"order": 1, "phase": "pre|implement|verify|rollback",
             "description": "...", "command": "exact shell command or '' if manual",
             "downtime_required": false, "downtime_note": "...", "risk": "low|medium|high"}],
@@ -444,6 +449,7 @@ async def recommend_change(context: str) -> dict:
                 "outline_steps": [], "backout_hint": ""}
     return {
         "available": True,
+        "title": str(data.get("title") or "")[:150],
         "category": str(data.get("category") or "Minor")[:40],
         "type": str(data.get("type") or "Normal")[:40],
         "risk": str(data.get("risk") or "Medium")[:20],

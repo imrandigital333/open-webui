@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.46.2"
+APP_VERSION = "2.47.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -455,6 +455,34 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
+    return result
+
+
+class ReRefineRequest(BaseModel):
+    plan: dict = Field(...)                       # the current refined plan
+    answers: str = Field(..., min_length=1, max_length=6000)
+
+
+@app.post("/api/changes/re-refine")
+async def re_refine_plan(req: ReRefineRequest, request: Request):
+    """Re-validate a plan with the operator's answers to the open questions
+    folded in — tightens the steps and raises the success score."""
+    p = req.plan or {}
+    lines = [f"Change title: {p.get('title', '')}", "Current plan steps:"]
+    for s in (p.get("steps") or []):
+        cmd = s.get("command") or "(manual)"
+        lines.append(f"{s.get('order')}. [{s.get('phase', 'step')}] "
+                     f"{s.get('description', '')}  ::  {cmd}")
+    if p.get("backout_plan"):
+        lines.append(f"Back-out plan: {p['backout_plan']}")
+    lines.append("")
+    lines.append("The operator has now answered the open questions / clarifications. "
+                 "Incorporate these facts and re-issue the FULL validated plan, updating "
+                 "commands, downtime, risk and the success-rate accordingly:")
+    lines.append(req.answers)
+    result = await changeplan.refine_plan("\n".join(lines))
+    await asyncio.to_thread(db.audit, _actor(request), "change_plan_rerefined",
+                            {"chars": len(req.answers), "steps": len(result.get("steps", []))})
     return result
 
 

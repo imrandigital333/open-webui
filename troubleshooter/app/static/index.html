@@ -2902,21 +2902,59 @@ function cbotAssessmentHtml(r) {
     sections.push(`<details style="margin-top:5px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Why this risk &amp; how to improve it</summary>${detail.join('')}</details>`);
   return h + sections.join('');
 }
-function cbotApplyRefined(r) {
-  cbot.refined = r; cbotBusy(false);
-  if (r.title && !cbot.data.title) cbot.data.title = r.title;
-  if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
-  cbotApplyInferred(r.inferred_fields);
-  // brief one-liner here; the full (collapsible) detail appears once in the review card
-  const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
-  cbotAdd(`✓ Validated into <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${dt}`, 'bot', true);
-  const miss = r.missing_fields || [];
-  if (miss.length) cbotAdd('A few things I couldn\'t infer: ' + miss.slice(0, 4).join('; ')
-    + (miss.length > 4 ? '…' : '') + ' — set what you can below.');
+function cbotAskWorkgroup() {
   cbot.step = 'workgroup';
   cbotAdd('Which team owns this change? Windows Server Support for Windows hosts, '
     + 'Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)');
   cbotChips(cbot.workgroups || [cbot.cfgWorkgroup]);
+}
+function cbotOpenQuestions(r) {
+  return [...(r.missing_fields || []), ...(r.suggestions || [])].filter(Boolean).slice(0, 7);
+}
+// present the AI's open questions; answers get folded back in to raise the score
+function cbotClarify(after) {
+  cbot._afterClarify = after;
+  const q = cbotOpenQuestions(cbot.refined || {});
+  if (!q.length) { after(); return; }
+  cbot.step = 'clarify';
+  cbotAdd(`<div style="font-weight:600;margin-bottom:4px">Answering any of these will make the change safer and raise the success score — reply in one message, or Skip:</div>
+    <ul style="margin:2px 0 0 16px;font-size:12px">${q.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`, 'bot', true);
+  cbotChips(['Skip — use as is']);
+}
+async function cbotReRefine(answers) {
+  cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
+  cbotTyping('Re-checking the plan with your answers — updating steps, downtime and the success score…');
+  try {
+    const r = await (await fetch('/api/changes/re-refine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: cbot.refined, answers }),
+    })).json();
+    cbotStopTyping();
+    if (r.refined_by !== 'ai' || r.ai_error) {
+      cbot.step = 'clarify'; cbotBusy(false);
+      cbotAdd('⚠️ Could not update the plan' + (r.ai_error ? ` — ${r.ai_error}` : '') + '. Answer again, or Skip.');
+      cbotChips(['Skip — use as is']); return;
+    }
+    cbotApplyInferred(r.inferred_fields);
+    if (r.title) cbot.data.title = r.title;
+    if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
+    const prev = (cbot.refined.success_rate || {}).percent;
+    cbot.refined = r; cbotBusy(false);
+    const now = (r.success_rate || {}).percent;
+    const delta = (prev != null && now != null && now !== prev) ? ` (was ${prev}%)` : '';
+    const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
+    cbotAdd(`✓ Updated — <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${delta}${dt}`, 'bot', true);
+    cbotClarify(cbot._afterClarify);   // any remaining questions, else proceed
+  } catch (e) { cbotStopTyping(); cbot.busy = false; cbot.step = 'clarify'; cbotAdd('✕ ' + e.message); cbotChips(['Skip — use as is']); }
+}
+function cbotApplyRefined(r) {
+  cbot.refined = r; cbotBusy(false);
+  if (r.title) cbot.data.title = r.title;   // prefer the industry-standard AI title
+  if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
+  cbotApplyInferred(r.inferred_fields);
+  const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
+  cbotAdd(`✓ Validated into <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${dt}`, 'bot', true);
+  cbotClarify(cbotAskWorkgroup);   // let the operator answer open questions first
 }
 
 /* --- manual recommendations --- */
@@ -2929,6 +2967,7 @@ async function cbotRecommend() {
       body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}` }),
     })).json();
     cbotStopTyping(); cbot.rec = r; cbotBusy(false);
+    if (r.title) { cbot.data.title = r.title; cbotAdd(`I'll title it: <b>${escapeHtml(r.title)}</b>`, 'bot', true); }
     if (r.ai_error) cbotAdd('⚠️ AI recommendations unavailable — ' + r.ai_error + ' (using neutral defaults; you can set each field yourself).');
     const parts = [`type <b>${escapeHtml(r.type)}</b>`, `category <b>${escapeHtml(r.category)}</b>`,
       `risk <b>${escapeHtml(r.risk)}</b>`, `impact <b>${escapeHtml(r.impact)}</b>`,
@@ -3034,11 +3073,12 @@ async function cbotRefine(text, label) {
       return;
     }
     cbotApplyInferred(r.inferred_fields);
+    if (r.title) cbot.data.title = r.title;   // prefer the industry-standard AI title
     cbot.refined = r; cbotBusy(false);
     if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
     const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
     cbotAdd(`✓ Validated into <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${dt}`, 'bot', true);
-    cbotReviewCard();
+    cbotClarify(cbotReviewCard);   // answer open questions to raise the score, then review
   } catch (e) {
     cbotStopTyping(); cbot.busy = false; cbot.step = 'plan';
     cbotAdd('✕ Could not validate the plan: ' + e.message + ' — paste it again, or type skip to create without a plan.');
@@ -3112,6 +3152,13 @@ function cbotHandle(text) {
       else if (skip || /skip plan/i.test(text)) { cbot.refined = null; cbotReviewCard(); }
       else if (text.length < 20) cbotAdd('That looks too short for a plan — paste the full steps, or type skip.');
       else cbotRefine(text);
+      break;
+    case 'clarify':
+      if (/^(skip|use as is|looks good|proceed|no)\b/i.test(text)) {
+        const a = cbot._afterClarify; cbot._afterClarify = null; (a || cbotReviewCard)();
+      } else if (text.length < 3) {
+        cbotAdd('Type your answers to the points above (or "Skip").');
+      } else cbotReRefine(text);
       break;
     case 'confirm':
       if (/default workgroup/i.test(text)) { delete cbot.data.workgroup; cbotSubmit(); }
