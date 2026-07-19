@@ -846,50 +846,83 @@ def create_change(f: dict) -> dict:
         },
         "RequestType": "RemoteCall",
     }
-    # Valid create-time status names vary per Summit change workflow and the
-    # deployment gives no way to list them — so on "Invalid Status Name" we
-    # walk the common Symphony SUMMIT initial statuses and, when one is
-    # accepted, persist it so future creates go straight through.
-    candidates = [create_status] + [s for s in _CANDIDATE_CREATE_STATUSES
-                                    if s != create_status]
-    tried = []
-    last_err = ""
     ccfg = _change_cfg(cfg)
     service = cfg.get("change_update_service") or "CM_LogOrUpdateCR"
-    for st in candidates:
-        container["Status"] = st
-        params["cmParamsJSON"]["CMContainerJson"] = json.dumps(container)
-        tried.append(st)
-        try:
-            data = _wcf_raw(service, params, ccfg)
-        except RuntimeError as exc:
-            last_err = str(exc)
-            if "Invalid Status Name" in last_err:
-                continue                      # try the next candidate status
-            return {"ok": False, "error": last_err[:400],
-                    "status_tried": tried}
-        if st != str(cfg.get("change_create_status") or ""):
-            try:                              # learn the working status
-                stored = load_config()
-                stored["change_create_status"] = st
-                save_config(stored)
-            except OSError:
-                pass
-        reply = data if isinstance(data, str) else json.dumps(data, default=str)
-        return {"ok": True, "change_id": _find_ticket_no(data),
-                "response": reply[:400], "status_used": st}
-    return {"ok": False,
-            "error": (f"Summit rejected every known initial status "
-                      f"({', '.join(tried)}) with 'Invalid Status Name' — ask the "
-                      f"change admin for the first status in your CR workflow and "
-                      f"set it in Settings."),
-            "status_tried": tried}
+    return _create_cr_with_recovery(service, container, params, ccfg, create_status)
 
 
 _CANDIDATE_CREATE_STATUSES = [
     "Initial Authorization", "Draft", "Requested", "Submitted", "Registered",
     "New", "Open", "Logged", "Pending Authorization", "For Authorization",
 ]
+
+# Summit validates several CR fields against master-data lists. When it rejects
+# one ("Invalid <field> value/name"), fall back to the known-good sample value
+# for that field and retry — so an AI-inferred value Summit doesn't recognise
+# (e.g. Risk "High") never blocks creation.
+_CR_FIELD_FALLBACKS = [
+    (r"Invalid Risk\b", ["Risk"], "Medium"),
+    (r"Invalid Impact\b", ["Impact"], "Medium"),
+    (r"Invalid Criticality\b", ["Criticality_Name"], "Medium"),
+    (r"Invalid Priority\b", ["Priority_Name"], "P3"),
+    (r"Invalid (Change ?Type|ChangeType)\b", ["ChangeTypeName"], "Normal"),
+    (r"Invalid Classification\b", ["Classification"], "Normal"),
+    (r"Invalid Urgency\b", ["Urgency_Name"], "Medium"),
+]
+
+
+def _create_cr_with_recovery(service: str, container: dict, params: dict,
+                             ccfg: dict, create_status: str) -> dict:
+    """POST the CR, self-healing around Summit's master-data validation:
+    walks initial statuses on 'Invalid Status Name' and substitutes known-good
+    values for any other 'Invalid <field>' rejection, then retries."""
+    statuses = [create_status] + [s for s in _CANDIDATE_CREATE_STATUSES
+                                  if s != create_status]
+    si = 0
+    container["Status"] = statuses[si]
+    adjusted = {}          # field -> value we had to fall back to
+    tried_status = []
+    for _ in range(16):    # bounded: statuses + a handful of field fixes
+        params["cmParamsJSON"]["CMContainerJson"] = json.dumps(container)
+        try:
+            data = _wcf_raw(service, params, ccfg)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "Invalid Status Name" in msg:
+                tried_status.append(container.get("Status"))
+                si += 1
+                if si < len(statuses):
+                    container["Status"] = statuses[si]
+                    continue
+                return {"ok": False, "status_tried": tried_status,
+                        "error": ("Summit rejected every known initial status — ask the "
+                                  "change admin for the first status in your CR workflow "
+                                  "and set it in Settings.")}
+            fixed = False
+            for pat, keys, safe in _CR_FIELD_FALLBACKS:
+                if re.search(pat, msg, re.I) and container.get(keys[0]) != safe:
+                    for k in keys:
+                        container[k] = safe
+                    adjusted[keys[0]] = safe
+                    fixed = True
+                    break
+            if fixed:
+                continue
+            return {"ok": False, "error": msg[:400], "adjusted": adjusted or None}
+        # success — learn a working non-default status
+        st = container.get("Status")
+        if st and st != create_status:
+            try:
+                stored = load_config()
+                stored["change_create_status"] = st
+                save_config(stored)
+            except OSError:
+                pass
+        reply = data if isinstance(data, str) else json.dumps(data, default=str)
+        return {"ok": True, "change_id": _find_ticket_no(data), "response": reply[:400],
+                "status_used": st, "adjusted": adjusted or None}
+    return {"ok": False, "error": "Too many validation retries — check the CR field values.",
+            "adjusted": adjusted or None}
 
 
 def update_change_log(change_id: str, text: str) -> dict:

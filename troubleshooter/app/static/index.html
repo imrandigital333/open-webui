@@ -3032,7 +3032,13 @@ async function cbotSubmit() {
     cbotStopTyping(); cbotBusy(false);
     if (res.ok) {
       cbot.step = 'done';
-      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created${res.status_used ? ` (status: ${escapeHtml(res.status_used)})` : ''}. Once approved, run it from "Implement change".`, 'bot', true);
+      let adj = '';
+      if (res.adjusted && Object.keys(res.adjusted).length) {
+        adj = '<br><span class="hint">Note: Summit didn\'t accept some values, so I filed it with: '
+          + Object.entries(res.adjusted).map(([k, v]) => `${escapeHtml(k)} → ${escapeHtml(v)}`).join(', ')
+          + '. Adjust in Summit if needed.</span>';
+      }
+      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created${res.status_used ? ` (status: ${escapeHtml(res.status_used)})` : ''}. Once approved, run it from "Implement change".${adj}`, 'bot', true);
       cbotChips(['Raise another', 'Close']);
       loadChanges();
     } else {
