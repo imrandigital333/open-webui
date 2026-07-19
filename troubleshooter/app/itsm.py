@@ -87,6 +87,8 @@ DEFAULTS = {
     "change_executive_id": "2",
     "change_owner_workgroup_id": "12",
     "change_default_workgroup": "Windows Server Support",
+    # known-good Summit workgroup names offered as chips in the assistant
+    "change_workgroups": "Windows Server Support,Unix Server Support",
     "change_classification": "Normal",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
@@ -134,6 +136,7 @@ _ENV_MAP = {
     "change_executive_id": "SUMMITAI_CHANGE_EXECUTIVE_ID",
     "change_owner_workgroup_id": "SUMMITAI_CHANGE_OWNER_WORKGROUP_ID",
     "change_default_workgroup": "SUMMITAI_CHANGE_DEFAULT_WORKGROUP",
+    "change_workgroups": "SUMMITAI_CHANGE_WORKGROUPS",
     "change_classification": "SUMMITAI_CHANGE_CLASSIFICATION",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",

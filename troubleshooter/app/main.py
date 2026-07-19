@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.45.0"
+APP_VERSION = "2.46.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -220,6 +220,7 @@ class ItsmConfigRequest(BaseModel):
     change_support_function_name: str = Field("BIAL Services", max_length=120)
     change_create_status: str = Field("Initial Authorization", max_length=60)
     change_default_workgroup: str = Field("Windows Server Support", max_length=120)
+    change_workgroups: str = Field("Windows Server Support,Unix Server Support", max_length=500)
     change_owner_workgroup_id: str = Field("12", max_length=20)
     change_category_name: str = Field("Minor", max_length=60)
     change_category_id: int = Field(132, ge=0, le=10_000_000)
@@ -519,20 +520,39 @@ async def create_change_request(req: ChangeCreateRequest, request: Request):
     return result
 
 
+class GeneratePlanRequest(BaseModel):
+    server: str = Field("", max_length=100)     # target server (inventory name)
+    os_family: str = Field("", max_length=40)   # linux / windows / …
+    details: str = Field("", max_length=4000)   # operator-supplied specifics
+
+
 @app.post("/api/changes/{change_id}/generate-plan")
-async def generate_change_plan(change_id: str, request: Request):
+async def generate_change_plan(change_id: str, request: Request,
+                               req: GeneratePlanRequest | None = None):
     """Generate an executable implementation plan for a change that has none,
-    from its Summit title/description, and store it for the implementer."""
+    from its Summit title/description plus operator-supplied specifics, and
+    store it for the implementer."""
+    req = req or GeneratePlanRequest()
     try:
         change = await asyncio.to_thread(itsm.get_change, change_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
     if change is None:
         raise HTTPException(status_code=404, detail="Change not found")
+    srv = load_inventory().get(req.server)
+    host_line = ""
+    if srv is not None:
+        host_line = (f"Target host: {srv.name} ({srv.host}); OS: "
+                     f"{req.os_family or srv.os or 'linux'}; "
+                     f"services: {', '.join(srv.services) or 'unknown'}\n")
+    elif req.server:
+        host_line = f"Target host: {req.server}; OS: {req.os_family or 'linux'}\n"
     context = (f"Change {change_id}: {change.get('title', '')}\n"
                f"{change.get('description', '')}\n"
                f"Affected CI/server: {change.get('ci', '')}\n"
-               f"Risk: {change.get('risk', '')}  Category: {change.get('category', '')}")
+               f"Risk: {change.get('risk', '')}  Category: {change.get('category', '')}\n"
+               + host_line
+               + (f"Operator-supplied specifics: {req.details}\n" if req.details else ""))
     plan = await changeplan.generate_plan(context)
     existing = changeplan.load_plan(change_id) or {}
     stored = changeplan.save_plan(change_id, {

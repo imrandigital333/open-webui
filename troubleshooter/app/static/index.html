@@ -511,6 +511,18 @@
           border-radius: 14px; box-shadow: 0 18px 50px rgba(0,0,0,.5); z-index: 60;
           overflow: hidden; }
   #cbot { width: 420px; }
+  #cbot.max { width: min(900px, calc(100vw - 40px)); height: calc(100vh - 60px);
+              max-height: calc(100vh - 60px); }
+  .ibot-head .rc-ava { width: 24px; height: 24px; flex: 0 0 24px; }
+  .ibot-head .rc-ava svg { width: 15px; height: 15px; }
+  /* robot avatar beside bot messages in the assistant */
+  .ib-m.bot.ava { position: relative; margin-left: 34px; }
+  .ib-m.bot.ava::before { content: ''; position: absolute; left: -34px; bottom: 0;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--purple)); }
+  .ib-avarow { display: flex; gap: 8px; align-items: flex-end; align-self: flex-start; max-width: 90%; }
+  .ib-avarow .rc-ava { flex: 0 0 26px; width: 26px; height: 26px; }
+  .ib-avarow .ib-m { align-self: auto; }
   .ibot-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
                border-bottom: 1px solid var(--border); background: var(--panel2);
                font-size: 13px; }
@@ -553,6 +565,9 @@
   #incDetail.open, #chgImpl.open { display: block; position: fixed; inset: 0; z-index: 70;
                     background: rgba(0,0,0,.5); }
   #chgImpl .incd-panel { width: 680px; }
+  #chgImpl.max .incd-panel { width: min(1150px, calc(100vw - 40px)); }
+  #chgImpl .incd-head .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
+  #chgImpl .incd-head .rc-ava svg { width: 16px; height: 16px; }
   /* change implementer */
   .ci-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px;
              overflow: hidden; }
@@ -750,8 +765,9 @@
   <!-- change-raising assistant -->
   <div id="cbot">
     <div class="ibot-head">
-      <span class="ibot-dot"></span><b>Change Assistant</b>
+      <span class="rc-ava" id="cbotAva"></span><b>Change Assistant</b>
       <span style="font-size:11px;color:var(--muted)">raises a SummitAI change</span>
+      <button class="ibot-x" id="cbotMax" title="Maximise" onclick="cbotToggleMax()">⤢</button>
       <button class="ibot-x" title="Minimise" onclick="cbotClose()">—</button>
     </div>
     <div class="ibot-msgs" id="cbotMsgs"></div>
@@ -2759,25 +2775,59 @@ function cbotAdd(text, who = 'bot', html = false) {
   const m = document.createElement('div');
   m.className = 'ib-m ' + who;
   if (html) m.innerHTML = text; else m.textContent = text;
-  $('cbotMsgs').appendChild(m);
+  if (who === 'bot') {
+    const row = document.createElement('div');
+    row.className = 'ib-avarow';
+    row.innerHTML = `<span class="rc-ava">${AI_ROBOT}</span>`;
+    row.appendChild(m);
+    $('cbotMsgs').appendChild(row);
+    m._row = row;
+  } else {
+    $('cbotMsgs').appendChild(m);
+  }
   $('cbotMsgs').scrollTop = $('cbotMsgs').scrollHeight;
+  return m;
 }
 function cbotChips(list) {
   $('cbotChips').innerHTML = list.map(c => `<button type="button">${escapeHtml(c)}</button>`).join('');
   $('cbotChips').querySelectorAll('button').forEach(b => b.onclick = () => cbotHandle(b.textContent));
 }
+function cbotThinking(on) {
+  $('cbotAva')?.querySelector('svg') && $('cbotAva').classList.toggle('think', on);
+}
+let _cbotTyping = null;
+function cbotTyping(label) {
+  cbotThinking(true);
+  const m = cbotAdd(`<span class="rc-typing"><i></i><i></i><i></i></span> ${escapeHtml(label)}`, 'bot', true);
+  m._row.querySelector('.rc-ava').classList.add('think');
+  _cbotTyping = m;
+  return m;
+}
+function cbotStopTyping() {
+  cbotThinking(false);
+  if (_cbotTyping) { (_cbotTyping._row || _cbotTyping).remove(); _cbotTyping = null; }
+}
 function cbotOpenPanel() { $('cbot').style.display = 'flex'; if (!cbot.step) cbotStart(); $('cbotIn').focus(); }
 function cbotClose() { $('cbot').style.display = 'none'; }
-function cbotBusy(on) { cbot.busy = on; }
+function cbotToggleMax() {
+  const on = $('cbot').classList.toggle('max');
+  $('cbotMax').textContent = on ? '⤡' : '⤢';
+  $('cbotMax').title = on ? 'Restore' : 'Maximise';
+  $('cbotMsgs').scrollTop = $('cbotMsgs').scrollHeight;
+}
+function cbotBusy(on) { cbot.busy = on; cbotThinking(on); }
 
 async function cbotStart() {
   cbot.step = 'entry'; cbot.data = {}; cbot.refined = null; cbot.rec = null; cbot.busy = false;
+  $('cbotAva').innerHTML = AI_ROBOT; cbotThinking(false); _cbotTyping = null;
   $('cbotMsgs').innerHTML = ''; cbotChips([]);
   try {
     const c = await (await fetch('/api/admin/itsm')).json();
     cbot.cfgEmail = c.caller_email || '';
     cbot.cfgWorkgroup = c.change_default_workgroup || 'Windows Server Support';
-  } catch { cbot.cfgEmail = ''; cbot.cfgWorkgroup = 'Windows Server Support'; }
+    cbot.workgroups = (c.change_workgroups || 'Windows Server Support,Unix Server Support')
+      .split(',').map(s => s.trim()).filter(Boolean);
+  } catch { cbot.cfgEmail = ''; cbot.cfgWorkgroup = 'Windows Server Support'; cbot.workgroups = ['Windows Server Support', 'Unix Server Support']; }
   cbotAdd("Hi — I'm your change assistant. My job is to reduce failed changes: I validate and correct your implementation plan, verify downtime, build a back-out plan, and score the risk and likely success rate.");
   cbotAdd('Do you have an implementation plan document to upload, or should we build the change together?');
   cbotChips(['📎 Upload a plan', 'Build manually']);
@@ -2803,16 +2853,17 @@ function cbotPickFile() {
 async function cbotUpload(file) {
   cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
   cbotAdd(`Uploaded ${file.name}`, 'user');
-  cbotAdd('Reading the document and validating the plan — structuring steps, correcting commands, verifying downtime, assessing risk…');
+  cbotTyping('Reading the document and validating the plan — structuring steps, correcting commands, verifying downtime, assessing risk…');
   try {
     const fd = new FormData(); fd.append('file', file);
     const res = await fetch('/api/changes/upload-plan', { method: 'POST', body: fd });
     const r = await res.json();
+    cbotStopTyping();
     if (!res.ok) { cbot.step = 'entry'; cbotBusy(false);
       cbotAdd('✕ ' + (r.detail || 'could not read the file') + ' — try pasting the plan, or build manually.');
       cbotChips(['📎 Upload a plan', 'Build manually']); return; }
     cbotApplyRefined(r);
-  } catch (e) { cbot.step = 'entry'; cbotBusy(false); cbotAdd('✕ Upload failed: ' + e.message); cbotChips(['📎 Upload a plan', 'Build manually']); }
+  } catch (e) { cbotStopTyping(); cbot.step = 'entry'; cbotBusy(false); cbotAdd('✕ Upload failed: ' + e.message); cbotChips(['📎 Upload a plan', 'Build manually']); }
 }
 
 function cbotApplyInferred(inf) {
@@ -2852,23 +2903,22 @@ function cbotApplyRefined(r) {
   if (miss.length) cbotAdd('Still needed from you: ' + miss.join(', ') + '.');
   cbot.step = 'workgroup';
   const sugWg = (r.inferred_fields || {}).workgroup;
-  cbotAdd('Owner workgroup? Summit only accepts EXACT workgroup names from its own records — '
-    + 'use the default unless you know the precise name.'
-    + (sugWg && sugWg !== cbot.cfgWorkgroup
-       ? ` (The plan reads like "${sugWg}" territory — but only type that if a workgroup with exactly that name exists in Summit.)` : ''));
-  cbotChips([cbot.cfgWorkgroup + ' (default)']);
+  cbotAdd('Which team owns this change? Pick the Summit workgroup — Windows Server Support for '
+    + 'Windows hosts, Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)'
+    + (sugWg ? ` The plan looks like "${escapeHtml(sugWg)}" work — choose the matching team below.` : ''));
+  cbotChips(cbot.workgroups || [cbot.cfgWorkgroup]);
 }
 
 /* --- manual recommendations --- */
 async function cbotRecommend() {
   cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
-  cbotAdd('Thinking about the right attributes for this change…');
+  cbotTyping('Thinking about the right attributes for this change…');
   try {
     const r = await (await fetch('/api/changes/recommend', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}` }),
     })).json();
-    cbot.rec = r; cbotBusy(false);
+    cbotStopTyping(); cbot.rec = r; cbotBusy(false);
     const parts = [`type <b>${escapeHtml(r.type)}</b>`, `category <b>${escapeHtml(r.category)}</b>`,
       `risk <b>${escapeHtml(r.risk)}</b>`, `impact <b>${escapeHtml(r.impact)}</b>`,
       `priority <b>${escapeHtml(r.priority)}</b>`, `downtime <b>${r.downtime_required ? 'required' : 'not required'}</b>`];
@@ -2879,13 +2929,13 @@ async function cbotRecommend() {
     cbot.step = 'rec_choice';
     cbotAdd('Accept these recommendations, or customise each field?');
     cbotChips(['Accept recommendations', 'Customise']);
-  } catch (e) { cbot.busy = false; cbot.step = 'title'; cbotAdd('✕ ' + e.message); }
+  } catch (e) { cbotStopTyping(); cbot.busy = false; cbot.step = 'title'; cbotAdd('✕ ' + e.message); }
 }
 function cbotApplyRec() {
   const r = cbot.rec; if (!r) return;
   cbot.data.type = r.type; cbot.data.category = r.category; cbot.data.risk = r.risk;
   cbot.data.impact = r.impact; cbot.data.priority = r.priority; cbot.data.downtime = !!r.downtime_required;
-  if (r.workgroup) cbot.data.workgroup = r.workgroup;
+  // workgroup is NOT taken from the AI — it must match a Summit record exactly
 }
 function cbotRecChip(field, fallback) {
   const v = cbot.rec && cbot.rec[field];
@@ -2920,7 +2970,7 @@ function cbotReviewCard() {
 
 async function cbotSubmit() {
   cbot.step = 'submitting'; cbotChips([]); cbotBusy(true);
-  cbotAdd('Creating the change in SummitAI…');
+  cbotTyping('Creating the change in SummitAI…');
   const d = cbot.data, r = cbot.refined;
   const payload = { ...d,
     downtime: r && r.downtime_overall ? !!r.downtime_overall.required : !!d.downtime,
@@ -2933,10 +2983,10 @@ async function cbotSubmit() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })).json();
-    cbotBusy(false);
+    cbotStopTyping(); cbotBusy(false);
     if (res.ok) {
       cbot.step = 'done';
-      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created. Once approved, run it from "Implement change".`, 'bot', true);
+      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created${res.status_used ? ` (status: ${escapeHtml(res.status_used)})` : ''}. Once approved, run it from "Implement change".`, 'bot', true);
       cbotChips(['Raise another', 'Close']);
       loadChanges();
     } else {
@@ -2951,30 +3001,30 @@ async function cbotSubmit() {
         cbotChips(['✓ Create change', 'Start over']);
       }
     }
-  } catch (e) { cbot.busy = false; cbot.step = 'confirm'; cbotAdd('✕ Request failed: ' + e.message); cbotChips(['✓ Create change', 'Start over']); }
+  } catch (e) { cbotStopTyping(); cbot.busy = false; cbot.step = 'confirm'; cbotAdd('✕ Request failed: ' + e.message); cbotChips(['✓ Create change', 'Start over']); }
 }
 
 async function cbotGenerateFromDesc() {
   const ctx = `Change: ${cbot.data.title}\n${cbot.data.description || ''}\n`
     + `Risk: ${cbot.data.risk || ''}  Priority: ${cbot.data.priority || ''}`;
-  cbotAdd('Generating an executable plan from the description…');
-  await cbotRefine(ctx);
+  await cbotRefine(ctx, 'Generating an executable plan from the description — commands, downtime, back-out, risk…');
 }
-async function cbotRefine(text) {
+async function cbotRefine(text, label) {
   cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
-  cbotAdd('Validating your plan — correcting steps and commands, verifying downtime, building the back-out plan, scoring risk…');
+  cbotTyping(label || 'Validating your plan — correcting steps and commands, verifying downtime, building the back-out plan, scoring risk…');
   try {
     const r = await (await fetch('/api/changes/refine-plan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ plan_text: text }),
     })).json();
+    cbotStopTyping();
     cbotApplyInferred(r.inferred_fields);
     cbot.refined = r; cbotBusy(false);
     if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
     cbotAdd(`Validated into <b>${r.steps.length} steps</b>.${cbotAssessmentHtml(r)}`, 'bot', true);
     cbotReviewCard();
   } catch (e) {
-    cbot.busy = false; cbot.step = 'plan';
+    cbotStopTyping(); cbot.busy = false; cbot.step = 'plan';
     cbotAdd('✕ Could not validate the plan: ' + e.message + ' — paste it again, or type skip to create without a plan.');
   }
 }
@@ -2999,8 +3049,12 @@ function cbotHandle(text) {
       cbot.data.description = text; cbotRecommend();
       break;
     case 'rec_choice':
-      if (/accept/i.test(text)) { cbotApplyRec(); cbot.step = 'requestor'; cbotAdd('Requestor email?'); cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []); }
-      else { cbot.step = 'type'; cbotAdd('Change type?'); cbotChips(cbotRecChip('type', ['Normal', 'Standard', 'Emergency'])); }
+      if (/accept/i.test(text)) {
+        cbotApplyRec(); cbot.step = 'workgroup';
+        cbotAdd('Which team owns this change? Windows Server Support for Windows hosts, '
+          + 'Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)');
+        cbotChips(cbot.workgroups || [cbot.cfgWorkgroup]);
+      } else { cbot.step = 'type'; cbotAdd('Change type?'); cbotChips(cbotRecChip('type', ['Normal', 'Standard', 'Emergency'])); }
       break;
     case 'type':
       cbot.data.type = val(text); cbot.step = 'category';
@@ -3020,8 +3074,9 @@ function cbotHandle(text) {
       break;
     case 'priority':
       cbot.data.priority = val(text); cbot.step = 'workgroup';
-      cbotAdd('Owner workgroup? Summit only accepts EXACT names from its records — use the default unless you know the precise name.');
-      cbotChips([cbot.cfgWorkgroup + ' (default)']);
+      cbotAdd('Which team owns this change? Windows Server Support for Windows hosts, '
+        + 'Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)');
+      cbotChips(cbot.workgroups || [cbot.cfgWorkgroup]);
       break;
     case 'workgroup':
       if (!skip) cbot.data.workgroup = val(text); cbot.step = 'requestor';
@@ -3353,10 +3408,11 @@ function renderImplementer() {
   d.querySelector('.incd-panel') && (d.innerHTML = '');
   d.innerHTML = `<div class="incd-panel">
     <div class="incd-head">
-      <span class="pri p-p3">${escapeHtml(c.type || 'Change')}</span>
+      <span class="rc-ava" id="implAva">${AI_ROBOT}</span>
       <span class="inc-id">${escapeHtml(implState.id)}</span>
       <span style="font-weight:650">${escapeHtml(c.status || '')}</span>
-      <button style="margin-left:auto" onclick="closeImplementer()">✕</button>
+      <button style="margin-left:auto" id="implMax" title="Maximise" onclick="implToggleMax()">⤢</button>
+      <button onclick="closeImplementer()">✕</button>
     </div>
     <div class="incd-body">
       <div style="font-size:15px;font-weight:700;line-height:1.4">${escapeHtml(c.title || implState.id)}</div>
@@ -3369,8 +3425,17 @@ function renderImplementer() {
       </div>
       ${!steps.length ? `<div style="margin:14px 0">
           <div class="empty" style="margin-bottom:12px">No executable implementation plan is stored for this change yet.</div>
-          <button class="ci-run" onclick="genImplPlan(this)">${ic('zap', 12)} Generate plan with AI</button>
-          <div class="hint" style="margin-top:8px">Builds executable steps and commands from the change's title and description, verifies downtime, and adds a back-out plan — review each command before running. You can also raise the change through the Change Assistant with your own plan document.</div>
+          <div class="sec-label" style="margin:0 0 8px">Generate an implementation plan</div>
+          <div class="hint" style="margin-bottom:10px">Give me the specifics and I'll build a validated, executable plan — commands per step, downtime verified, a back-out plan, and a risk/success score. The more you tell me, the safer the plan.</div>
+          <div class="incd-field" style="margin:8px 0"><label>Target server</label>
+            <select id="genServer"><option value="">— select the server this runs on —</option>${serverOpts}</select></div>
+          <div class="incd-field" style="margin:8px 0"><label>OS / distribution <span style="font-weight:normal">(optional)</span></label>
+            <input id="genOs" placeholder="e.g. RHEL 8, Ubuntu 22.04, Windows Server 2019"></div>
+          <div class="incd-field" style="margin:8px 0"><label>Specifics for the plan <span style="font-weight:normal">(versions, constraints, order, what to avoid)</span></label>
+            <textarea id="genDetails" style="min-height:90px" placeholder="e.g. patch to kernel 4.18.0-513; app is behind LB lb-01, drain before restart; maintenance window 02:00-03:00; do NOT touch /data mount"></textarea></div>
+          <button class="ci-run" onclick="genImplPlan(this)">${ic('zap', 12)} Generate plan</button>
+          <span id="genMsg" class="hint" style="margin-left:8px"></span>
+          <div class="hint" style="margin-top:8px">Or raise the change through the Change Assistant with your own plan document.</div>
         </div>` : `
         <div class="incd-field" style="margin:12px 0">
           <label>Target server</label>
@@ -3399,15 +3464,29 @@ function renderImplementer() {
   if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
 }
 
+function implToggleMax() {
+  const on = $('chgImpl').classList.toggle('max');
+  const b = $('implMax'); if (b) { b.textContent = on ? '⤡' : '⤢'; b.title = on ? 'Restore' : 'Maximise'; }
+}
 async function genImplPlan(btn) {
-  btn.disabled = true; btn.textContent = 'generating plan — this can take a moment…';
+  const body = { server: ($('genServer') || {}).value || implState.server || '',
+                 os_family: ($('genOs') || {}).value || '',
+                 details: ($('genDetails') || {}).value || '' };
+  implState.server = body.server || implState.server;
+  const msg = $('genMsg');
+  btn.disabled = true;
+  $('implAva')?.classList.add('think');
+  btn.innerHTML = '<span class="rc-typing" style="display:inline-flex;gap:3px;vertical-align:middle"><i></i><i></i><i></i></span> building the plan…';
+  if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = 'validating steps, verifying downtime, scoring risk — a moment…'; }
   try {
-    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/generate-plan`, { method: 'POST' });
+    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/generate-plan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const d = await r.json();
-    if (!r.ok) { btn.disabled = false; btn.textContent = '⚡ Generate plan with AI'; alert('✕ ' + (d.detail || r.statusText)); return; }
+    $('implAva')?.classList.remove('think');
+    if (!r.ok) { btn.disabled = false; btn.innerHTML = '⚡ Generate plan'; if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || r.statusText); } return; }
     implState.plan = d.plan;
     renderImplementer();
-  } catch (e) { btn.disabled = false; btn.textContent = '⚡ Generate plan with AI'; alert('✕ ' + e.message); }
+  } catch (e) { $('implAva')?.classList.remove('think'); btn.disabled = false; btn.innerHTML = '⚡ Generate plan'; if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } }
 }
 async function runImplStep(order, btn) {
   const msg = $('impl-msg-' + order);
