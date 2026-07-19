@@ -66,6 +66,10 @@ DEFAULTS = {
     # Change operations use a DIFFERENT API key than incidents; when blank
     # they fall back to the incident token so existing setups keep working.
     "change_token": "",
+    # change list filter (mirrors the incident list): a 30-day updated window
+    "change_statuses": "",                       # optional Status filter (comma list)
+    "change_list_filter_key": "objChangeCommonFilter",
+    "change_lookback_days": 30,
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -101,6 +105,9 @@ _ENV_MAP = {
     "change_detail_service": "SUMMITAI_CHANGE_DETAIL_SERVICE",
     "change_update_service": "SUMMITAI_CHANGE_UPDATE_SERVICE",
     "change_token": "SUMMITAI_CHANGE_TOKEN",
+    "change_statuses": "SUMMITAI_CHANGE_STATUSES",
+    "change_list_filter_key": "SUMMITAI_CHANGE_FILTER_KEY",
+    "change_lookback_days": "SUMMITAI_CHANGE_LOOKBACK_DAYS",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -436,11 +443,33 @@ def _fetch_incident_rows(cfg: dict) -> list[dict]:
     return _wcf_call(cfg["incidents_service"], _incident_list_params(cfg), cfg)
 
 
+def _change_list_params(cfg: dict) -> dict:
+    """objChangeCommonFilter with a rolling updated-date window (default 30
+    days), mirroring the incident list. The filter key name is configurable
+    because it varies across SummitAI change deployments."""
+    today = time.time()
+    lookback = int(cfg.get("change_lookback_days") or 30)
+    fmt = lambda ts: time.strftime("%Y-%m-%d", time.localtime(ts))  # noqa: E731
+    flt = {
+        "CurrentPageIndex": 0,
+        "PageSize": int(cfg.get("page_size") or 100),
+        "OrgID": str(cfg.get("org_id") or 1),
+        "Instance": cfg.get("instance") or "IT",
+        "strUpdatedFromDate": fmt(today - lookback * 86400),
+        "strUpdatedToDate": fmt(today + 86400),
+        "IsWebServiceRequest": True,
+    }
+    if cfg.get("change_statuses"):
+        flt["Status"] = cfg["change_statuses"]
+    key = cfg.get("change_list_filter_key") or "objChangeCommonFilter"
+    return {key: flt}
+
+
 def _fetch_change_rows(cfg: dict) -> list[dict]:
     ccfg = _change_cfg(cfg)
     if cfg["api_style"] == "rest":
         return _rest_get(cfg["changes_path"], ccfg)
-    return _wcf_call(cfg["changes_service"], None, ccfg)
+    return _wcf_call(cfg["changes_service"], _change_list_params(cfg), ccfg)
 
 
 # ---------- public API ----------
@@ -892,6 +921,54 @@ def discover_services(overrides: dict | None = None, ticket_no: str = "") -> dic
             results.append(probe(name, "detail",
                                  {"TicketNo": _ticket_no(ticket_no),
                                   "RequestType": "RemoteCall"}))
+    return {"results": results}
+
+
+_CANDIDATE_CHANGE_SERVICES = [
+    "CM_GetCRList", "CM_GetChangeList", "CM_FetchChanges", "CM_GetCR_List",
+    "CM_FetchCRList", "CM_GetChanges", "CM_FetchCR", "GetChangeList",
+    "CM_GetCRDetailsList",
+]
+# filter key names that vary across change deployments
+_CANDIDATE_CHANGE_FILTER_KEYS = ["objChangeCommonFilter", "objCRCommonFilter",
+                                 "objCommonFilter"]
+
+
+def discover_change_services(overrides: dict | None = None) -> dict:
+    """Sweep common SummitAI change-LIST ServiceNames (with the change key)
+    so the operator can find the one their deployment answers. For the
+    configured/most-likely name we also try each candidate filter key, since
+    the list call often needs a filter block to return rows."""
+    cfg = _merged(overrides)
+    if not cfg["base_url"]:
+        return {"results": [], "error": "Base URL is required"}
+    if cfg["api_style"] != "summit_wcf":
+        return {"results": [], "error": "ServiceName discovery applies to the summit_wcf style"}
+    ccfg = _change_cfg(cfg)
+
+    def probe(name: str, filter_key: str) -> dict:
+        params = _change_list_params({**cfg, "change_list_filter_key": filter_key})
+        label = name + (f"  ·  {filter_key}" if filter_key != "objChangeCommonFilter" else "")
+        try:
+            rows = _wcf_call(name, params, ccfg)
+            return {"service": name, "filter_key": filter_key, "label": label,
+                    "ok": True, "rows": len(rows)}
+        except RuntimeError as exc:
+            msg = str(exc)
+            empty = "EMPTY body" in msg
+            return {"service": name, "filter_key": filter_key, "label": label,
+                    "ok": False, "empty": empty,
+                    "error": None if empty else msg[:180]}
+
+    results = []
+    names = list(dict.fromkeys([cfg["changes_service"], *_CANDIDATE_CHANGE_SERVICES]))
+    for name in names:
+        results.append(probe(name, "objChangeCommonFilter"))
+    # if nothing answered, retry the top candidates with the other filter keys
+    if not any(r["ok"] and r["rows"] for r in results):
+        for name in names[:3]:
+            for fk in _CANDIDATE_CHANGE_FILTER_KEYS[1:]:
+                results.append(probe(name, fk))
     return {"results": results}
 
 

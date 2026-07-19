@@ -897,13 +897,21 @@
               <input id="it_change_detail_service" maxlength="100" placeholder="CM_GetCR_Details"></div>
             <div><label>Change create/update ServiceName</label>
               <input id="it_change_update_service" maxlength="100" placeholder="CM_LogOrUpdateCR"></div>
+            <div><label>List look-back window (days)</label>
+              <input id="it_change_lookback_days" type="number" value="30" min="1" max="365"></div>
+            <div><label>List filter key</label>
+              <input id="it_change_list_filter_key" maxlength="60" placeholder="objChangeCommonFilter"></div>
+            <div style="grid-column:1/-1"><label>Status filter <span style="font-weight:normal">(optional, comma-separated)</span></label>
+              <input id="it_change_statuses" maxlength="300" placeholder="leave blank for all statuses"></div>
             <div><label>Known CR number <span style="font-weight:normal">(optional — tests the detail service)</span></label>
               <input id="it_change_test_cr" maxlength="64" placeholder="e.g. 1842"></div>
           </div>
           <div style="display:flex; gap:10px; margin-top:12px;">
             <button class="ghost" id="testChangeBtn">Test change API</button>
+            <button class="ghost" id="probeChangeBtn" title="Try the common SummitAI change-list ServiceNames and show which one this endpoint + change key answers">Probe change ServiceNames</button>
           </div>
           <div class="hint" id="itsmChangeMsg" style="margin-top:8px"></div>
+          <div id="itsmChangeProbeOut" style="display:none; margin-top:8px; padding:10px 12px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:8px; font-size:12.5px; line-height:1.9"></div>
         </div>
       </div>
     </div>
@@ -2254,6 +2262,9 @@ async function loadItsmConfig() {
   $('it_changes_service').value = c.changes_service || 'CM_FetchChanges';
   $('it_change_detail_service').value = c.change_detail_service || 'CM_GetCR_Details';
   $('it_change_update_service').value = c.change_update_service || 'CM_LogOrUpdateCR';
+  $('it_change_lookback_days').value = c.change_lookback_days ?? 30;
+  $('it_change_list_filter_key').value = c.change_list_filter_key || 'objChangeCommonFilter';
+  $('it_change_statuses').value = c.change_statuses || '';
   $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
@@ -2293,6 +2304,9 @@ function itsmForm() {
     changes_service: $('it_changes_service').value.trim() || 'CM_FetchChanges',
     change_detail_service: $('it_change_detail_service').value.trim() || 'CM_GetCR_Details',
     change_update_service: $('it_change_update_service').value.trim() || 'CM_LogOrUpdateCR',
+    change_lookback_days: parseInt($('it_change_lookback_days').value, 10) || 30,
+    change_list_filter_key: $('it_change_list_filter_key').value.trim() || 'objChangeCommonFilter',
+    change_statuses: $('it_change_statuses').value.trim(),
     caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',
@@ -2354,6 +2368,30 @@ $('testChangeBtn').onclick = async () => {
       msg.textContent = err;
     }
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+};
+$('probeChangeBtn').onclick = async () => {
+  const out = $('itsmChangeProbeOut');
+  if (!$('it_base_url').value.trim()) { out.style.display = 'block'; out.textContent = 'Enter a Base URL first.'; return; }
+  out.style.display = 'block';
+  out.innerHTML = '<span class="spinner"></span> probing common change-list ServiceNames with the change key — wrong names just answer empty, so this is read-only and safe…';
+  try {
+    const r = await (await fetch('/api/admin/itsm/discover-changes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(itsmForm()),
+    })).json();
+    if (r.error) { out.textContent = '✕ ' + r.error; return; }
+    const line = (x) => {
+      if (x.ok && x.rows > 0) return `<div style="color:var(--ok)">✓ <b>${escapeHtml(x.service)}</b>${x.filter_key !== 'objChangeCommonFilter' ? ' <span style="color:var(--muted)">(' + escapeHtml(x.filter_key) + ')</span>' : ''} — ${x.rows} change(s)</div>`;
+      if (x.ok) return `<div style="color:var(--warn)">△ ${escapeHtml(x.service)} — answered, 0 rows (may need a status filter, or none in the window)</div>`;
+      if (x.empty) return `<div style="color:var(--muted)">○ ${escapeHtml(x.service)} — empty (not recognised / not whitelisted)</div>`;
+      return `<div style="color:var(--err)">✕ ${escapeHtml(x.service)} — ${escapeHtml(x.error || 'error')}</div>`;
+    };
+    const hit = r.results.find(x => x.ok && x.rows > 0);
+    out.innerHTML = r.results.map(line).join('')
+      + `<div class="desc" style="margin-top:6px">${hit
+          ? `Set "Change list ServiceName" to <b>${escapeHtml(hit.service)}</b>${hit.filter_key !== 'objChangeCommonFilter' ? ' and "List filter key" to <b>' + escapeHtml(hit.filter_key) + '</b>' : ''}, then Save.`
+          : 'No candidate returned changes — ask your Summit admin for the exact change-list ServiceName and confirm it is whitelisted for the change key.'}</div>`;
+  } catch (e) { out.textContent = '✕ ' + e.message; }
 };
 $('probeItsmBtn').onclick = async () => {
   const out = $('itsmProbeOut');

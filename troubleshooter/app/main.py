@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.38.0"
+APP_VERSION = "2.39.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -213,6 +213,9 @@ class ItsmConfigRequest(BaseModel):
     change_detail_service: str = Field("CM_GetCR_Details", max_length=100)
     change_update_service: str = Field("CM_LogOrUpdateCR", max_length=100)
     change_token: str = Field("", max_length=1000)   # empty = keep stored change key
+    change_statuses: str = Field("", max_length=300)
+    change_list_filter_key: str = Field("objChangeCommonFilter", max_length=60)
+    change_lookback_days: int = Field(30, ge=1, le=365)
     caller_email: str = Field("", max_length=200)
     instance: str = Field("IT", max_length=50)
     incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",
@@ -268,6 +271,16 @@ async def test_itsm_change_config(req: ItsmChangeTestRequest, request: Request):
     await asyncio.to_thread(db.audit, _actor(request), "itsm_change_tested",
                             {"base_url": req.base_url, "ok": result.get("ok"),
                              "mode": result.get("mode")})
+    return result
+
+
+@app.post("/api/admin/itsm/discover-changes")
+async def discover_itsm_change_services(req: ItsmConfigRequest, request: Request):
+    """Read-only sweep of common SummitAI change-list ServiceNames."""
+    result = await asyncio.to_thread(itsm.discover_change_services, req.model_dump())
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_change_services_probed",
+                            {"base_url": req.base_url,
+                             "hits": sum(1 for r in result.get("results", []) if r.get("ok"))})
     return result
 
 
