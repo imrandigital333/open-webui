@@ -504,12 +504,13 @@
               border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px;
               color: var(--muted); font-variant-numeric: tabular-nums; }
   .inc-secrule { flex: 1; height: 1px; background: var(--border); }
-  /* incident-raising assistant */
-  #ibot { display: none; position: fixed; right: 24px; bottom: 24px; width: 390px;
+  /* incident/change-raising assistant */
+  #ibot, #cbot { display: none; position: fixed; right: 24px; bottom: 24px; width: 390px;
           max-width: calc(100vw - 40px); height: 540px; max-height: calc(100vh - 90px);
           flex-direction: column; background: var(--panel); border: 1px solid var(--border);
           border-radius: 14px; box-shadow: 0 18px 50px rgba(0,0,0,.5); z-index: 60;
           overflow: hidden; }
+  #cbot { width: 420px; }
   .ibot-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
                border-bottom: 1px solid var(--border); background: var(--panel2);
                font-size: 13px; }
@@ -549,8 +550,43 @@
   .inc-meta { display: flex; gap: 8px 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
   .inc-meta b { color: var(--text); font-weight: 600; }
   /* incident detail slide-over */
-  #incDetail.open { display: block; position: fixed; inset: 0; z-index: 70;
+  #incDetail.open, #chgImpl.open { display: block; position: fixed; inset: 0; z-index: 70;
                     background: rgba(0,0,0,.5); }
+  #chgImpl .incd-panel { width: 680px; }
+  /* change implementer */
+  .ci-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px;
+             overflow: hidden; }
+  .ci-step.cur { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .ci-step.done { opacity: .72; }
+  .ci-step-h { display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+               background: var(--panel2); font-size: 12.5px; }
+  .ci-seq { width: 22px; height: 22px; border-radius: 50%; display: inline-flex;
+            align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+            background: var(--border); color: var(--muted); flex: 0 0 auto; }
+  .ci-step.cur .ci-seq { background: var(--accent); color: #fff; }
+  .ci-step.done .ci-seq { background: var(--ok); color: #04210f; }
+  .ci-phase { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+              padding: 1px 7px; border-radius: 5px; background: var(--border); color: var(--muted); }
+  .ci-dt { font-size: 10.5px; padding: 1px 7px; border-radius: 5px; margin-left: auto;
+           border: 1px solid var(--warn); color: var(--warn); }
+  .ci-body { padding: 10px 12px; }
+  .ci-cmd { font-family: var(--mono); font-size: 12px; background: var(--bg);
+            border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+            white-space: pre-wrap; word-break: break-all; margin: 6px 0; }
+  .ci-run { width: auto; margin: 0; padding: 6px 14px; background: var(--accent);
+            border: none; color: #fff; border-radius: 7px; font-size: 12px; cursor: pointer; }
+  .ci-run:disabled { opacity: .45; cursor: not-allowed; }
+  .ci-out { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap;
+            background: var(--bg); border-radius: 6px; padding: 7px 9px; margin-top: 7px;
+            max-height: 220px; overflow: auto; display: none; }
+  .ci-out.ok { border-left: 3px solid var(--ok); }
+  .ci-out.err { border-left: 3px solid var(--err); }
+  .ci-locked { font-size: 11.5px; color: var(--muted); display: flex; align-items: center;
+               gap: 6px; padding: 2px 0; }
+  .ci-adhoc { display: flex; gap: 8px; margin-top: 4px; }
+  .ci-adhoc input { flex: 1; margin: 0; font-family: var(--mono); font-size: 12px; }
+  .ci-sug { border-left: 3px solid var(--accent2); background: var(--panel2);
+            border-radius: 0 8px 8px 0; padding: 8px 12px; font-size: 12.5px; margin: 4px 0; }
   .incd-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 560px;
                 max-width: calc(100vw - 40px); background: var(--panel);
                 border-left: 1px solid var(--border); box-shadow: -12px 0 40px rgba(0,0,0,.5);
@@ -695,19 +731,39 @@
 
 <div id="viewChanges" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
-    <h2 style="margin:0">Approved changes</h2>
+    <h2 style="margin:0">Changes</h2>
     <span class="tag" id="chgSource"></span>
-    <span class="hint" style="margin:0">from SummitAI · preview</span>
-    <button class="ghost" id="chgRefresh" style="margin-left:auto">↻ Refresh</button>
+    <span class="hint" style="margin:0" id="chgUpdated"></span>
+    <button class="primary" id="cbotOpenBtn" style="margin:0 0 0 auto;width:auto;padding:7px 14px">＋ Raise change</button>
+    <button class="ghost" id="chgRefresh">↻ Refresh</button>
   </div>
-  <div class="hint" style="margin-bottom:14px">Approved changes ready for implementation. The
-    change-implementer agent (which executes an approved plan step by step) will plug in here — this
-    is an early view.</div>
-  <div class="incgrid" id="chgList"><div class="empty">Loading changes…</div></div>
+  <div class="hint" style="margin-bottom:12px">Change requests grouped by category. Approved changes
+    with an implementation plan can be executed step by step by the AI change implementer, which runs
+    only the approved commands, in order.</div>
+  <div id="chgList"><div class="empty">Loading changes…</div></div>
+
+  <!-- change-raising assistant -->
+  <div id="cbot">
+    <div class="ibot-head">
+      <span class="ibot-dot"></span><b>Change Assistant</b>
+      <span style="font-size:11px;color:var(--muted)">raises a SummitAI change</span>
+      <button class="ibot-x" title="Minimise" onclick="cbotClose()">—</button>
+    </div>
+    <div class="ibot-msgs" id="cbotMsgs"></div>
+    <div class="ibot-chips" id="cbotChips"></div>
+    <div class="ibot-inrow">
+      <textarea id="cbotIn" placeholder="Type your answer…" rows="1"
+        style="min-height:0;height:38px;resize:none"></textarea>
+      <button id="cbotSend">Send</button>
+    </div>
+  </div>
 </div>
 
 <!-- incident detail slide-over -->
 <div id="incDetail" style="display:none"></div>
+
+<!-- change implementer slide-over -->
+<div id="chgImpl" style="display:none"></div>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
@@ -786,8 +842,12 @@
             <input id="it_incident_detail_service" maxlength="100" placeholder="IM_GetIncidentDetailsAndChangeHistory"></div>
           <div><label>Update ServiceName</label>
             <input id="it_update_service" maxlength="100" placeholder="IM_LogOrUpdateIncident"></div>
-          <div><label>Changes ServiceName</label>
+          <div><label>Changes list ServiceName</label>
             <input id="it_changes_service" maxlength="100" placeholder="CM_FetchChanges"></div>
+          <div><label>Change detail ServiceName</label>
+            <input id="it_change_detail_service" maxlength="100" placeholder="CM_GetCR_Details"></div>
+          <div><label>Change create/update ServiceName</label>
+            <input id="it_change_update_service" maxlength="100" placeholder="CM_LogOrUpdateCR"></div>
           <div><label>Caller email <span style="font-weight:normal">(sent on ticket updates)</span></label>
             <input id="it_caller_email" maxlength="200" placeholder="ops.user@company.com"></div>
           <div><label>Instance</label>
@@ -2172,6 +2232,8 @@ async function loadItsmConfig() {
   $('it_incident_detail_service').value = c.incident_detail_service || 'IM_GetIncidentDetailsAndChangeHistory';
   $('it_update_service').value = c.update_service || 'IM_LogOrUpdateIncident';
   $('it_changes_service').value = c.changes_service || 'CM_FetchChanges';
+  $('it_change_detail_service').value = c.change_detail_service || 'CM_GetCR_Details';
+  $('it_change_update_service').value = c.change_update_service || 'CM_LogOrUpdateCR';
   $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
@@ -2204,6 +2266,8 @@ function itsmForm() {
     incident_detail_service: $('it_incident_detail_service').value.trim() || 'IM_GetIncidentDetailsAndChangeHistory',
     update_service: $('it_update_service').value.trim() || 'IM_LogOrUpdateIncident',
     changes_service: $('it_changes_service').value.trim() || 'CM_FetchChanges',
+    change_detail_service: $('it_change_detail_service').value.trim() || 'CM_GetCR_Details',
+    change_update_service: $('it_change_update_service').value.trim() || 'CM_LogOrUpdateCR',
     caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',
@@ -2563,6 +2627,169 @@ $('ibotSend').onclick = () => { ibotHandle($('ibotIn').value); $('ibotIn').value
 $('ibotIn').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { ibotHandle($('ibotIn').value); $('ibotIn').value = ''; }
 });
+
+/* ---------- change-raising assistant (guided chat + AI plan refine) ---------- */
+const cbot = { step: null, data: {}, refined: null, cfgEmail: '' };
+
+function cbotAdd(text, who = 'bot', html = false) {
+  const m = document.createElement('div');
+  m.className = 'ib-m ' + who;
+  if (html) m.innerHTML = text; else m.textContent = text;
+  $('cbotMsgs').appendChild(m);
+  $('cbotMsgs').scrollTop = $('cbotMsgs').scrollHeight;
+}
+function cbotChips(list) {
+  $('cbotChips').innerHTML = list.map(c => `<button type="button">${escapeHtml(c)}</button>`).join('');
+  $('cbotChips').querySelectorAll('button').forEach(b => b.onclick = () => cbotHandle(b.textContent));
+}
+function cbotOpenPanel() { $('cbot').style.display = 'flex'; if (!cbot.step) cbotStart(); $('cbotIn').focus(); }
+function cbotClose() { $('cbot').style.display = 'none'; }
+
+async function cbotStart() {
+  cbot.step = 'title'; cbot.data = {}; cbot.refined = null;
+  $('cbotMsgs').innerHTML = ''; cbotChips([]);
+  try { cbot.cfgEmail = (await (await fetch('/api/admin/itsm')).json()).caller_email || ''; }
+  catch { cbot.cfgEmail = ''; }
+  cbotAdd("Hi — I'll help you raise a change in SummitAI and turn your implementation plan into executable steps. Type skip for any optional question.");
+  cbotAdd('First, a one-line title for the change:');
+}
+
+function cbotReviewCard() {
+  cbot.step = 'confirm';
+  const d = cbot.data, r = cbot.refined;
+  const row = (k, v) => v ? `<div class="sumrow"><b>${k}</b><span>${escapeHtml(v)}</span></div>` : '';
+  let planHtml = '';
+  if (r && r.steps) {
+    planHtml = `<div style="margin-top:8px;font-weight:700">Refined plan — ${r.steps.length} steps${r.refined_by === 'ai' ? ' (AI)' : ''}</div>
+      <ol style="margin:4px 0 0 16px;font-size:12px">${r.steps.map(s =>
+        `<li>${escapeHtml(s.description || s.command || '')}${s.downtime_required ? ' <span class="ci-dt">downtime</span>' : ''}</li>`).join('')}</ol>`;
+    if (r.suggestions && r.suggestions.length) {
+      planHtml += `<div style="margin-top:6px;font-size:12px;color:var(--accent2)">AI suggestions:</div>
+        <ul style="margin:2px 0 0 16px;font-size:12px">${r.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`;
+    }
+    if (r.downtime_overall) {
+      planHtml += `<div class="hint" style="margin-top:6px">Downtime verdict: <b>${r.downtime_overall.required ? 'required' : 'not required'}</b>${r.downtime_overall.note ? ' — ' + escapeHtml(r.downtime_overall.note) : ''}</div>`;
+    }
+  }
+  cbotAdd(`<div style="font-weight:700;margin-bottom:6px">Review before creating:</div>
+    ${row('Title', d.title)}${row('Type', d.type)}${row('Category', d.category)}${row('Risk', d.risk)}
+    ${row('Impact', d.impact)}${row('Priority', d.priority)}${row('Downtime', d.downtime ? 'Required' : 'Not required')}
+    ${row('Workgroup', d.workgroup)}${row('Requestor', d.requestor)}${planHtml}`, 'bot', true);
+  cbotChips(['✓ Create change', 'Start over']);
+}
+
+async function cbotSubmit() {
+  cbot.step = 'submitting'; cbotChips([]);
+  cbotAdd('Creating the change in SummitAI…');
+  const d = cbot.data, r = cbot.refined;
+  const payload = { ...d,
+    downtime: r && r.downtime_overall ? !!r.downtime_overall.required : !!d.downtime,
+    backout: (r && r.backout_plan) || '',
+    steps: (r && r.steps) || [] };
+  try {
+    const res = await (await fetch('/api/changes/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })).json();
+    if (res.ok) {
+      cbot.step = 'done';
+      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created. Once it is approved you can run it from "Implement change".`, 'bot', true);
+      cbotChips(['Raise another', 'Close']);
+      loadChanges();
+    } else {
+      cbot.step = 'confirm';
+      cbotAdd('✕ Summit rejected the request: ' + (res.error || 'unknown error'));
+      cbotChips(['✓ Create change', 'Start over']);
+    }
+  } catch (e) {
+    cbot.step = 'confirm';
+    cbotAdd('✕ Request failed: ' + e.message);
+    cbotChips(['✓ Create change', 'Start over']);
+  }
+}
+
+async function cbotRefine(text) {
+  cbot.step = 'refining'; cbotChips([]);
+  cbotAdd('Analysing your plan — structuring steps, verifying downtime, checking for gaps…');
+  try {
+    const r = await (await fetch('/api/changes/refine-plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_text: text }),
+    })).json();
+    cbot.refined = r;
+    if (r.title && !cbot.data.title) cbot.data.title = r.title;
+    cbotAdd(`Structured into ${r.steps.length} steps${r.refined_by === 'ai' ? '' : ' (AI unavailable — imported as manual steps)'}.`);
+    cbotReviewCard();
+  } catch (e) {
+    cbot.step = 'plan';
+    cbotAdd('✕ Could not refine the plan: ' + e.message + ' — paste it again, or type skip to create without a plan.');
+  }
+}
+
+function cbotHandle(text) {
+  text = String(text).trim();
+  if (!text || cbot.step === 'submitting' || cbot.step === 'refining') return;
+  cbotAdd(text, 'user');
+  const skip = /^skip$/i.test(text);
+  switch (cbot.step) {
+    case 'title':
+      if (text.length < 5) { cbotAdd('A bit more detail for the title, please.'); break; }
+      cbot.data.title = text; cbot.step = 'type';
+      cbotAdd('Change type?'); cbotChips(['Normal', 'Standard', 'Emergency', 'Skip']);
+      break;
+    case 'type':
+      if (!skip) cbot.data.type = text; cbot.step = 'category';
+      cbotAdd('Category?'); cbotChips(['Minor', 'Major', 'Significant', 'Skip']);
+      break;
+    case 'category':
+      if (!skip) cbot.data.category = text; cbot.step = 'risk';
+      cbotAdd('Risk level?'); cbotChips(['Low', 'Medium', 'High', 'Skip']);
+      break;
+    case 'risk':
+      if (!skip) cbot.data.risk = text; cbot.step = 'impact';
+      cbotAdd('Impact?'); cbotChips(['Low', 'Medium', 'High', 'Skip']);
+      break;
+    case 'impact':
+      if (!skip) cbot.data.impact = text; cbot.step = 'priority';
+      cbotAdd('Priority?'); cbotChips(['P1', 'P2', 'P3', 'P4', 'Skip']);
+      break;
+    case 'priority':
+      if (!skip) cbot.data.priority = text; cbot.step = 'workgroup';
+      cbotAdd('Owner / assigned workgroup? (optional — must match a Summit workgroup)');
+      cbotChips(['Skip']);
+      break;
+    case 'workgroup':
+      if (!skip) cbot.data.workgroup = text; cbot.step = 'requestor';
+      cbotAdd('Requestor email?');
+      cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
+      break;
+    case 'requestor':
+      if (!text.includes('@')) { cbotAdd('That does not look like an email — please retype it.'); break; }
+      cbot.data.requestor = text; cbot.step = 'plan';
+      cbotAdd('Now paste your implementation plan (any format — your org template is fine). I\'ll convert it into executable steps and verify downtime. Or type skip to create the change without a plan.');
+      cbotChips(['Skip plan']);
+      break;
+    case 'plan':
+      if (skip || /skip plan/i.test(text)) { cbot.refined = null; cbotReviewCard(); }
+      else if (text.length < 20) cbotAdd('That looks too short for a plan — paste the full steps, or type skip.');
+      else cbotRefine(text);
+      break;
+    case 'confirm':
+      if (/create|yes|confirm|✓/i.test(text)) cbotSubmit();
+      else if (/start over|restart|reset/i.test(text)) cbotStart();
+      else cbotAdd('Choose "✓ Create change" to submit, or "Start over".');
+      break;
+    case 'done':
+      if (/another|new/i.test(text)) cbotStart();
+      else if (/close/i.test(text)) cbotClose();
+      break;
+  }
+}
+$('cbotOpenBtn').onclick = cbotOpenPanel;
+$('cbotSend').onclick = () => { cbotHandle($('cbotIn').value); $('cbotIn').value = ''; };
+$('cbotIn').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cbotHandle($('cbotIn').value); $('cbotIn').value = ''; }
+});
 function fmtWhen(s) {
   const t = Date.parse(s);
   return isNaN(t) ? s : timeAgo(t / 1000);
@@ -2672,45 +2899,228 @@ async function startFromIncident(id) {
   } catch (e) { alert('Failed to start: ' + e.message); }
 }
 
-/* ---------- changes (SummitAI · preview) ---------- */
+/* ---------- changes (SummitAI) ---------- */
+let changesCache = [];
+const chgApproved = (s) => /approv|scheduled|ready|authoriz|implement/i.test(String(s || ''));
+
 async function loadChanges() {
   const box = $('chgList');
   try {
     const d = await (await fetch('/api/changes')).json();
+    changesCache = d.changes || [];
     $('chgSource').textContent = d.source || 'SummitAI';
-    const rows = d.changes || [];
-    box.classList.toggle('empty', !rows.length);
-    box.innerHTML = rows.length ? rows.map(c => `
-      <div class="inc-card p-p3" style="cursor:default">
-        <div class="inc-top">
-          <span class="pri p-p3">${escapeHtml(c.type || 'Change')}</span>
-          <span class="inc-id">${escapeHtml(c.id)}</span>
-          <span class="inc-stat" style="color:var(--ok)">${escapeHtml(c.status)}</span>
-        </div>
-        <div class="inc-title">${escapeHtml(c.title)}</div>
-        <div class="inc-meta" style="margin-bottom:8px">
-          ${c.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(c.ci)}</b></span>` : ''}
-          ${c.window ? `<span>${ic('clock', 11)} ${escapeHtml(c.window)}</span>` : ''}
-          <span>risk <b>${escapeHtml(c.risk)}</b></span>
-          ${c.implementer ? `<span>${escapeHtml(c.implementer)}</span>` : ''}
-        </div>
-        ${(c.plan || []).length ? `<details class="acc" style="margin:0">
-          <summary>${ic('terminal')}<span>Implementation plan</span>
-            <span class="count">${c.plan.length}</span><span class="chev">${ic('chevron-down', 13)}</span></summary>
-          <div class="acc-body"><ol style="margin:0 0 0 16px">${
-            c.plan.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol></div></details>` : ''}
-        <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="ghost" disabled title="Coming soon">${ic('zap', 11)} Implement change</button>
-          <span class="hint" style="align-self:center">implementer agent — coming soon</span>
-        </div>
-      </div>`).join('') : 'No approved changes.';
+    $('chgUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    renderChanges();
   } catch (e) {
     box.classList.remove('empty');
     box.innerHTML = `<div class="empty">Could not load changes: ${escapeHtml(e.message)}</div>`;
   }
 }
+
+function chgCard(c) {
+  const approved = chgApproved(c.status);
+  const canImpl = approved && (c.has_plan || (c.plan || []).length);
+  return `<div class="inc-card p-p3" style="cursor:default">
+    <div class="inc-top">
+      <span class="pri p-p3">${escapeHtml(c.type || 'Change')}</span>
+      <span class="inc-id">${escapeHtml(c.id)}</span>
+      <span class="inc-stat${approved ? ' done' : ''}">${escapeHtml(c.status)}</span>
+    </div>
+    <div class="inc-title">${escapeHtml(c.title)}</div>
+    <div class="inc-meta" style="margin-bottom:8px">
+      ${c.ci ? `<span>${ic('layers', 11)} <b>${escapeHtml(c.ci)}</b></span>` : ''}
+      ${c.window ? `<span>${ic('clock', 11)} ${escapeHtml(c.window)}</span>` : ''}
+      <span>risk <b>${escapeHtml(c.risk)}</b></span>
+      ${c.downtime ? '<span class="inc-cat" style="border-color:var(--warn);color:var(--warn)">downtime</span>' : ''}
+      ${c.workgroup || c.implementer ? `<span>${escapeHtml(c.workgroup || c.implementer)}</span>` : ''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      ${canImpl
+        ? `<button class="primary" style="margin:0;width:auto;padding:6px 14px" onclick="openImplementer('${escapeHtml(c.id)}')">${ic('zap', 11)} Implement change</button>`
+        : `<button class="ghost" onclick="openImplementer('${escapeHtml(c.id)}')">${ic('file-text', 11)} View change</button>`}
+      ${!approved ? '<span class="hint" style="align-self:center">not yet approved</span>' : ''}
+    </div>
+  </div>`;
+}
+
+function renderChanges() {
+  const box = $('chgList');
+  box.classList.remove('empty');
+  if (!changesCache.length) { box.innerHTML = '<div class="empty">No changes.</div>'; return; }
+  const groups = new Map();
+  changesCache.forEach(c => {
+    const k = c.category || c.type || 'Uncategorised';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  });
+  const keys = [...groups.keys()].sort((a, b) => groups.get(b).length - groups.get(a).length || a.localeCompare(b));
+  box.innerHTML = keys.map(k => {
+    const list = groups.get(k);
+    return `<div class="inc-sec">
+      <div class="inc-sech"><span class="inc-secl">${escapeHtml(k)}</span>
+        <span class="inc-secn">${list.length}</span><span class="inc-secrule"></span></div>
+      <div class="incgrid">${list.map(chgCard).join('')}</div></div>`;
+  }).join('');
+}
 $('incRefresh').onclick = loadIncidents;
 $('chgRefresh').onclick = loadChanges;
+
+/* ---------- change implementer (slide-over) ---------- */
+let implState = { id: null, change: null, plan: null, server: '' };
+
+async function openImplementer(id) {
+  const d = $('chgImpl');
+  d.className = 'open'; d.style.display = 'block';
+  d.innerHTML = `<div class="incd-panel"><div class="incd-body">Loading ${escapeHtml(id)}…</div></div>`;
+  d.onclick = (e) => { if (e.target === d) closeImplementer(); };
+  let data;
+  try { data = await (await fetch(`/api/changes/${encodeURIComponent(id)}`)).json(); }
+  catch { d.querySelector('.incd-body').textContent = 'Failed to load change.'; return; }
+  implState = { id, change: data.change || {}, plan: data.plan,
+                server: implState.server || (inventory[0] && inventory[0].name) || '' };
+  renderImplementer();
+}
+function closeImplementer() {
+  $('chgImpl').className = ''; $('chgImpl').style.display = 'none'; $('chgImpl').innerHTML = '';
+}
+
+function renderImplementer() {
+  const c = implState.change, plan = implState.plan;
+  const steps = (plan && plan.steps) || [];
+  const done = (plan && plan.current_step) || 0;
+  const approved = chgApproved(c.status);
+  const serverOpts = (inventory || []).map(s =>
+    `<option value="${escapeHtml(s.name)}" ${s.name === implState.server ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
+  const sug = (plan && plan.suggestions) || [];
+
+  const stepHtml = steps.map(s => {
+    const order = s.order;
+    const isDone = order <= done;
+    const isCur = order === done + 1;
+    const res = plan.results && plan.results[String(order)];
+    const locked = !isDone && !isCur;
+    return `<div class="ci-step ${isDone ? 'done' : ''} ${isCur ? 'cur' : ''}">
+      <div class="ci-step-h">
+        <span class="ci-seq">${isDone ? '✓' : order}</span>
+        <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
+        <span>${escapeHtml(s.description || '')}</span>
+        ${s.downtime_required ? '<span class="ci-dt">downtime</span>' : ''}
+      </div>
+      <div class="ci-body">
+        ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : '<div class="ci-locked">Manual step — no command</div>'}
+        ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
+        ${res ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>` : ''}
+        ${approved ? `<div style="margin-top:7px">
+          ${locked ? `<span class="ci-locked">${ic('shield', 12)} locked — complete step ${done + 1} first</span>`
+            : `<button class="ci-run" onclick="runImplStep(${order}, this)">${isDone ? '↻ Re-run' : (s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done')}</button>`}
+          <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span>
+        </div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const d = $('chgImpl');
+  d.querySelector('.incd-panel') && (d.innerHTML = '');
+  d.innerHTML = `<div class="incd-panel">
+    <div class="incd-head">
+      <span class="pri p-p3">${escapeHtml(c.type || 'Change')}</span>
+      <span class="inc-id">${escapeHtml(implState.id)}</span>
+      <span style="font-weight:650">${escapeHtml(c.status || '')}</span>
+      <button style="margin-left:auto" onclick="closeImplementer()">✕</button>
+    </div>
+    <div class="incd-body">
+      <div style="font-size:15px;font-weight:700;line-height:1.4">${escapeHtml(c.title || implState.id)}</div>
+      ${c.description ? `<div class="hint" style="margin:6px 0">${escapeHtml(c.description)}</div>` : ''}
+      <div class="inc-meta" style="margin:8px 0">
+        ${c.risk ? `<span>risk <b>${escapeHtml(c.risk)}</b></span>` : ''}
+        ${c.priority ? `<span>${escapeHtml(c.priority)}</span>` : ''}
+        <span>downtime <b>${c.downtime ? 'required' : 'not required'}</b></span>
+        ${c.window ? `<span>${ic('clock', 11)} ${escapeHtml(c.window)}</span>` : ''}
+      </div>
+      ${!steps.length ? `<div class="empty" style="margin:14px 0">No machine-readable implementation plan is stored for this change. Raise it through the Change Assistant (which converts your plan into executable steps) to enable step-by-step implementation.</div>` : `
+        <div class="incd-field" style="margin:12px 0">
+          <label>Target server</label>
+          <select id="implServer">${serverOpts}</select>
+        </div>
+        ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
+        <div class="sec-label" style="margin:14px 0 8px">Implementation plan — ${done}/${steps.length} done</div>
+        <div class="hint" style="margin-bottom:10px">${ic('shield', 12)} The implementer runs only these commands, in order. Read-only checks are allowed off-plan; anything else is blocked.</div>
+        ${stepHtml}
+        <div class="sec-label" style="margin:16px 0 8px">Ad-hoc check (read-only only)</div>
+        <div class="ci-adhoc">
+          <input id="implAdhoc" placeholder="e.g. systemctl status nginx" autocomplete="off">
+          <button class="ci-run" onclick="runImplAdhoc(this)">Run</button>
+        </div>
+        <div class="ci-out" id="implAdhocOut"></div>
+        ${sug.length ? `<div class="sec-label" style="margin:16px 0 8px">AI suggestions</div>
+          ${sug.map(s => `<div class="ci-sug">${ic('help-circle', 12)} ${escapeHtml(s)}</div>`).join('')}` : ''}
+      `}
+    </div>
+    ${steps.length ? `<div class="incd-foot" style="display:flex;gap:8px">
+      <button class="ghost" onclick="postChangeProgress()" style="flex:1">${ic('file-text', 12)} Post progress to CR</button>
+    </div>` : ''}
+  </div>`;
+  const sel = $('implServer');
+  if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
+}
+
+async function runImplStep(order, btn) {
+  const msg = $('impl-msg-' + order);
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
+  try {
+    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/run-step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order, server: implState.server }),
+    });
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || r.statusText); btn.textContent = old; btn.disabled = false; return; }
+    implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
+    renderImplementer();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; btn.textContent = old; btn.disabled = false; }
+}
+
+async function runImplAdhoc(btn) {
+  const cmd = $('implAdhoc').value.trim();
+  const out = $('implAdhocOut');
+  if (!cmd) return;
+  btn.disabled = true;
+  out.style.display = 'block'; out.className = 'ci-out'; out.textContent = 'running…';
+  try {
+    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/run-cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd, server: implState.server }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      out.className = 'ci-out err';
+      out.textContent = '⛔ Blocked: ' + (d.detail || r.statusText);
+    } else {
+      out.className = 'ci-out ' + (d.ok ? 'ok' : 'err');
+      out.textContent = `[${d.gate ? d.gate.kind : 'ran'}] exit ${d.exit_code ?? '—'}\n` + ((d.output || '').trim() || '(no output)');
+      if (d.gate && d.gate.kind && d.gate.kind.startsWith('plan')) { implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan); renderImplementer(); }
+    }
+  } catch (e) { out.className = 'ci-out err'; out.textContent = '✕ ' + e.message; }
+  btn.disabled = false;
+}
+
+async function postChangeProgress() {
+  const plan = implState.plan; if (!plan) return;
+  const steps = plan.steps || [];
+  const done = plan.current_step || 0;
+  const lines = [`[AI Change Implementer] Progress on ${implState.server || 'target'}: ${done}/${steps.length} steps complete.`];
+  steps.forEach(s => {
+    const r = plan.results && plan.results[String(s.order)];
+    lines.push(`${s.order <= done ? '✓' : '•'} ${s.description || s.command || ''}${r ? ` (exit ${r.exit_code ?? '—'})` : ''}`);
+  });
+  if (!confirm(`Post this progress summary to change ${implState.id}?`)) return;
+  try {
+    const r = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}/log`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: lines.join('\n') }),
+    })).json();
+    alert(r.ok ? `✓ Posted to ${implState.id}.` : '✕ ' + (r.error || 'failed'));
+  } catch (e) { alert('✕ ' + e.message); }
+}
 
 /* ---------- settings: inventory manager ---------- */
 let adminServers = [];

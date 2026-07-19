@@ -61,6 +61,8 @@ DEFAULTS = {
     "incident_detail_service": "IM_GetIncidentDetailsAndChangeHistory",
     "update_service": "IM_LogOrUpdateIncident",
     "changes_service": "CM_FetchChanges",
+    "change_detail_service": "CM_GetCR_Details",
+    "change_update_service": "CM_LogOrUpdateCR",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -93,6 +95,8 @@ _ENV_MAP = {
     "incident_detail_service": "SUMMITAI_DETAIL_SERVICE",
     "update_service": "SUMMITAI_UPDATE_SERVICE",
     "changes_service": "SUMMITAI_CHANGES_SERVICE",
+    "change_detail_service": "SUMMITAI_CHANGE_DETAIL_SERVICE",
+    "change_update_service": "SUMMITAI_CHANGE_UPDATE_SERVICE",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -197,18 +201,29 @@ def _norm_incident(raw: dict) -> dict:
 
 def _norm_change(raw: dict) -> dict:
     return {
-        "id": str(_first(raw, "ChangeNo", "Change_No", "ChangeID", "id", "number",
-                         "Number", default="")),
-        "title": _first(raw, "Symptom", "Subject", "Title", "title", default="(no subject)"),
+        "id": str(_first(raw, "ChangeNo", "Change_No", "ChangeID", "Change_Request_Id",
+                         "ChangeRequestID", "CR_ID", "id", "number", "Number", default="")),
+        "title": _first(raw, "Symptom", "Subject", "Title", "Information", "title",
+                        default="(no subject)"),
         "status": _first(raw, "Status", "status", default="Approved"),
         "risk": _first(raw, "Risk", "RiskLevel", "risk", default="Medium"),
-        "type": _first(raw, "ChangeType", "Change_Type", "Type", default="Normal"),
+        "type": _first(raw, "ChangeType", "ChangeTypeName", "Change_Type", "Type",
+                       default="Normal"),
+        "category": _first(raw, "Category", "Category_Name", "Change_Category",
+                           "ChangeCategoryName", default=""),
+        "priority": _first(raw, "Priority_Name", "Priority", default=""),
+        "downtime": bool(raw.get("Downtime_Required", False)),
+        "description": _first(raw, "Description", "description", default=""),
         "window": _first(raw, "ScheduledWindow", "Window", "PlannedStart",
-                         "Planned_Start_Time", default=""),
+                         "Planned_Start_Time", "Actual_Start_Time", default=""),
+        "window_end": _first(raw, "Planned_End_Time", "Actual_End_Time", default=""),
         "ci": _first(raw, "CI_Value", "CI", "CIName", "AffectedCI", "Server", default=""),
         "implementer": _first(raw, "Implementer", "AssignedTo", "Assigned_Analyst",
-                              "Owner", default=""),
+                              "Assigned_Workgroup", "Owner", default=""),
+        "workgroup": _first(raw, "Owner_Workgroup", "Assigned_Workgroup", "Workgroup",
+                            default=""),
         "approver": _first(raw, "Approver", "ApprovedBy", default=""),
+        "backout": _first(raw, "Back_Out_Plan", "BackoutPlan", default=""),
         "plan": raw.get("plan") or raw.get("ImplementationPlan") or [],
     }
 
@@ -493,7 +508,8 @@ def _find_ticket_no(data, depth: int = 0) -> str:
     if depth > 5:
         return ""
     if isinstance(data, dict):
-        for k in ("TicketNo", "Ticket_No", "TicketNumber", "IncidentID", "TicketID"):
+        for k in ("TicketNo", "Ticket_No", "TicketNumber", "IncidentID", "TicketID",
+                  "Change_Request_Id", "ChangeRequestID", "ChangeNo", "CR_ID", "ChangeID"):
             if data.get(k):
                 return str(data[k])
         for v in data.values():
@@ -619,6 +635,135 @@ def list_changes() -> list[dict]:
     if not configured(cfg):
         return _demo_changes()
     return [_norm_change(r) for r in _fetch_change_rows(cfg)]
+
+
+def get_change(change_id: str) -> dict | None:
+    """One change request via CM_GetCR_Details {ChangeRequestID: int}."""
+    cfg = load_config()
+    if not configured(cfg):
+        return next((c for c in _demo_changes() if str(c["id"]) == str(change_id)), None)
+    try:
+        rows = _wcf_call(cfg.get("change_detail_service") or "CM_GetCR_Details",
+                         {"ChangeRequestID": _ticket_no(change_id)}, cfg)
+    except RuntimeError:
+        rows = []
+    for r in rows:
+        n = _norm_change(r)
+        if n["id"] in (str(change_id), ""):
+            if not n["id"]:
+                n["id"] = str(change_id)
+            return n
+    return next((c for c in list_changes() if str(c["id"]) == str(change_id)), None)
+
+
+# The vendor's CMContainerJson carries ~70 keys; these are the defaults from
+# the working sample — create_change overlays the operator's values on top.
+_CM_CONTAINER_DEFAULTS = {
+    "Status": "Initial Authorization",
+    "Support_Function": "IT",
+    "ChangeTypeName": "Normal",
+    "Category": "Minor",
+    "Classification": "Normal",
+    "Risk": "Medium",
+    "Impact": "Medium",
+    "Priority_Name": "P3",
+    "Criticality_Name": "Medium",
+    "Downtime_Required": False,
+    "CustomerName": "All",
+    "Customer": -1,
+    "Information": "",
+    "Description": "",
+    "CabApprovalType": "After CAB Approval",
+    "CustomerApprovalRequired": False,
+    "CustomerTestRequired": False,
+    "Communication_Plan_Required": False,
+    "Communication_Plan_Details": "",
+    "Back_Out_Plan": "",
+    "BackoutPlanTested": False,
+    "Is_ChangeSucessful": "No",
+    "Information_Log": "",
+}
+
+
+def create_change(f: dict) -> dict:
+    """Raise a change request via CM_LogOrUpdateCR. CMContainerJson is a
+    JSON-ENCODED STRING inside cmParamsJSON, per the vendor sample."""
+    cfg = load_config()
+    if not configured(cfg):
+        return {"ok": False, "error": "SummitAI is not configured"}
+    title = str(f.get("title") or "").strip()
+    requestor = str(f.get("requestor") or cfg.get("caller_email") or "").strip()
+    if not title:
+        return {"ok": False, "error": "A change title/summary is required"}
+    if "@" not in requestor:
+        return {"ok": False, "error": "A valid requestor email is required"}
+    container = dict(_CM_CONTAINER_DEFAULTS)
+    container.update({
+        "Information": title,
+        "Description": str(f.get("description") or ""),
+        "ChangeTypeName": str(f.get("type") or "Normal"),
+        "Category": str(f.get("category") or "Minor"),
+        "Risk": str(f.get("risk") or "Medium"),
+        "Impact": str(f.get("impact") or "Medium"),
+        "Priority_Name": str(f.get("priority") or "P3"),
+        "Downtime_Required": bool(f.get("downtime")),
+        "Back_Out_Plan": str(f.get("backout") or ""),
+        "Requestor_Name": requestor,
+        "Requested_By_Name": requestor,
+    })
+    if f.get("workgroup"):
+        container["Owner_Workgroup"] = str(f["workgroup"])
+        container["Assigned_Workgroup"] = str(f["workgroup"])
+    if f.get("start"):
+        container["Actual_Start_Time"] = str(f["start"])
+    if f.get("end"):
+        container["Actual_End_Time"] = str(f["end"])
+    params = {
+        "cmParamsJSON": {
+            "CMContainerJson": json.dumps(container),
+            "CR_CI_Details": "[]",
+            "CR_ResourceRequirement": "[]",
+            "CR_FinancialRequirement": "[]",
+            "CR_TechnicalRequirement": "[]",
+            "CR_ChecklistContainer": "[]",
+            "CR_CustomerApproverTesters": "[]",
+            "MVCustomFields": "[]",
+            "CR_UserSelectedApproval": "[]",
+        },
+        "RequestType": "RemoteCall",
+    }
+    try:
+        data = _wcf_raw(cfg.get("change_update_service") or "CM_LogOrUpdateCR",
+                        params, cfg)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)[:400]}
+    reply = data if isinstance(data, str) else json.dumps(data, default=str)
+    return {"ok": True, "change_id": _find_ticket_no(data), "response": reply[:400]}
+
+
+def update_change_log(change_id: str, text: str) -> dict:
+    """Append to a CR's information log via CM_LogOrUpdateCR."""
+    cfg = load_config()
+    if not configured(cfg):
+        return {"ok": False, "error": "SummitAI is not configured"}
+    if not str(text).strip():
+        return {"ok": False, "error": "Log text is empty"}
+    container = {
+        "Change_Request_Id": _ticket_no(change_id),
+        "Support_Function": "IT",
+        "Information_Log": str(text),
+    }
+    params = {
+        "cmParamsJSON": {"CMContainerJson": json.dumps(container)},
+        "RequestType": "RemoteCall",
+    }
+    try:
+        data = _wcf_raw(cfg.get("change_update_service") or "CM_LogOrUpdateCR",
+                        params, cfg)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)[:400]}
+    reply = data if isinstance(data, str) else json.dumps(data, default=str)
+    return {"ok": True, "change_id": str(change_id), "response": reply[:400]}
 
 
 def status() -> dict:

@@ -7,13 +7,14 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import cmdreview, db, healthprobe, itsm, orchestrator
+from . import changeplan, cmdreview, db, healthprobe, itsm, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -23,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.36.1"
+APP_VERSION = "2.37.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -209,6 +210,8 @@ class ItsmConfigRequest(BaseModel):
     incident_detail_service: str = Field("IM_GetIncidentDetailsAndChangeHistory", max_length=100)
     update_service: str = Field("IM_LogOrUpdateIncident", max_length=100)
     changes_service: str = Field("CM_FetchChanges", max_length=100)
+    change_detail_service: str = Field("CM_GetCR_Details", max_length=100)
+    change_update_service: str = Field("CM_LogOrUpdateCR", max_length=100)
     caller_email: str = Field("", max_length=200)
     instance: str = Field("IT", max_length=50)
     incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",
@@ -331,11 +334,163 @@ async def update_incident_ticket(incident_id: str, req: TicketUpdateRequest, req
 
 @app.get("/api/changes")
 async def changes():
-    """Approved changes from SummitAI (dummy view for now)."""
+    """Changes from SummitAI (demo data until a list ServiceName is wired)."""
     try:
-        return {"changes": await asyncio.to_thread(itsm.list_changes), **itsm.status()}
+        rows = await asyncio.to_thread(itsm.list_changes)
+        for c in rows:   # flag which changes carry a local machine-readable plan
+            c["has_plan"] = changeplan.load_plan(c["id"]) is not None
+        return {"changes": rows, **itsm.status()}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+
+
+@app.get("/api/changes/{change_id}")
+async def change_detail(change_id: str):
+    """CR detail from Summit merged with the locally stored structured plan."""
+    try:
+        change = await asyncio.to_thread(itsm.get_change, change_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+    plan = changeplan.load_plan(change_id)
+    if change is None and plan is None:
+        raise HTTPException(status_code=404, detail="Change not found")
+    return {"change": change, "plan": plan}
+
+
+class RefinePlanRequest(BaseModel):
+    plan_text: str = Field(..., min_length=20, max_length=20000)
+
+
+@app.post("/api/changes/refine-plan")
+async def refine_change_plan(req: RefinePlanRequest, request: Request):
+    """AI pass over a pasted implementation-plan document: structured steps,
+    per-step downtime verification, improvement suggestions, back-out plan."""
+    result = await changeplan.refine_plan(req.plan_text)
+    await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
+                            {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
+                             "refined_by": result.get("refined_by")})
+    return result
+
+
+class ChangeCreateRequest(BaseModel):
+    title: str = Field(..., min_length=5, max_length=300)
+    description: str = Field("", max_length=8000)
+    type: str = Field("Normal", max_length=40)
+    category: str = Field("Minor", max_length=60)
+    risk: str = Field("Medium", max_length=20)
+    impact: str = Field("Medium", max_length=20)
+    priority: str = Field("P3", max_length=10)
+    downtime: bool = False
+    workgroup: str = Field("", max_length=100)
+    requestor: str = Field("", max_length=200)
+    start: str = Field("", max_length=40)
+    end: str = Field("", max_length=40)
+    backout: str = Field("", max_length=4000)
+    steps: list[dict] = Field(default_factory=list)   # the refined structured plan
+
+
+@app.post("/api/changes/create")
+async def create_change_request(req: ChangeCreateRequest, request: Request):
+    """Raise a CR in Summit and store the structured plan locally so the
+    implementer can enforce it once the change is approved."""
+    result = await asyncio.to_thread(itsm.create_change, req.model_dump())
+    if result.get("ok"):
+        cid = result.get("change_id") or f"local-{int(time.time())}"
+        result["change_id"] = cid
+        if req.steps:
+            changeplan.save_plan(cid, {
+                "title": req.title, "steps": req.steps,
+                "downtime": req.downtime, "backout": req.backout,
+            })
+    await asyncio.to_thread(db.audit, _actor(request), "change_created",
+                            {"ok": result.get("ok"),
+                             "change_id": result.get("change_id") or "(unknown)",
+                             "steps": len(req.steps), "downtime": req.downtime})
+    return result
+
+
+class ChangeRunStepRequest(BaseModel):
+    order: int = Field(..., ge=1, le=500)
+    server: str = Field(..., min_length=1, max_length=100)
+
+
+@app.post("/api/changes/{change_id}/run-step")
+async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Request):
+    """Execute one step of the approved plan — sequence enforced server-side."""
+    plan = changeplan.load_plan(change_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No stored plan for this change")
+    step = next((s for s in plan.get("steps", []) if int(s.get("order", 0)) == req.order), None)
+    if step is None:
+        raise HTTPException(status_code=404, detail="No such step in the plan")
+    done = int(plan.get("current_step") or 0)
+    if not step.get("command"):
+        # manual step — confirming it done is the only action
+        updated = changeplan.mark_manual_done(change_id, req.order)
+        await asyncio.to_thread(db.audit, _actor(request), "change_step_manual_done",
+                                {"change_id": change_id, "order": req.order})
+        return {"ok": True, "manual": True,
+                "current_step": (updated or plan).get("current_step")}
+    if req.order > done + 1:
+        await asyncio.to_thread(db.audit, _actor(request), "change_step_blocked",
+                                {"change_id": change_id, "order": req.order,
+                                 "reason": "out of sequence"})
+        raise HTTPException(status_code=403,
+                            detail=f"Step {done + 1} must complete before step {req.order}"
+                                   " — the approved sequence is enforced")
+    server = load_inventory().get(req.server)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
+    result = await _ssh_exec(server, step["command"])
+    updated = changeplan.record_result(change_id, req.order, result)
+    await asyncio.to_thread(db.audit, _actor(request), "change_step_executed",
+                            {"change_id": change_id, "order": req.order,
+                             "server": req.server, "ok": result["ok"],
+                             "exit_code": result["exit_code"]})
+    return {**result, "current_step": (updated or plan).get("current_step")}
+
+
+class ChangeRunCmdRequest(BaseModel):
+    command: str = Field(..., min_length=1, max_length=2000)
+    server: str = Field(..., min_length=1, max_length=100)
+
+
+@app.post("/api/changes/{change_id}/run-cmd")
+async def change_run_cmd(change_id: str, req: ChangeRunCmdRequest, request: Request):
+    """Ad-hoc command during implementation. The gate allows ONLY commands
+    from the approved plan (in sequence) or read-only diagnostics."""
+    plan = changeplan.load_plan(change_id)
+    gate = changeplan.check_command(plan, req.command)
+    if not gate["allowed"]:
+        await asyncio.to_thread(db.audit, _actor(request), "change_cmd_blocked",
+                                {"change_id": change_id, "command": req.command[:200],
+                                 "kind": gate["kind"], "reason": gate["reason"]})
+        raise HTTPException(status_code=403, detail=gate["reason"])
+    server = load_inventory().get(req.server)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
+    result = await _ssh_exec(server, req.command)
+    if gate.get("step_order"):
+        changeplan.record_result(change_id, gate["step_order"], result)
+    await asyncio.to_thread(db.audit, _actor(request), "change_cmd_executed",
+                            {"change_id": change_id, "command": req.command[:200],
+                             "kind": gate["kind"], "server": req.server,
+                             "ok": result["ok"]})
+    return {**result, "gate": gate}
+
+
+class ChangeLogRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+
+
+@app.post("/api/changes/{change_id}/log")
+async def change_post_log(change_id: str, req: ChangeLogRequest, request: Request):
+    """Post an implementation-progress entry to the CR's information log."""
+    result = await asyncio.to_thread(itsm.update_change_log, change_id, req.message)
+    await asyncio.to_thread(db.audit, _actor(request), "change_log_posted",
+                            {"change_id": change_id, "ok": result.get("ok"),
+                             "chars": len(req.message)})
+    return result
 
 
 @app.get("/api/fleet")
