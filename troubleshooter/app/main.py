@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.44.1"
+APP_VERSION = "2.45.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -517,6 +517,40 @@ async def create_change_request(req: ChangeCreateRequest, request: Request):
                              "steps": len(req.steps), "downtime": req.downtime,
                              "success_rate": (req.assessment or {}).get("success_rate", {}).get("percent")})
     return result
+
+
+@app.post("/api/changes/{change_id}/generate-plan")
+async def generate_change_plan(change_id: str, request: Request):
+    """Generate an executable implementation plan for a change that has none,
+    from its Summit title/description, and store it for the implementer."""
+    try:
+        change = await asyncio.to_thread(itsm.get_change, change_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+    if change is None:
+        raise HTTPException(status_code=404, detail="Change not found")
+    context = (f"Change {change_id}: {change.get('title', '')}\n"
+               f"{change.get('description', '')}\n"
+               f"Affected CI/server: {change.get('ci', '')}\n"
+               f"Risk: {change.get('risk', '')}  Category: {change.get('category', '')}")
+    plan = await changeplan.generate_plan(context)
+    existing = changeplan.load_plan(change_id) or {}
+    stored = changeplan.save_plan(change_id, {
+        "title": change.get("title") or plan.get("title") or str(change_id),
+        "steps": plan.get("steps", []),
+        "backout": plan.get("backout_plan", ""),
+        "corrections": plan.get("corrections", []),
+        "suggestions": plan.get("suggestions", []),
+        "risk_assessment": plan.get("risk_assessment", {}),
+        "success_rate": plan.get("success_rate", {}),
+        # preserve any execution progress if a plan already existed
+        "current_step": existing.get("current_step", 0),
+        "results": existing.get("results", {}),
+    })
+    await asyncio.to_thread(db.audit, _actor(request), "change_plan_generated",
+                            {"change_id": change_id, "steps": len(plan.get("steps", [])),
+                             "refined_by": plan.get("refined_by")})
+    return {"change": change, "plan": stored}
 
 
 class ChangeRunStepRequest(BaseModel):

@@ -128,10 +128,12 @@ Do ALL of this:
    describes the action in words (e.g. "patch the kernel" → the concrete
    yum/dnf command; "take a backup of the config" → the concrete tar/cp
    command with dated filenames). The implementer assistant executes these
-   commands verbatim, so a step without a command cannot be automated. Leave
-   "command" empty ONLY for inherently manual actions (approvals, physical
-   work, coordination). Use concrete names from the plan; if a name is
-   uncertain, still write the most likely command and flag it in suggestions.
+   commands verbatim ON the target host (do NOT wrap them in ssh to another
+   host; write each as typed at a shell on the target itself, sudo is fine), so
+   a step without a command cannot be automated. Leave "command" empty ONLY for
+   inherently manual actions (approvals, physical work, coordination). Use
+   concrete names from the plan; if a name is uncertain, still write the most
+   likely command and flag it in suggestions.
 2. VALIDATE AND CORRECT the commands and steps: fix wrong/unsafe syntax, add
    missing quoting, split compound risky commands, and put steps in a safe order
    (backups BEFORE state changes, verification AFTER). Record every change you
@@ -198,6 +200,50 @@ failed change. Reply with ONLY this JSON (no fences):
  "outline_steps": ["short step the operator should include", "..."],
  "backout_hint": "a starting back-out approach for this kind of change"}
 """
+
+
+_GENERATE_PROMPT = """You are a senior Linux change implementer at an enterprise airport IT
+operation (24x7, safety-critical). No implementation-plan document exists yet —
+GENERATE a complete, safe, executable plan for this change from its description:
+
+%s
+
+Commands run DIRECTLY on the target host via an existing session — do NOT wrap
+them in ssh to another host (no `ssh user@host '...'`); write the command as it
+would be typed at a shell on the target itself (sudo is fine).
+
+Produce the full plan yourself: the exact shell commands to carry it out on the
+target Linux host, in a safe order (backups/snapshots BEFORE any state change,
+the change itself, then verification), plus a rollback/back-out path. Use
+concrete, runnable commands (real package/service names inferred from the
+description; dated backup filenames). Assess downtime per step honestly (kernel
+patches and reboots ALWAYS need downtime unless live patching), score the risk
+and success rate, and note anything the operator must confirm before running.
+
+Reply with ONLY this JSON (identical schema to a refined plan; no fences):
+{"title": "...", "summary": "...",
+ "steps": [{"order": 1, "phase": "pre|implement|verify|rollback",
+            "description": "...", "command": "exact shell command or '' if manual",
+            "downtime_required": false, "downtime_note": "...", "risk": "low|medium|high"}],
+ "corrections": [], "suggestions": ["..."],
+ "downtime_overall": {"required": false, "note": "..."},
+ "backout_plan": "...", "backout_validated": true,
+ "inferred_fields": {"category": "", "type": "", "risk": "", "impact": "", "priority": "", "workgroup": ""},
+ "risk_assessment": {"level": "Low|Medium|High", "rationale": "..."},
+ "success_rate": {"percent": 80, "factors": ["..."]},
+ "missing_fields": ["..."]}
+"""
+
+
+async def generate_plan(context: str) -> dict:
+    """Build an executable plan from a change goal/description (no document)."""
+    data = await _one_shot_json(_GENERATE_PROMPT % context[:6000], timeout_s=120)
+    if not data or not (data.get("steps")):
+        fb = _fallback_steps(context)
+        fb["summary"] = ("Could not auto-generate a plan — add the implementation "
+                         "steps and commands manually.")
+        return fb
+    return _shape_refined(data)
 
 
 def _fallback_steps(plan_text: str) -> dict:
@@ -288,6 +334,13 @@ async def refine_plan(plan_text: str) -> dict:
         data = json.loads(m.group())
     except json.JSONDecodeError:
         return _fallback_steps(plan_text)
+    shaped = _shape_refined(data)
+    return shaped if shaped else _fallback_steps(plan_text)
+
+
+def _shape_refined(data: dict) -> dict | None:
+    """Normalise an AI plan dict into the canonical shape (with the downtime
+    policy floor applied). Returns None if it has no usable steps."""
     steps = []
     for i, s in enumerate(data.get("steps") or []):
         if not isinstance(s, dict):
@@ -302,7 +355,7 @@ async def refine_plan(plan_text: str) -> dict:
             "risk": str(s.get("risk") or "medium").lower(),
         })
     if not steps:
-        return _fallback_steps(plan_text)
+        return None
     inf = data.get("inferred_fields") or {}
     ra = data.get("risk_assessment") or {}
     sr = data.get("success_rate") or {}

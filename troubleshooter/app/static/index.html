@@ -2954,6 +2954,12 @@ async function cbotSubmit() {
   } catch (e) { cbot.busy = false; cbot.step = 'confirm'; cbotAdd('✕ Request failed: ' + e.message); cbotChips(['✓ Create change', 'Start over']); }
 }
 
+async function cbotGenerateFromDesc() {
+  const ctx = `Change: ${cbot.data.title}\n${cbot.data.description || ''}\n`
+    + `Risk: ${cbot.data.risk || ''}  Priority: ${cbot.data.priority || ''}`;
+  cbotAdd('Generating an executable plan from the description…');
+  await cbotRefine(ctx);
+}
 async function cbotRefine(text) {
   cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
   cbotAdd('Validating your plan — correcting steps and commands, verifying downtime, building the back-out plan, scoring risk…');
@@ -3014,8 +3020,8 @@ function cbotHandle(text) {
       break;
     case 'priority':
       cbot.data.priority = val(text); cbot.step = 'workgroup';
-      cbotAdd('Owner / assigned workgroup? (optional — must match a Summit workgroup)');
-      cbotChips(cbot.rec && cbot.rec.workgroup ? [cbot.rec.workgroup, 'Skip'] : ['Skip']);
+      cbotAdd('Owner workgroup? Summit only accepts EXACT names from its records — use the default unless you know the precise name.');
+      cbotChips([cbot.cfgWorkgroup + ' (default)']);
       break;
     case 'workgroup':
       if (!skip) cbot.data.workgroup = val(text); cbot.step = 'requestor';
@@ -3026,11 +3032,12 @@ function cbotHandle(text) {
       cbot.data.requestor = text;
       if (cbot.refined) { cbotReviewCard(); break; }   // uploaded plan already validated
       cbot.step = 'plan';
-      cbotAdd("Paste your implementation plan (any format) and I'll validate & correct it, or type skip to create without a plan.");
-      cbotChips(['📎 Upload instead', 'Skip plan']);
+      cbotAdd("Paste your implementation plan (any format) and I'll validate & correct it — or I can generate an executable plan for you from the description. Skipping means the change has no runnable steps until you generate one in the implementer.");
+      cbotChips(['🪄 Generate a plan for me', '📎 Upload instead', 'Skip plan']);
       break;
     case 'plan':
-      if (/upload/i.test(text)) { cbotPickFile(); }
+      if (/generate/i.test(text)) { cbotGenerateFromDesc(); }
+      else if (/upload/i.test(text)) { cbotPickFile(); }
       else if (skip || /skip plan/i.test(text)) { cbot.refined = null; cbotReviewCard(); }
       else if (text.length < 20) cbotAdd('That looks too short for a plan — paste the full steps, or type skip.');
       else cbotRefine(text);
@@ -3360,7 +3367,11 @@ function renderImplementer() {
         <span>downtime <b>${c.downtime ? 'required' : 'not required'}</b></span>
         ${c.window ? `<span>${ic('clock', 11)} ${escapeHtml(c.window)}</span>` : ''}
       </div>
-      ${!steps.length ? `<div class="empty" style="margin:14px 0">No machine-readable implementation plan is stored for this change. Raise it through the Change Assistant (which converts your plan into executable steps) to enable step-by-step implementation.</div>` : `
+      ${!steps.length ? `<div style="margin:14px 0">
+          <div class="empty" style="margin-bottom:12px">No executable implementation plan is stored for this change yet.</div>
+          <button class="ci-run" onclick="genImplPlan(this)">${ic('zap', 12)} Generate plan with AI</button>
+          <div class="hint" style="margin-top:8px">Builds executable steps and commands from the change's title and description, verifies downtime, and adds a back-out plan — review each command before running. You can also raise the change through the Change Assistant with your own plan document.</div>
+        </div>` : `
         <div class="incd-field" style="margin:12px 0">
           <label>Target server</label>
           <select id="implServer">${serverOpts}</select>
@@ -3388,6 +3399,16 @@ function renderImplementer() {
   if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
 }
 
+async function genImplPlan(btn) {
+  btn.disabled = true; btn.textContent = 'generating plan — this can take a moment…';
+  try {
+    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/generate-plan`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { btn.disabled = false; btn.textContent = '⚡ Generate plan with AI'; alert('✕ ' + (d.detail || r.statusText)); return; }
+    implState.plan = d.plan;
+    renderImplementer();
+  } catch (e) { btn.disabled = false; btn.textContent = '⚡ Generate plan with AI'; alert('✕ ' + e.message); }
+}
 async function runImplStep(order, btn) {
   const msg = $('impl-msg-' + order);
   btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
