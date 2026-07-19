@@ -3530,6 +3530,16 @@ function renderImplementer() {
   const outHtml = (res) => res
     ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>${verdictHtml(res)}`
     : '';
+  // per-step read-only ad-hoc check (runs in this step's context)
+  const adhocBlock = (order) => `<details class="ci-adhoc-step" style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">${ic('terminal', 11)} Run a read-only check here</summary>
+      <div class="ci-adhoc" style="margin-top:6px">
+        <input id="stepadhoc-${order}" placeholder="e.g. systemctl status nginx · df -h · journalctl -u app -n 50" autocomplete="off"
+          onkeydown="if(event.key==='Enter')implStepAdhoc(${order}, this.nextElementSibling)">
+        <button class="ci-run" onclick="implStepAdhoc(${order}, this)">Run</button>
+      </div>
+      <div class="ci-out" id="stepadhoc-out-${order}"></div>
+    </details>`;
 
   const stepHtml = steps.map(s => {
     const order = s.order;
@@ -3554,6 +3564,7 @@ function renderImplementer() {
           ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : ''}
           ${outHtml(res)}
           ${approved ? `<button class="ci-run" onclick="runImplStep(${order}, this)">↻ Re-run</button> <span class="hint" id="impl-msg-${order}"></span>` : ''}
+          ${approved ? adhocBlock(order) : ''}
         </div>
       </div>`;
     }
@@ -3592,6 +3603,7 @@ function renderImplementer() {
           ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
           ${outHtml(res)}
           ${actions}
+          ${approved ? adhocBlock(order) : ''}
         </div>
       </div>`;
     }
@@ -3799,6 +3811,29 @@ async function advanceImplStep(order, btn) {
   } catch (e) { btn.disabled = false; btn.textContent = old; const m = $('impl-msg-' + order); if (m) m.textContent = '✕ ' + e.message; }
 }
 
+async function implStepAdhoc(order, btn) {
+  const inp = $('stepadhoc-' + order);
+  const out = $('stepadhoc-out-' + order);
+  const cmd = (inp && inp.value.trim()) || '';
+  if (!cmd || !out) return;
+  btn.disabled = true;
+  out.style.display = 'block'; out.className = 'ci-out'; out.textContent = 'running (read-only)…';
+  try {
+    const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/run-cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd, server: implState.server }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      out.className = 'ci-out err';
+      out.textContent = '⛔ Blocked: ' + (d.detail || r.statusText);
+    } else {
+      out.className = 'ci-out ' + (d.ok ? 'ok' : 'err');
+      out.textContent = `[${d.gate ? d.gate.kind : 'ran'}] exit ${d.exit_code ?? '—'}\n` + ((d.output || '').trim() || '(no output)');
+    }
+  } catch (e) { out.className = 'ci-out err'; out.textContent = '✕ ' + e.message; }
+  btn.disabled = false;
+}
 async function runImplAdhoc(btn) {
   const cmd = $('implAdhoc').value.trim();
   const out = $('implAdhocOut');
