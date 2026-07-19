@@ -2852,11 +2852,11 @@ function cbotApplyRefined(r) {
   if (miss.length) cbotAdd('Still needed from you: ' + miss.join(', ') + '.');
   cbot.step = 'workgroup';
   const sugWg = (r.inferred_fields || {}).workgroup;
-  cbotAdd('Owner workgroup? It must exist in Summit exactly — the default is known-good.'
-    + (sugWg ? ` (The plan suggests "${sugWg}" — pick it only if that workgroup really exists in Summit.)` : ''));
-  const wgChips = [cbot.cfgWorkgroup + ' (default)'];
-  if (sugWg && sugWg !== cbot.cfgWorkgroup) wgChips.push(sugWg + ' (suggested)');
-  cbotChips(wgChips);
+  cbotAdd('Owner workgroup? Summit only accepts EXACT workgroup names from its own records — '
+    + 'use the default unless you know the precise name.'
+    + (sugWg && sugWg !== cbot.cfgWorkgroup
+       ? ` (The plan reads like "${sugWg}" territory — but only type that if a workgroup with exactly that name exists in Summit.)` : ''));
+  cbotChips([cbot.cfgWorkgroup + ' (default)']);
 }
 
 /* --- manual recommendations --- */
