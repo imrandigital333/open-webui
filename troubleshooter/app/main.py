@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.39.0"
+APP_VERSION = "2.40.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -387,6 +387,34 @@ async def change_detail(change_id: str):
     if change is None and plan is None:
         raise HTTPException(status_code=404, detail="Change not found")
     return {"change": change, "plan": plan}
+
+
+class ChangeBatchRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/changes/batch")
+async def changes_batch(req: ChangeBatchRequest):
+    """Fetch several CRs by number via the detail service — powers the
+    'add CRs to the board' change list when no list ServiceName is wired."""
+    out, errors = [], {}
+    seen = set()
+    for cid in req.ids[:50]:
+        cid = str(cid).strip()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        try:
+            c = await asyncio.to_thread(itsm.get_change, cid)
+        except Exception as exc:  # noqa: BLE001
+            errors[cid] = str(exc)[:150]
+            continue
+        if c:
+            c["has_plan"] = changeplan.load_plan(c["id"]) is not None
+            out.append(c)
+        else:
+            errors[cid] = "not found"
+    return {"changes": out, "errors": errors}
 
 
 class RefinePlanRequest(BaseModel):

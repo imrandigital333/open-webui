@@ -734,15 +734,17 @@
     <h2 style="margin:0">Changes</h2>
     <span class="tag" id="chgSource"></span>
     <span class="hint" style="margin:0" id="chgUpdated"></span>
-    <input id="chgOpenId" placeholder="Open CR by number…" autocomplete="off"
-      style="margin:0 0 0 auto;width:auto;max-width:190px;padding:7px 12px;font-size:12.5px">
-    <button class="ghost" id="chgOpenBtn">Open</button>
+    <input id="chgOpenId" placeholder="CR number(s), e.g. 1842, 1850" autocomplete="off"
+      style="margin:0 0 0 auto;width:auto;max-width:210px;padding:7px 12px;font-size:12.5px">
+    <button class="ghost" id="chgOpenBtn" title="Open this CR in the implementer">Open</button>
+    <button class="ghost" id="chgAddBtn" title="Add these CRs to the board (kept across reloads)">＋ Add to board</button>
     <button class="primary" id="cbotOpenBtn" style="width:auto;padding:7px 14px">＋ Raise change</button>
     <button class="ghost" id="chgRefresh">↻ Refresh</button>
   </div>
   <div class="hint" style="margin-bottom:12px">Change requests grouped by category. Approved changes
     with an implementation plan can be executed step by step by the AI change implementer, which runs
-    only the approved commands, in order. No change list yet? Open any CR directly by its number.</div>
+    only the approved commands, in order. No change-list ServiceName yet? Add CRs to the board by
+    number — they're fetched via the detail service and kept across reloads.</div>
   <div id="chgList"><div class="empty">Loading changes…</div></div>
 
   <!-- change-raising assistant -->
@@ -2989,19 +2991,52 @@ async function startFromIncident(id) {
 /* ---------- changes (SummitAI) ---------- */
 let changesCache = [];
 const chgApproved = (s) => /approv|scheduled|ready|authoriz|implement/i.test(String(s || ''));
+const chgPinnedIds = () => { try { return JSON.parse(localStorage.getItem('chgPinned') || '[]'); } catch { return []; } };
+const chgSavePinned = (ids) => localStorage.setItem('chgPinned', JSON.stringify([...new Set(ids.map(String))]));
 
 async function loadChanges() {
   const box = $('chgList');
+  box.classList.remove('empty');
   try {
     const d = await (await fetch('/api/changes')).json();
-    changesCache = d.changes || [];
+    const live = d.changes || [];
+    live.forEach(c => { c._pinned = false; });
     $('chgSource').textContent = d.source || 'SummitAI';
-    $('chgUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+    // merge in board-pinned CRs (fetched via the detail service) not already live
+    const liveIds = new Set(live.map(c => String(c.id)));
+    const pins = chgPinnedIds().filter(id => !liveIds.has(String(id)));
+    let pinned = [];
+    if (pins.length) {
+      try {
+        const pd = await (await fetch('/api/changes/batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: pins }),
+        })).json();
+        pinned = (pd.changes || []).map(c => ({ ...c, _pinned: true }));
+      } catch { /* leave board with live rows only */ }
+    }
+    changesCache = [...live, ...pinned];
+    $('chgUpdated').textContent = 'updated ' + new Date().toLocaleTimeString()
+      + (pinned.length ? ` · ${pinned.length} added by number` : '');
     renderChanges();
   } catch (e) {
-    box.classList.remove('empty');
     box.innerHTML = `<div class="empty">Could not load changes: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function chgRemovePin(id, ev) {
+  ev.stopPropagation();
+  chgSavePinned(chgPinnedIds().filter(x => String(x) !== String(id)));
+  loadChanges();
+}
+async function chgAddToBoard() {
+  const raw = $('chgOpenId').value.trim();
+  if (!raw) return;
+  const ids = raw.split(/[\s,]+/).filter(Boolean);
+  chgSavePinned([...chgPinnedIds(), ...ids]);
+  $('chgOpenId').value = '';
+  await loadChanges();
 }
 
 function chgCard(c) {
@@ -3021,11 +3056,12 @@ function chgCard(c) {
       ${c.downtime ? '<span class="inc-cat" style="border-color:var(--warn);color:var(--warn)">downtime</span>' : ''}
       ${c.workgroup || c.implementer ? `<span>${escapeHtml(c.workgroup || c.implementer)}</span>` : ''}
     </div>
-    <div style="display:flex;gap:8px;margin-top:6px">
+    <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
       ${canImpl
         ? `<button class="primary" style="margin:0;width:auto;padding:6px 14px" onclick="openImplementer('${escapeHtml(c.id)}')">${ic('zap', 11)} Implement change</button>`
         : `<button class="ghost" onclick="openImplementer('${escapeHtml(c.id)}')">${ic('file-text', 11)} View change</button>`}
       ${!approved ? '<span class="hint" style="align-self:center">not yet approved</span>' : ''}
+      ${c._pinned ? `<button class="link" style="margin-left:auto" title="Remove from board" onclick="chgRemovePin('${escapeHtml(c.id)}', event)">remove</button>` : ''}
     </div>
   </div>`;
 }
@@ -3034,7 +3070,7 @@ function renderChanges() {
   const box = $('chgList');
   box.classList.remove('empty');
   if (!changesCache.length) {
-    box.innerHTML = `<div class="empty">No change list is wired yet — open a change by its number above, or raise one with the Change Assistant.</div>`;
+    box.innerHTML = `<div class="empty">No changes on the board yet — add one by its CR number above (＋ Add to board), or raise one with the Change Assistant. Once the change-list ServiceName is set in Settings, all changes appear here automatically.</div>`;
     return;
   }
   const groups = new Map();
@@ -3055,11 +3091,12 @@ function renderChanges() {
 $('incRefresh').onclick = loadIncidents;
 $('chgRefresh').onclick = loadChanges;
 function chgOpenById() {
-  const id = $('chgOpenId').value.trim();
+  const id = $('chgOpenId').value.trim().split(/[\s,]+/)[0];
   if (id) openImplementer(id);
 }
 $('chgOpenBtn').onclick = chgOpenById;
-$('chgOpenId').addEventListener('keydown', (e) => { if (e.key === 'Enter') chgOpenById(); });
+$('chgAddBtn').onclick = chgAddToBoard;
+$('chgOpenId').addEventListener('keydown', (e) => { if (e.key === 'Enter') chgAddToBoard(); });
 
 /* ---------- change implementer (slide-over) ---------- */
 let implState = { id: null, change: null, plan: null, server: '' };
