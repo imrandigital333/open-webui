@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.53.0"
+APP_VERSION = "2.54.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -709,14 +709,19 @@ async def change_verify_step(change_id: str, req: ChangeVerifyRequest, request: 
             "current_step": (updated or plan).get("current_step")}
 
 
+class ChangeAdvanceRequest(BaseModel):
+    order: int = Field(..., ge=1, le=500)
+    force: bool = False   # override a failed/unclean step and proceed anyway
+
+
 @app.post("/api/changes/{change_id}/advance-step")
-async def change_advance_step(change_id: str, req: ChangeVerifyRequest, request: Request):
+async def change_advance_step(change_id: str, req: ChangeAdvanceRequest, request: Request):
     """Operator confirms a step's result and moves to the next one."""
-    updated = await asyncio.to_thread(changeplan.advance_step, change_id, req.order)
+    updated = await asyncio.to_thread(changeplan.advance_step, change_id, req.order, req.force)
     if updated is None:
         raise HTTPException(status_code=404, detail="No stored plan for this change")
     await asyncio.to_thread(db.audit, _actor(request), "change_step_advanced",
-                            {"change_id": change_id, "order": req.order,
+                            {"change_id": change_id, "order": req.order, "forced": req.force,
                              "current_step": updated.get("current_step")})
     return {"current_step": updated.get("current_step")}
 

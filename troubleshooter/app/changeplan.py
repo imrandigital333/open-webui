@@ -130,9 +130,10 @@ def apply_verification(change_id: str, order: int, verification: dict) -> dict |
     return save_plan(change_id, plan)
 
 
-def advance_step(change_id: str, order: int) -> dict | None:
-    """Operator-confirmed move to the next step. Only advances past the
-    current step, and only when it ran and the AI didn't judge it failed."""
+def advance_step(change_id: str, order: int, force: bool = False) -> dict | None:
+    """Operator-confirmed move to the next step. Normally only advances when
+    the step ran and the AI didn't judge it failed; force=True lets the
+    operator override a failed/unclean step and proceed anyway (recorded)."""
     plan = load_plan(change_id)
     if plan is None:
         return None
@@ -140,7 +141,10 @@ def advance_step(change_id: str, order: int) -> dict | None:
     if order != cur + 1:
         return plan
     entry = (plan.get("results") or {}).get(str(order))
-    if entry and entry.get("ok") and entry.get("verdict") != "failed":
+    clean = entry and entry.get("ok") and entry.get("verdict") != "failed"
+    if clean or (force and entry):
+        if force and not clean:
+            entry["overridden"] = True
         plan["current_step"] = order
         return save_plan(change_id, plan)
     return plan

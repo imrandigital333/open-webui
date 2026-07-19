@@ -645,6 +645,11 @@
                gap: 6px; padding: 2px 0; }
   .ci-adhoc { display: flex; gap: 8px; margin-top: 4px; }
   .ci-adhoc input { flex: 1; margin: 0; font-family: var(--mono); font-size: 12px; }
+  .ci-cli-row { display: flex; align-items: center; gap: 8px; }
+  .ci-cli-input { flex: 1; margin: 0; padding: 0; border: 0; outline: none;
+                  background: transparent; color: #cfe3ff; font-family: var(--mono);
+                  font-size: 12.5px; }
+  .ci-cli-input::placeholder { color: #5a6b85; }
   .ci-sug { border-left: 3px solid var(--accent2); background: var(--panel2);
             border-radius: 0 8px 8px 0; padding: 8px 12px; font-size: 12.5px; margin: 4px 0; }
   .incd-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 560px;
@@ -3530,16 +3535,20 @@ function renderImplementer() {
   const outHtml = (res) => res
     ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>${verdictHtml(res)}`
     : '';
-  // per-step read-only ad-hoc check (runs in this step's context)
-  const adhocBlock = (order) => `<details class="ci-adhoc-step" style="margin-top:8px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">${ic('terminal', 11)} Run a read-only check here</summary>
-      <div class="ci-adhoc" style="margin-top:6px">
-        <input id="stepadhoc-${order}" placeholder="e.g. systemctl status nginx · df -h · journalctl -u app -n 50" autocomplete="off"
-          onkeydown="if(event.key==='Enter')implStepAdhoc(${order}, this.nextElementSibling)">
-        <button class="ci-run" onclick="implStepAdhoc(${order}, this)">Run</button>
+  // per-step read-only ad-hoc check: a button that opens a CLI input
+  const adhocBlock = (order) => `<div class="ci-adhoc-wrap" style="margin-top:8px">
+      <button class="ci-run" style="background:var(--panel2);color:var(--accent2)" onclick="toggleStepAdhoc(${order}, this)">${ic('terminal', 11)} Read-only check</button>
+      <div id="stepadhoc-wrap-${order}" style="display:none;margin-top:7px">
+        <div class="run-cli"><div class="run-cli-body ci-cli-row">
+          <span class="run-prompt">$</span>
+          <input id="stepadhoc-${order}" class="ci-cli-input" spellcheck="false" autocomplete="off"
+            placeholder="read-only, e.g. systemctl status nginx · df -h · journalctl -u app -n 50"
+            onkeydown="if(event.key==='Enter')implStepAdhoc(${order}, this)">
+          <button class="ci-run" onclick="implStepAdhoc(${order}, this)">Run</button>
+        </div></div>
+        <div class="ci-out" id="stepadhoc-out-${order}"></div>
       </div>
-      <div class="ci-out" id="stepadhoc-out-${order}"></div>
-    </details>`;
+    </div>`;
 
   const stepHtml = steps.map(s => {
     const order = s.order;
@@ -3583,12 +3592,13 @@ function renderImplementer() {
         // executed — stay here so the operator can read the output, then advance
         actions = `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="impl-run-${order}">
           ${failed
-            ? `<span style="color:var(--err);font-size:12.5px;font-weight:600">Resolve this before continuing.</span>
-               <button class="ci-run" onclick="runImplStep(${order}, this)">↻ Re-run</button>`
+            ? `<span style="color:var(--err);font-size:12.5px;font-weight:600">Did not verify cleanly.</span>
+               <button class="ci-run" onclick="runImplStep(${order}, this)">↻ Re-run</button>
+               <button class="ci-run" style="background:transparent;border:1px solid var(--err);color:var(--err)" onclick="advanceImplStep(${order}, this, true)">${isLast ? 'Finish anyway →' : 'Proceed anyway →'}</button>`
             : `<button class="ci-run ci-run-lg" onclick="advanceImplStep(${order}, this)">${isLast ? '✓ Finish — mark change complete' : 'Next step →'}</button>
                <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="runImplStep(${order}, this)">↻ Re-run</button>`}
           <span class="hint" id="impl-msg-${order}"></span></div>
-          <div class="hint" style="margin-top:6px">${failed ? '' : 'Review the output above, then continue when you\'re ready.'}</div>`;
+          <div class="hint" style="margin-top:6px">${failed ? 'Fix and re-run, or proceed anyway (recorded as an override).' : 'Review the output above, then continue when you\'re ready.'}</div>`;
       }
       return `<div class="ci-step cur" id="ci-step-${order}">
         <div class="ci-cur-banner">▶ CURRENT STEP · ${order} of ${total}${executed ? (failed ? ' · needs attention' : ' · executed — review &amp; continue') : ''}</div>
@@ -3799,16 +3809,26 @@ async function afterStepRun() {
   implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
   renderImplementer();
 }
-async function advanceImplStep(order, btn) {
+async function advanceImplStep(order, btn, force) {
+  if (force && !confirm('This step did not verify cleanly. Proceed to the next step anyway?\n\nThis is recorded as an operator override.')) return;
   btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
   try {
     await fetch(`/api/changes/${encodeURIComponent(implState.id)}/advance-step`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order }),
+      body: JSON.stringify({ order, force: !!force }),
     });
     implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
     renderImplementer();
   } catch (e) { btn.disabled = false; btn.textContent = old; const m = $('impl-msg-' + order); if (m) m.textContent = '✕ ' + e.message; }
+}
+
+function toggleStepAdhoc(order, btn) {
+  const wrap = $('stepadhoc-wrap-' + order);
+  if (!wrap) return;
+  const open = wrap.style.display !== 'none';
+  wrap.style.display = open ? 'none' : 'block';
+  if (btn) btn.classList.toggle('active', !open);
+  if (!open) { const inp = $('stepadhoc-' + order); if (inp) inp.focus(); }
 }
 
 async function implStepAdhoc(order, btn) {
