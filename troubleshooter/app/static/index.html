@@ -734,12 +734,15 @@
     <h2 style="margin:0">Changes</h2>
     <span class="tag" id="chgSource"></span>
     <span class="hint" style="margin:0" id="chgUpdated"></span>
-    <button class="primary" id="cbotOpenBtn" style="margin:0 0 0 auto;width:auto;padding:7px 14px">＋ Raise change</button>
+    <input id="chgOpenId" placeholder="Open CR by number…" autocomplete="off"
+      style="margin:0 0 0 auto;width:auto;max-width:190px;padding:7px 12px;font-size:12.5px">
+    <button class="ghost" id="chgOpenBtn">Open</button>
+    <button class="primary" id="cbotOpenBtn" style="width:auto;padding:7px 14px">＋ Raise change</button>
     <button class="ghost" id="chgRefresh">↻ Refresh</button>
   </div>
   <div class="hint" style="margin-bottom:12px">Change requests grouped by category. Approved changes
     with an implementation plan can be executed step by step by the AI change implementer, which runs
-    only the approved commands, in order.</div>
+    only the approved commands, in order. No change list yet? Open any CR directly by its number.</div>
   <div id="chgList"><div class="empty">Loading changes…</div></div>
 
   <!-- change-raising assistant -->
@@ -2946,7 +2949,10 @@ function chgCard(c) {
 function renderChanges() {
   const box = $('chgList');
   box.classList.remove('empty');
-  if (!changesCache.length) { box.innerHTML = '<div class="empty">No changes.</div>'; return; }
+  if (!changesCache.length) {
+    box.innerHTML = `<div class="empty">No change list is wired yet — open a change by its number above, or raise one with the Change Assistant.</div>`;
+    return;
+  }
   const groups = new Map();
   changesCache.forEach(c => {
     const k = c.category || c.type || 'Uncategorised';
@@ -2964,6 +2970,12 @@ function renderChanges() {
 }
 $('incRefresh').onclick = loadIncidents;
 $('chgRefresh').onclick = loadChanges;
+function chgOpenById() {
+  const id = $('chgOpenId').value.trim();
+  if (id) openImplementer(id);
+}
+$('chgOpenBtn').onclick = chgOpenById;
+$('chgOpenId').addEventListener('keydown', (e) => { if (e.key === 'Enter') chgOpenById(); });
 
 /* ---------- change implementer (slide-over) ---------- */
 let implState = { id: null, change: null, plan: null, server: '' };
