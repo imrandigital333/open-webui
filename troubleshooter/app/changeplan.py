@@ -86,7 +86,7 @@ def check_command(plan: dict | None, command: str) -> dict:
 
 
 def record_result(change_id: str, order: int, result: dict,
-                  verification: dict | None = None) -> dict | None:
+                  verification: dict | None = None, advance: bool = True) -> dict | None:
     plan = load_plan(change_id)
     if plan is None:
         return None
@@ -100,10 +100,33 @@ def record_result(change_id: str, order: int, result: dict,
                      concern=verification.get("concern"),
                      proceed=verification.get("proceed"),
                      verified_by=verification.get("verified_by"))
+    else:
+        entry["pending_verify"] = True
     plan.setdefault("results", {})[str(order)] = entry
     # advance only when the command ran AND the AI didn't judge it failed
     verdict_ok = (verification or {}).get("verdict") != "failed"
-    if result.get("ok") and verdict_ok and order == int(plan.get("current_step") or 0) + 1:
+    if advance and result.get("ok") and verdict_ok and order == int(plan.get("current_step") or 0) + 1:
+        plan["current_step"] = order
+    return save_plan(change_id, plan)
+
+
+def apply_verification(change_id: str, order: int, verification: dict) -> dict | None:
+    """Attach the AI verdict to an already-recorded step and advance the
+    pointer if it didn't fail (used by the two-phase run/verify UI)."""
+    plan = load_plan(change_id)
+    if plan is None:
+        return None
+    entry = (plan.get("results") or {}).get(str(order))
+    if entry is None:
+        return plan
+    entry.pop("pending_verify", None)
+    entry.update(verdict=verification.get("verdict"),
+                 summary=verification.get("summary"),
+                 concern=verification.get("concern"),
+                 proceed=verification.get("proceed"),
+                 verified_by=verification.get("verified_by"))
+    if entry.get("ok") and verification.get("verdict") != "failed" \
+            and order == int(plan.get("current_step") or 0) + 1:
         plan["current_step"] = order
     return save_plan(change_id, plan)
 

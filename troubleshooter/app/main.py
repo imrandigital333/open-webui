@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.50.0"
+APP_VERSION = "2.51.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -628,6 +628,7 @@ async def generate_change_plan(change_id: str, request: Request,
 class ChangeRunStepRequest(BaseModel):
     order: int = Field(..., ge=1, le=500)
     server: str = Field(..., min_length=1, max_length=100)
+    verify: bool = True   # False = execute only; caller verifies separately (two-phase UI)
 
 
 @app.post("/api/changes/{change_id}/run-step")
@@ -658,6 +659,16 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
     result = await _ssh_exec(server, step["command"])
+    if not req.verify:
+        # execute only — the UI shows the CLI animation now and asks for the
+        # AI verdict via /verify-step next (robot animation)
+        updated = changeplan.record_result(change_id, req.order, result, advance=False)
+        await asyncio.to_thread(db.audit, _actor(request), "change_step_executed",
+                                {"change_id": change_id, "order": req.order,
+                                 "server": req.server, "ok": result["ok"],
+                                 "exit_code": result["exit_code"]})
+        return {**result, "verified": False,
+                "current_step": (updated or plan).get("current_step")}
     verification = await changeplan.verify_step(step, result, plan.get("title", ""))
     updated = changeplan.record_result(change_id, req.order, result, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_step_executed",
@@ -666,6 +677,29 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
                              "exit_code": result["exit_code"],
                              "verdict": verification.get("verdict")})
     return {**result, "verification": verification,
+            "current_step": (updated or plan).get("current_step")}
+
+
+class ChangeVerifyRequest(BaseModel):
+    order: int = Field(..., ge=1, le=500)
+
+
+@app.post("/api/changes/{change_id}/verify-step")
+async def change_verify_step(change_id: str, req: ChangeVerifyRequest, request: Request):
+    """AI-verify an already-executed step's stored output (two-phase UI)."""
+    plan = changeplan.load_plan(change_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No stored plan for this change")
+    step = next((s for s in plan.get("steps", []) if int(s.get("order", 0)) == req.order), None)
+    entry = (plan.get("results") or {}).get(str(req.order))
+    if step is None or entry is None:
+        raise HTTPException(status_code=404, detail="No executed step to verify")
+    verification = await changeplan.verify_step(step, entry, plan.get("title", ""))
+    updated = changeplan.apply_verification(change_id, req.order, verification)
+    await asyncio.to_thread(db.audit, _actor(request), "change_step_verified",
+                            {"change_id": change_id, "order": req.order,
+                             "verdict": verification.get("verdict")})
+    return {"verification": verification,
             "current_step": (updated or plan).get("current_step")}
 
 

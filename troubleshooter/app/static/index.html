@@ -619,6 +619,28 @@
                 margin-top: 7px; font-size: 12.5px; line-height: 1.5; }
   .ci-narr { background: var(--panel2); border-radius: 0 8px 8px 0; padding: 7px 11px;
              margin-top: 8px; font-size: 12.5px; line-height: 1.5; }
+  /* two-phase run animation: CLI terminal, then robot verify */
+  .run-cli { background: #0b0e14; border: 1px solid var(--border); border-radius: 8px;
+             overflow: hidden; font-family: var(--mono); }
+  .run-cli-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+                  background: rgba(255,255,255,.04); border-bottom: 1px solid var(--border); }
+  .run-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .run-dot.r { background: #ff5f56; } .run-dot.y { background: #ffbd2e; } .run-dot.g { background: #27c93f; }
+  .run-cli-title { font-size: 11px; color: var(--muted); margin-left: 6px; }
+  .run-cli-body { padding: 10px 12px; font-size: 12.5px; color: #cfe3ff; word-break: break-all; }
+  .run-cli.mini { padding: 8px 10px; font-size: 12px; color: #cfe3ff; }
+  .run-prompt { color: #27c93f; font-weight: 700; margin-right: 6px; }
+  .cli-cursor { display: inline-block; width: 8px; height: 15px; background: #cfe3ff;
+                vertical-align: -3px; margin-left: 3px; animation: cliblink 1s steps(1) infinite; }
+  @keyframes cliblink { 50% { opacity: 0; } }
+  .cli-stream { margin-top: 8px; display: flex; gap: 5px; }
+  .cli-stream i { width: 7px; height: 7px; border-radius: 50%; background: #3a5170;
+                  animation: pulse 1s infinite; }
+  .cli-stream i:nth-child(2) { animation-delay: .18s; }
+  .cli-stream i:nth-child(3) { animation-delay: .36s; }
+  .run-stage { margin-top: 4px; }
+  .run-verify { display: flex; align-items: center; gap: 9px; margin-top: 9px; font-size: 12.5px; }
+  .run-verify .rc-ava { flex: 0 0 30px; width: 30px; height: 30px; }
   .ci-locked { font-size: 11.5px; color: var(--muted); display: flex; align-items: center;
                gap: 6px; padding: 2px 0; }
   .ci-adhoc { display: flex; gap: 8px; margin-top: 4px; }
@@ -3548,7 +3570,7 @@ function renderImplementer() {
           ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : '<div class="ci-locked">Manual step — no command to run</div>'}
           ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
           ${outHtml(res)}
-          ${approved ? `<div style="margin-top:9px">
+          ${approved ? `<div style="margin-top:9px" id="impl-run-${order}">
             <button class="ci-run ci-run-lg" onclick="runImplStep(${order}, this)">${s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done'}</button>
             <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span></div>`
             : '<div class="hint" style="margin-top:6px">Approve the change in Summit to run steps.</div>'}
@@ -3704,21 +3726,48 @@ async function genImplPlan(btn) {
   } catch (e) { $('implAva')?.classList.remove('think'); btn.disabled = false; btn.innerHTML = '⚡ Generate plan'; if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } }
 }
 async function runImplStep(order, btn) {
-  const msg = $('impl-msg-' + order);
-  btn.disabled = true; const old = btn.textContent; btn.textContent = 'running…';
-  $('implAva')?.classList.add('think');
-  if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = 'executing, then the AI reads and verifies the output…'; }
+  const step = (implState.plan.steps || []).find(s => s.order === order) || {};
+  const host = $('impl-run-' + order);
+  const manual = !step.command;
+  // Phase 1 — CLI/terminal animation while the command executes on the server
+  if (host) host.innerHTML = manual
+    ? `<div class="run-stage"><span class="rc-ava think" style="width:24px;height:24px">${AI_ROBOT}</span> marking manual step done…</div>`
+    : `<div class="run-cli">
+        <div class="run-cli-head"><span class="run-dot r"></span><span class="run-dot y"></span><span class="run-dot g"></span>
+          <span class="run-cli-title">${escapeHtml(implState.server || 'server')} — executing</span></div>
+        <div class="run-cli-body"><span class="run-prompt">$</span> ${escapeHtml(step.command || '')}<span class="cli-cursor"></span>
+          <div class="cli-stream"><i></i><i></i><i></i></div></div>
+      </div>`;
   try {
     const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/run-step`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order, server: implState.server }),
+      body: JSON.stringify({ order, server: implState.server, verify: false }),
     });
     const d = await r.json();
+    if (!r.ok) { if (host) host.innerHTML = `<div class="hint" style="color:var(--err)">✕ ${escapeHtml(d.detail || r.statusText)}</div>`; return; }
+    if (manual) { await afterStepRun(); return; }
+    // Phase 2 — robot animation while the AI reads & verifies the output
+    if (host) host.innerHTML = `<div class="run-stage">
+        <div class="run-cli mini"><span class="run-prompt">$</span> ${escapeHtml(step.command || '')}
+          <span style="color:var(--ok);margin-left:6px">exit ${d.exit_code ?? '—'}</span></div>
+        <div class="run-verify"><span class="rc-ava think">${AI_ROBOT}</span>
+          <span><span class="rc-typing"><i></i><i></i><i></i></span> AI is reading the output and verifying the step…</span></div>
+      </div>`;
+    $('implAva')?.classList.add('think');
+    await fetch(`/api/changes/${encodeURIComponent(implState.id)}/verify-step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order }),
+    });
+    await afterStepRun();
+  } catch (e) {
     $('implAva')?.classList.remove('think');
-    if (!r.ok) { if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || r.statusText); } btn.textContent = old; btn.disabled = false; return; }
-    implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
-    renderImplementer();
-  } catch (e) { $('implAva')?.classList.remove('think'); if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } btn.textContent = old; btn.disabled = false; }
+    if (host) host.innerHTML = `<div class="hint" style="color:var(--err)">✕ ${escapeHtml(e.message)}</div>`;
+  }
+}
+async function afterStepRun() {
+  $('implAva')?.classList.remove('think');
+  implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
+  renderImplementer();
 }
 
 async function runImplAdhoc(btn) {
