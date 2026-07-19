@@ -316,9 +316,15 @@ def _enforce_downtime(result: dict) -> dict:
         overall = result.setdefault("downtime_overall", {})
         if not overall.get("required"):
             overall["required"] = True
-            overall["note"] = ("Corrected by policy: " + "; ".join(forced))[:400]
-        result.setdefault("corrections", []).extend(
-            f"Downtime forced ON for {f} (policy override)" for f in forced[:5])
+            overall["note"] = "Downtime required (kernel/reboot/service-restart steps)."
+        # one concise correction line, not one per step
+        nums = sorted({int(re.match(r"step (\d+)", f).group(1)) for f in forced
+                       if re.match(r"step (\d+)", f)})
+        if nums:
+            plural = "s" if len(nums) > 1 else ""
+            result.setdefault("corrections", []).append(
+                f"Downtime forced ON for step{plural} "
+                f"{', '.join(map(str, nums))} — reboot/restart requires downtime (policy).")
     return result
 
 

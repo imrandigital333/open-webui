@@ -2875,37 +2875,47 @@ function cbotApplyInferred(inf) {
     if (inf[k] && !d[k]) d[k] = inf[k];
   });
 }
-function cbotAssessmentHtml(r) {
-  let h = '';
-  if (r.corrections && r.corrections.length) {
-    h += `<div style="margin-top:6px;font-weight:700;color:var(--warn)">Corrections applied (${r.corrections.length}):</div>
-      <ul style="margin:2px 0 0 16px;font-size:12px">${r.corrections.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`;
-  }
+// compact one-line risk/success pill
+function cbotScorePill(r) {
   const ra = r.risk_assessment || {}, sr = r.success_rate || {};
-  const rl = (ra.level || 'Medium').toLowerCase();
+  const rl = (ra.level || '').toLowerCase();
   const rc = rl === 'high' ? 'var(--err)' : rl === 'low' ? 'var(--ok)' : 'var(--warn)';
-  h += `<div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
-    <span>Risk: <b style="color:${rc}">${escapeHtml(ra.level || 'Medium')}</b></span>
-    ${sr.percent != null ? `<span>Est. success: <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">${sr.percent}%</b></span>` : ''}</div>`;
-  if (ra.rationale) h += `<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>`;
-  if (sr.factors && sr.factors.length) h += `<ul style="margin:4px 0 0 16px;font-size:12px">${sr.factors.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`;
-  return h;
+  const parts = [];
+  if (ra.level) parts.push(`Risk <b style="color:${rc}">${escapeHtml(ra.level)}</b>`);
+  if (sr.percent != null) parts.push(`Success <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">~${sr.percent}%</b>`);
+  return parts.join(' · ');
+}
+// full assessment, collapsed by default (used once, in the review card)
+function cbotAssessmentHtml(r) {
+  const ra = r.risk_assessment || {}, sr = r.success_rate || {};
+  const li = (arr) => `<ul style="margin:3px 0 0 16px;font-size:12px">${arr.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
+  let h = `<div style="margin-top:6px;font-size:12.5px">${cbotScorePill(r)}</div>`;
+  const sections = [];
+  if (r.corrections && r.corrections.length)
+    sections.push(`<details style="margin-top:5px"><summary style="cursor:pointer;font-size:12px;color:var(--warn)">${r.corrections.length} correction${r.corrections.length > 1 ? 's' : ''} applied</summary>${li(r.corrections)}</details>`);
+  const detail = [];
+  if (ra.rationale) detail.push(`<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>`);
+  if (sr.factors && sr.factors.length) detail.push(li(sr.factors));
+  if (r.suggestions && r.suggestions.length)
+    detail.push(`<div style="margin-top:5px;font-size:12px;color:var(--accent2)">Suggestions</div>${li(r.suggestions)}`);
+  if (detail.length)
+    sections.push(`<details style="margin-top:5px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Why this risk &amp; how to improve it</summary>${detail.join('')}</details>`);
+  return h + sections.join('');
 }
 function cbotApplyRefined(r) {
   cbot.refined = r; cbotBusy(false);
   if (r.title && !cbot.data.title) cbot.data.title = r.title;
   if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
   cbotApplyInferred(r.inferred_fields);
-  const ai = r.refined_by === 'ai';
-  cbotAdd(`Validated into <b>${r.steps.length} steps</b>${ai ? '' : ' (AI unavailable — imported as manual steps; review carefully)'}.
-    ${cbotAssessmentHtml(r)}`, 'bot', true);
+  // brief one-liner here; the full (collapsible) detail appears once in the review card
+  const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
+  cbotAdd(`✓ Validated into <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${dt}`, 'bot', true);
   const miss = r.missing_fields || [];
-  if (miss.length) cbotAdd('Still needed from you: ' + miss.join(', ') + '.');
+  if (miss.length) cbotAdd('A few things I couldn\'t infer: ' + miss.slice(0, 4).join('; ')
+    + (miss.length > 4 ? '…' : '') + ' — set what you can below.');
   cbot.step = 'workgroup';
-  const sugWg = (r.inferred_fields || {}).workgroup;
-  cbotAdd('Which team owns this change? Pick the Summit workgroup — Windows Server Support for '
-    + 'Windows hosts, Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)'
-    + (sugWg ? ` The plan looks like "${escapeHtml(sugWg)}" work — choose the matching team below.` : ''));
+  cbotAdd('Which team owns this change? Windows Server Support for Windows hosts, '
+    + 'Unix Server Support for Linux/Unix. (Summit only accepts these exact names.)');
   cbotChips(cbot.workgroups || [cbot.cfgWorkgroup]);
 }
 
@@ -2955,12 +2965,8 @@ function cbotReviewCard() {
       <ol style="margin:4px 0 0 16px;font-size:12px">${r.steps.map(s =>
         `<li>${escapeHtml(s.description || '')}${s.downtime_required ? ' <span class="ci-dt">downtime</span>' : ''}
           ${s.command ? `<div style="font-family:var(--mono);font-size:11px;color:var(--accent2);margin:2px 0 4px;word-break:break-all">$ ${escapeHtml(s.command)}</div>` : '<div class="hint" style="margin:2px 0 4px">manual step — no command</div>'}</li>`).join('')}</ol>`;
-    if (r.backout_plan) planHtml += `<div class="hint" style="margin-top:6px"><b>Back-out:</b> ${escapeHtml(r.backout_plan)}</div>`;
-    planHtml += cbotAssessmentHtml(r);
-    if (r.suggestions && r.suggestions.length) {
-      planHtml += `<div style="margin-top:6px;font-size:12px;color:var(--accent2)">Further suggestions:</div>
-        <ul style="margin:2px 0 0 16px;font-size:12px">${r.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`;
-    }
+    if (r.backout_plan) planHtml += `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Back-out plan</summary><div class="hint" style="margin-top:3px">${escapeHtml(r.backout_plan)}</div></details>`;
+    planHtml += cbotAssessmentHtml(r);   // score pill + collapsible corrections/why/suggestions
   }
   cbotAdd(`<div style="font-weight:700;margin-bottom:6px">Review before creating:</div>
     ${row('Title', d.title)}${row('Type', d.type)}${row('Category', d.category)}${row('Risk', d.risk)}
@@ -3030,7 +3036,8 @@ async function cbotRefine(text, label) {
     cbotApplyInferred(r.inferred_fields);
     cbot.refined = r; cbotBusy(false);
     if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
-    cbotAdd(`Validated into <b>${r.steps.length} steps</b>.${cbotAssessmentHtml(r)}`, 'bot', true);
+    const dt = r.downtime_overall && r.downtime_overall.required ? ' · downtime required' : '';
+    cbotAdd(`✓ Validated into <b>${r.steps.length} steps</b> · ${cbotScorePill(r)}${dt}`, 'bot', true);
     cbotReviewCard();
   } catch (e) {
     cbotStopTyping(); cbot.busy = false; cbot.step = 'plan';
@@ -3369,11 +3376,13 @@ function implAssessmentHtml(plan) {
   const rc = rl === 'high' ? 'var(--err)' : rl === 'low' ? 'var(--ok)' : 'var(--warn)';
   let h = `<div class="ci-sug" style="border-left-color:${rc};margin-top:10px">
     <div style="display:flex;gap:16px;flex-wrap:wrap;font-weight:600">
-      ${ra.level ? `<span>Risk: <b style="color:${rc}">${escapeHtml(ra.level)}</b></span>` : ''}
-      ${sr.percent != null ? `<span>Est. success: <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">${sr.percent}%</b></span>` : ''}
-    </div>
-    ${ra.rationale ? `<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>` : ''}`;
-  if ((plan.corrections || []).length) h += `<div style="margin-top:6px;font-size:12px"><b>Corrections applied:</b><ul style="margin:2px 0 0 16px">${plan.corrections.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`;
+      ${ra.level ? `<span>Risk <b style="color:${rc}">${escapeHtml(ra.level)}</b></span>` : ''}
+      ${sr.percent != null ? `<span>Est. success <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">~${sr.percent}%</b></span>` : ''}
+    </div>`;
+  const det = [];
+  if (ra.rationale) det.push(`<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>`);
+  if ((plan.corrections || []).length) det.push(`<div style="margin-top:5px;font-size:12px"><b>Corrections applied</b><ul style="margin:2px 0 0 16px">${plan.corrections.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`);
+  if (det.length) h += `<details style="margin-top:4px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Risk detail &amp; corrections</summary>${det.join('')}</details>`;
   h += '</div>';
   return h;
 }
