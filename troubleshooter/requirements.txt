@@ -3,4 +3,8 @@ uvicorn[standard]>=0.30.0
 PyYAML>=6.0
 claude-agent-sdk>=0.1.0
 SQLAlchemy>=2.0
+# Optional: lets the Change Assistant read uploaded .docx / .pdf implementation
+# plans. Without them, plain-text/markdown uploads and pasting still work.
+python-docx>=1.1.0
+pypdf>=4.0.0
 # For PostgreSQL in production, additionally: pip install "psycopg[binary]"

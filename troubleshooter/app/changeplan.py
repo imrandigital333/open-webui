@@ -114,21 +114,38 @@ def mark_manual_done(change_id: str, order: int) -> dict | None:
 
 # ---------- AI plan refinement ----------
 
-_REFINE_PROMPT = """You are a change-management reviewer for production Linux servers at an
-enterprise (an airport IT operation). An operator pasted their change
-implementation plan below, written against their organisation's template.
+_REFINE_PROMPT = """You are a senior change-management reviewer for production Linux servers at an
+enterprise (an airport IT operation, 24x7 safety-critical). An operator gave you
+their change implementation plan below (written against their org template, or
+free text). Your job is to REDUCE FAILED CHANGES: turn it into a correct,
+executable, low-risk plan and honestly score it.
 
-Convert it into a structured, machine-executable plan AND review it:
+Do ALL of this:
 
-- Break it into ordered steps. Each step is either an exact shell command
-  (put it in "command") or a manual action ("command": "").
-- VERIFY each step's downtime claim: decide yourself whether the step really
-  requires downtime (service restarts, reboots, network changes usually do;
-  file backups and read-only checks do not). If the plan's claim is wrong,
-  correct it and explain in "downtime_note".
-- Add anything critical that is missing as suggestions: backup steps before
-  state changes, verification steps after them, a rollback/back-out plan.
-- Keep every step the plan author intended — refine, do not invent scope.
+1. Break the plan into ordered steps. Each step is either an exact shell command
+   ("command") or a manual action ("command": ""). Phases: pre | implement |
+   verify | rollback.
+2. VALIDATE AND CORRECT the commands and steps: fix wrong/unsafe syntax, add
+   missing quoting, split compound risky commands, and put steps in a safe order
+   (backups BEFORE state changes, verification AFTER). Record every change you
+   made in "corrections".
+3. VERIFY each step's downtime claim yourself (service restarts/reboots/network
+   changes usually need downtime; backups and read-only checks do not); correct
+   it in downtime_required and explain in downtime_note.
+4. Ensure there is a real, tested-style BACK-OUT plan. If missing or weak, write
+   one derived from the steps (how to undo each state change) and set
+   backout_validated accordingly.
+5. INFER the CR attributes from the work itself: category (Minor/Major/
+   Significant), change type (Normal/Standard/Emergency), risk (Low/Medium/High),
+   impact (Low/Medium/High), priority (P1-P4), likely owner workgroup.
+6. Assess overall RISK (level + rationale) and a SUCCESS-RATE estimate as a
+   percentage with the concrete factors that raise or lower it (missing backups,
+   no verification, wide blast radius, downtime in business hours, untested
+   rollback, etc.).
+7. List still-MISSING mandatory information the operator must supply that you
+   cannot infer (e.g. requestor email, exact maintenance window, approver).
+
+Keep the author's intended scope — refine and correct, do not invent new work.
 
 Reply with ONLY this JSON (no fences, no prose outside it):
 {"title": "one-line change title",
@@ -137,14 +154,37 @@ Reply with ONLY this JSON (no fences, no prose outside it):
             "description": "what this step does",
             "command": "exact shell command or empty string for manual steps",
             "downtime_required": false,
-            "downtime_note": "why downtime is/is not needed, esp. if you corrected the plan",
+            "downtime_note": "why downtime is/is not needed (note corrections)",
             "risk": "low|medium|high"}],
- "suggestions": ["improvement the author should consider", "..."],
- "downtime_overall": {"required": false, "note": "overall downtime verdict for the CR form"},
- "backout_plan": "concise back-out plan derived from (or added to) the document"}
+ "corrections": ["what you fixed or reordered and why", "..."],
+ "suggestions": ["further improvement the author should consider", "..."],
+ "downtime_overall": {"required": false, "note": "overall downtime verdict"},
+ "backout_plan": "concrete back-out plan (undo each state change)",
+ "backout_validated": true,
+ "inferred_fields": {"category": "Minor", "type": "Normal", "risk": "Medium",
+                     "impact": "Medium", "priority": "P3", "workgroup": ""},
+ "risk_assessment": {"level": "Low|Medium|High", "rationale": "one paragraph"},
+ "success_rate": {"percent": 85, "factors": ["+ has backups", "- restart in business hours"]},
+ "missing_fields": ["requestor email", "maintenance window"]}
 
 THE PLAN DOCUMENT:
 %s
+"""
+
+_RECOMMEND_PROMPT = """You are a senior change-management advisor for production Linux servers at an
+enterprise airport IT operation. The operator is raising a change and has given
+this description (and any fields so far):
+
+%s
+
+Recommend sensible CR attributes and an outline plan to reduce the chance of a
+failed change. Reply with ONLY this JSON (no fences):
+{"category": "Minor|Major|Significant", "type": "Normal|Standard|Emergency",
+ "risk": "Low|Medium|High", "impact": "Low|Medium|High", "priority": "P1|P2|P3|P4",
+ "downtime_required": false, "workgroup": "suggested owner workgroup or ''",
+ "rationale": "2-3 sentences on why these were chosen",
+ "outline_steps": ["short step the operator should include", "..."],
+ "backout_hint": "a starting back-out approach for this kind of change"}
 """
 
 
@@ -157,10 +197,16 @@ def _fallback_steps(plan_text: str) -> dict:
              for i, ln in enumerate(lines[:40])]
     return {"title": (lines[0][:120] if lines else "Change plan"),
             "summary": "AI refinement unavailable — plan imported line-by-line as manual steps.",
-            "steps": steps, "suggestions":
-                ["AI refinement was unavailable; commands must be added manually."],
+            "steps": steps,
+            "corrections": [],
+            "suggestions": ["AI refinement was unavailable; commands and risk must be reviewed manually."],
             "downtime_overall": {"required": False, "note": "not assessed"},
-            "backout_plan": "", "refined_by": "fallback"}
+            "backout_plan": "", "backout_validated": False,
+            "inferred_fields": {},
+            "risk_assessment": {"level": "Medium", "rationale": "Not assessed — AI unavailable."},
+            "success_rate": {"percent": None, "factors": ["not assessed"]},
+            "missing_fields": [],
+            "refined_by": "fallback"}
 
 
 async def refine_plan(plan_text: str) -> dict:
@@ -198,15 +244,125 @@ async def refine_plan(plan_text: str) -> dict:
         })
     if not steps:
         return _fallback_steps(plan_text)
+    inf = data.get("inferred_fields") or {}
+    ra = data.get("risk_assessment") or {}
+    sr = data.get("success_rate") or {}
+    pct = sr.get("percent")
+    try:
+        pct = max(0, min(100, int(pct))) if pct is not None else None
+    except (TypeError, ValueError):
+        pct = None
     return {
         "title": str(data.get("title") or "")[:150],
         "summary": str(data.get("summary") or "")[:800],
         "steps": steps,
+        "corrections": [str(x)[:400] for x in (data.get("corrections") or [])][:20],
         "suggestions": [str(x)[:400] for x in (data.get("suggestions") or [])][:12],
         "downtime_overall": {
             "required": bool((data.get("downtime_overall") or {}).get("required")),
             "note": str((data.get("downtime_overall") or {}).get("note") or "")[:400],
         },
         "backout_plan": str(data.get("backout_plan") or "")[:2000],
+        "backout_validated": bool(data.get("backout_validated")),
+        "inferred_fields": {
+            "category": str(inf.get("category") or "")[:40],
+            "type": str(inf.get("type") or "")[:40],
+            "risk": str(inf.get("risk") or "")[:20],
+            "impact": str(inf.get("impact") or "")[:20],
+            "priority": str(inf.get("priority") or "")[:10],
+            "workgroup": str(inf.get("workgroup") or "")[:100],
+        },
+        "risk_assessment": {
+            "level": str(ra.get("level") or "Medium")[:20],
+            "rationale": str(ra.get("rationale") or "")[:800],
+        },
+        "success_rate": {
+            "percent": pct,
+            "factors": [str(x)[:200] for x in (sr.get("factors") or [])][:12],
+        },
+        "missing_fields": [str(x)[:120] for x in (data.get("missing_fields") or [])][:12],
         "refined_by": "ai",
     }
+
+
+async def _one_shot_json(prompt: str, timeout_s: int = 90):
+    """Run a single-turn tool-less query and return parsed JSON, or None."""
+    text = ""
+    try:
+        from claude_agent_sdk import ClaudeAgentOptions, query
+        from claude_agent_sdk.types import ResultMessage
+        async with asyncio.timeout(timeout_s):
+            options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage) and not message.is_error:
+                    text = message.result or ""
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group())
+    except json.JSONDecodeError:
+        return None
+
+
+async def recommend_change(context: str) -> dict:
+    """Suggest CR attributes + an outline plan from a description (no attachment
+    flow). Degrades to neutral defaults if the AI is unavailable."""
+    data = await _one_shot_json(_RECOMMEND_PROMPT % context[:6000])
+    if not data:
+        return {"available": False,
+                "category": "Minor", "type": "Normal", "risk": "Medium",
+                "impact": "Medium", "priority": "P3", "downtime_required": False,
+                "workgroup": "", "rationale": "AI recommendations unavailable — pick values manually.",
+                "outline_steps": [], "backout_hint": ""}
+    return {
+        "available": True,
+        "category": str(data.get("category") or "Minor")[:40],
+        "type": str(data.get("type") or "Normal")[:40],
+        "risk": str(data.get("risk") or "Medium")[:20],
+        "impact": str(data.get("impact") or "Medium")[:20],
+        "priority": str(data.get("priority") or "P3")[:10],
+        "downtime_required": bool(data.get("downtime_required")),
+        "workgroup": str(data.get("workgroup") or "")[:100],
+        "rationale": str(data.get("rationale") or "")[:600],
+        "outline_steps": [str(x)[:200] for x in (data.get("outline_steps") or [])][:12],
+        "backout_hint": str(data.get("backout_hint") or "")[:600],
+    }
+
+
+def extract_text(filename: str, data: bytes) -> str:
+    """Best-effort text extraction from an uploaded implementation-plan file.
+    Text/markdown always work; docx/pdf need optional libs (graceful message)."""
+    name = (filename or "").lower()
+    if name.endswith((".txt", ".md", ".markdown", ".text", ".log", ".csv", ".rtf")):
+        return data.decode("utf-8", errors="replace")
+    if name.endswith(".docx"):
+        try:
+            import io
+            from docx import Document
+            doc = Document(io.BytesIO(data))
+            parts = [p.text for p in doc.paragraphs]
+            for tbl in doc.tables:
+                for row in tbl.rows:
+                    parts.append("\t".join(c.text for c in row.cells))
+            return "\n".join(p for p in parts if p is not None)
+        except ImportError:
+            raise RuntimeError("This server can't read .docx yet (python-docx not installed)."
+                               " Paste the plan text, or install python-docx.")
+    if name.endswith(".pdf"):
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            return "\n".join((pg.extract_text() or "") for pg in reader.pages)
+        except ImportError:
+            raise RuntimeError("This server can't read .pdf yet (pypdf not installed)."
+                               " Paste the plan text, or install pypdf.")
+    # unknown extension — try utf-8 and hope it's text
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError(f"Unsupported file type: {filename}. Upload .txt, .md, .docx or .pdf,"
+                           " or paste the plan text.")

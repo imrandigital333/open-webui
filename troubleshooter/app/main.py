@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.40.0"
+APP_VERSION = "2.41.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -424,12 +424,46 @@ class RefinePlanRequest(BaseModel):
 @app.post("/api/changes/refine-plan")
 async def refine_change_plan(req: RefinePlanRequest, request: Request):
     """AI pass over a pasted implementation-plan document: structured steps,
-    per-step downtime verification, improvement suggestions, back-out plan."""
+    validation/corrections, downtime verification, risk + success-rate,
+    inferred CR fields, and still-missing mandatory fields."""
     result = await changeplan.refine_plan(req.plan_text)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
     return result
+
+
+@app.post("/api/changes/upload-plan")
+async def upload_change_plan(request: Request, file: UploadFile = File(...)):
+    """Read an uploaded implementation-plan file (.txt/.md/.docx/.pdf) and run
+    the same refinement/validation the pasted-text path uses."""
+    raw = await file.read()
+    if len(raw) > 5_000_000:
+        raise HTTPException(status_code=413, detail="File too large (max 5 MB).")
+    try:
+        text = await asyncio.to_thread(changeplan.extract_text, file.filename or "", raw)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    if len(text.strip()) < 20:
+        raise HTTPException(status_code=422,
+                            detail="Could not read enough text from that file — paste the plan instead.")
+    result = await changeplan.refine_plan(text)
+    result["source_file"] = file.filename
+    await asyncio.to_thread(db.audit, _actor(request), "change_plan_uploaded",
+                            {"file": file.filename, "chars": len(text),
+                             "steps": len(result.get("steps", [])),
+                             "refined_by": result.get("refined_by")})
+    return result
+
+
+class ChangeRecommendRequest(BaseModel):
+    context: str = Field(..., min_length=5, max_length=6000)
+
+
+@app.post("/api/changes/recommend")
+async def recommend_change_fields(req: ChangeRecommendRequest):
+    """Suggest CR attributes + an outline plan from a description (manual flow)."""
+    return await changeplan.recommend_change(req.context)
 
 
 class ChangeCreateRequest(BaseModel):
@@ -447,25 +481,32 @@ class ChangeCreateRequest(BaseModel):
     end: str = Field("", max_length=40)
     backout: str = Field("", max_length=4000)
     steps: list[dict] = Field(default_factory=list)   # the refined structured plan
+    assessment: dict = Field(default_factory=dict)    # risk / success_rate / corrections
 
 
 @app.post("/api/changes/create")
 async def create_change_request(req: ChangeCreateRequest, request: Request):
-    """Raise a CR in Summit and store the structured plan locally so the
-    implementer can enforce it once the change is approved."""
+    """Raise a CR in Summit and store the structured plan (with its risk /
+    success-rate assessment) locally so the implementer can enforce it."""
     result = await asyncio.to_thread(itsm.create_change, req.model_dump())
     if result.get("ok"):
         cid = result.get("change_id") or f"local-{int(time.time())}"
         result["change_id"] = cid
-        if req.steps:
+        if req.steps or req.assessment:
+            a = req.assessment or {}
             changeplan.save_plan(cid, {
                 "title": req.title, "steps": req.steps,
                 "downtime": req.downtime, "backout": req.backout,
+                "corrections": a.get("corrections") or [],
+                "suggestions": a.get("suggestions") or [],
+                "risk_assessment": a.get("risk_assessment") or {},
+                "success_rate": a.get("success_rate") or {},
             })
     await asyncio.to_thread(db.audit, _actor(request), "change_created",
                             {"ok": result.get("ok"),
                              "change_id": result.get("change_id") or "(unknown)",
-                             "steps": len(req.steps), "downtime": req.downtime})
+                             "steps": len(req.steps), "downtime": req.downtime,
+                             "success_rate": (req.assessment or {}).get("success_rate", {}).get("percent")})
     return result
 
 

@@ -2717,8 +2717,8 @@ $('ibotIn').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { ibotHandle($('ibotIn').value); $('ibotIn').value = ''; }
 });
 
-/* ---------- change-raising assistant (guided chat + AI plan refine) ---------- */
-const cbot = { step: null, data: {}, refined: null, cfgEmail: '' };
+/* ---------- change-raising assistant (upload / guided + AI validation) ---------- */
+const cbot = { step: null, data: {}, refined: null, rec: null, cfgEmail: '' };
 
 function cbotAdd(text, who = 'bot', html = false) {
   const m = document.createElement('div');
@@ -2733,31 +2733,136 @@ function cbotChips(list) {
 }
 function cbotOpenPanel() { $('cbot').style.display = 'flex'; if (!cbot.step) cbotStart(); $('cbotIn').focus(); }
 function cbotClose() { $('cbot').style.display = 'none'; }
+function cbotBusy(on) { cbot.busy = on; }
 
 async function cbotStart() {
-  cbot.step = 'title'; cbot.data = {}; cbot.refined = null;
+  cbot.step = 'entry'; cbot.data = {}; cbot.refined = null; cbot.rec = null; cbot.busy = false;
   $('cbotMsgs').innerHTML = ''; cbotChips([]);
   try { cbot.cfgEmail = (await (await fetch('/api/admin/itsm')).json()).caller_email || ''; }
   catch { cbot.cfgEmail = ''; }
-  cbotAdd("Hi — I'll help you raise a change in SummitAI and turn your implementation plan into executable steps. Type skip for any optional question.");
-  cbotAdd('First, a one-line title for the change:');
+  cbotAdd("Hi — I'm your change assistant. My job is to reduce failed changes: I validate and correct your implementation plan, verify downtime, build a back-out plan, and score the risk and likely success rate.");
+  cbotAdd('Do you have an implementation plan document to upload, or should we build the change together?');
+  cbotChips(['📎 Upload a plan', 'Build manually']);
+}
+
+/* --- file upload --- */
+let _cbotFileInput = null;
+function cbotPickFile() {
+  if (!_cbotFileInput) {
+    _cbotFileInput = document.createElement('input');
+    _cbotFileInput.type = 'file';
+    _cbotFileInput.accept = '.txt,.md,.markdown,.log,.csv,.docx,.pdf';
+    _cbotFileInput.style.display = 'none';
+    document.body.appendChild(_cbotFileInput);
+    _cbotFileInput.addEventListener('change', () => {
+      const f = _cbotFileInput.files[0];
+      if (f) cbotUpload(f);
+      _cbotFileInput.value = '';
+    });
+  }
+  _cbotFileInput.click();
+}
+async function cbotUpload(file) {
+  cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
+  cbotAdd(`Uploaded ${file.name}`, 'user');
+  cbotAdd('Reading the document and validating the plan — structuring steps, correcting commands, verifying downtime, assessing risk…');
+  try {
+    const fd = new FormData(); fd.append('file', file);
+    const res = await fetch('/api/changes/upload-plan', { method: 'POST', body: fd });
+    const r = await res.json();
+    if (!res.ok) { cbot.step = 'entry'; cbotBusy(false);
+      cbotAdd('✕ ' + (r.detail || 'could not read the file') + ' — try pasting the plan, or build manually.');
+      cbotChips(['📎 Upload a plan', 'Build manually']); return; }
+    cbotApplyRefined(r);
+  } catch (e) { cbot.step = 'entry'; cbotBusy(false); cbotAdd('✕ Upload failed: ' + e.message); cbotChips(['📎 Upload a plan', 'Build manually']); }
+}
+
+function cbotApplyInferred(inf) {
+  if (!inf) return;
+  const d = cbot.data;
+  ['type', 'category', 'risk', 'impact', 'priority', 'workgroup'].forEach(k => {
+    if (inf[k] && !d[k]) d[k] = inf[k];
+  });
+}
+function cbotAssessmentHtml(r) {
+  let h = '';
+  if (r.corrections && r.corrections.length) {
+    h += `<div style="margin-top:6px;font-weight:700;color:var(--warn)">Corrections applied (${r.corrections.length}):</div>
+      <ul style="margin:2px 0 0 16px;font-size:12px">${r.corrections.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`;
+  }
+  const ra = r.risk_assessment || {}, sr = r.success_rate || {};
+  const rl = (ra.level || 'Medium').toLowerCase();
+  const rc = rl === 'high' ? 'var(--err)' : rl === 'low' ? 'var(--ok)' : 'var(--warn)';
+  h += `<div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
+    <span>Risk: <b style="color:${rc}">${escapeHtml(ra.level || 'Medium')}</b></span>
+    ${sr.percent != null ? `<span>Est. success: <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">${sr.percent}%</b></span>` : ''}</div>`;
+  if (ra.rationale) h += `<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>`;
+  if (sr.factors && sr.factors.length) h += `<ul style="margin:4px 0 0 16px;font-size:12px">${sr.factors.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`;
+  return h;
+}
+function cbotApplyRefined(r) {
+  cbot.refined = r; cbotBusy(false);
+  if (r.title && !cbot.data.title) cbot.data.title = r.title;
+  if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
+  cbotApplyInferred(r.inferred_fields);
+  const ai = r.refined_by === 'ai';
+  cbotAdd(`Validated into <b>${r.steps.length} steps</b>${ai ? '' : ' (AI unavailable — imported as manual steps; review carefully)'}.
+    ${cbotAssessmentHtml(r)}`, 'bot', true);
+  const miss = r.missing_fields || [];
+  if (miss.length) cbotAdd('Still needed from you: ' + miss.join(', ') + '.');
+  // the one field we always must have and can't infer: requestor email
+  cbot.step = 'requestor';
+  cbotAdd('Who is the requestor? (email)');
+  cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
+}
+
+/* --- manual recommendations --- */
+async function cbotRecommend() {
+  cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
+  cbotAdd('Thinking about the right attributes for this change…');
+  try {
+    const r = await (await fetch('/api/changes/recommend', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}` }),
+    })).json();
+    cbot.rec = r; cbotBusy(false);
+    const parts = [`type <b>${escapeHtml(r.type)}</b>`, `category <b>${escapeHtml(r.category)}</b>`,
+      `risk <b>${escapeHtml(r.risk)}</b>`, `impact <b>${escapeHtml(r.impact)}</b>`,
+      `priority <b>${escapeHtml(r.priority)}</b>`, `downtime <b>${r.downtime_required ? 'required' : 'not required'}</b>`];
+    cbotAdd(`Recommended: ${parts.join(' · ')}.${r.rationale ? '<div class="hint" style="margin-top:4px">' + escapeHtml(r.rationale) + '</div>' : ''}${r.available ? '' : '<div class="hint" style="margin-top:4px">(AI recommendations unavailable — defaults shown.)</div>'}`, 'bot', true);
+    if (r.outline_steps && r.outline_steps.length) {
+      cbotAdd(`<div style="font-size:12px;font-weight:700">Suggested plan outline:</div><ul style="margin:2px 0 0 16px;font-size:12px">${r.outline_steps.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`, 'bot', true);
+    }
+    cbot.step = 'rec_choice';
+    cbotAdd('Accept these recommendations, or customise each field?');
+    cbotChips(['Accept recommendations', 'Customise']);
+  } catch (e) { cbot.busy = false; cbot.step = 'title'; cbotAdd('✕ ' + e.message); }
+}
+function cbotApplyRec() {
+  const r = cbot.rec; if (!r) return;
+  cbot.data.type = r.type; cbot.data.category = r.category; cbot.data.risk = r.risk;
+  cbot.data.impact = r.impact; cbot.data.priority = r.priority; cbot.data.downtime = !!r.downtime_required;
+  if (r.workgroup) cbot.data.workgroup = r.workgroup;
+}
+function cbotRecChip(field, fallback) {
+  const v = cbot.rec && cbot.rec[field];
+  return v ? [v + ' (recommended)', ...fallback.filter(x => x !== v)] : fallback;
 }
 
 function cbotReviewCard() {
   cbot.step = 'confirm';
   const d = cbot.data, r = cbot.refined;
-  const row = (k, v) => v ? `<div class="sumrow"><b>${k}</b><span>${escapeHtml(v)}</span></div>` : '';
+  const row = (k, v) => v ? `<div class="sumrow"><b>${k}</b><span>${escapeHtml(String(v))}</span></div>` : '';
   let planHtml = '';
   if (r && r.steps) {
-    planHtml = `<div style="margin-top:8px;font-weight:700">Refined plan — ${r.steps.length} steps${r.refined_by === 'ai' ? ' (AI)' : ''}</div>
+    planHtml = `<div style="margin-top:8px;font-weight:700">Validated plan — ${r.steps.length} steps</div>
       <ol style="margin:4px 0 0 16px;font-size:12px">${r.steps.map(s =>
         `<li>${escapeHtml(s.description || s.command || '')}${s.downtime_required ? ' <span class="ci-dt">downtime</span>' : ''}</li>`).join('')}</ol>`;
+    if (r.backout_plan) planHtml += `<div class="hint" style="margin-top:6px"><b>Back-out:</b> ${escapeHtml(r.backout_plan)}</div>`;
+    planHtml += cbotAssessmentHtml(r);
     if (r.suggestions && r.suggestions.length) {
-      planHtml += `<div style="margin-top:6px;font-size:12px;color:var(--accent2)">AI suggestions:</div>
+      planHtml += `<div style="margin-top:6px;font-size:12px;color:var(--accent2)">Further suggestions:</div>
         <ul style="margin:2px 0 0 16px;font-size:12px">${r.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`;
-    }
-    if (r.downtime_overall) {
-      planHtml += `<div class="hint" style="margin-top:6px">Downtime verdict: <b>${r.downtime_overall.required ? 'required' : 'not required'}</b>${r.downtime_overall.note ? ' — ' + escapeHtml(r.downtime_overall.note) : ''}</div>`;
     }
   }
   cbotAdd(`<div style="font-weight:700;margin-bottom:6px">Review before creating:</div>
@@ -2768,21 +2873,24 @@ function cbotReviewCard() {
 }
 
 async function cbotSubmit() {
-  cbot.step = 'submitting'; cbotChips([]);
+  cbot.step = 'submitting'; cbotChips([]); cbotBusy(true);
   cbotAdd('Creating the change in SummitAI…');
   const d = cbot.data, r = cbot.refined;
   const payload = { ...d,
     downtime: r && r.downtime_overall ? !!r.downtime_overall.required : !!d.downtime,
     backout: (r && r.backout_plan) || '',
-    steps: (r && r.steps) || [] };
+    steps: (r && r.steps) || [],
+    assessment: r ? { corrections: r.corrections, suggestions: r.suggestions,
+                      risk_assessment: r.risk_assessment, success_rate: r.success_rate } : {} };
   try {
     const res = await (await fetch('/api/changes/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })).json();
+    cbotBusy(false);
     if (res.ok) {
       cbot.step = 'done';
-      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created. Once it is approved you can run it from "Implement change".`, 'bot', true);
+      cbotAdd(`✓ Change${res.change_id ? ' <b>' + escapeHtml(res.change_id) + '</b>' : ''} created. Once approved, run it from "Implement change".`, 'bot', true);
       cbotChips(['Raise another', 'Close']);
       loadChanges();
     } else {
@@ -2790,76 +2898,87 @@ async function cbotSubmit() {
       cbotAdd('✕ Summit rejected the request: ' + (res.error || 'unknown error'));
       cbotChips(['✓ Create change', 'Start over']);
     }
-  } catch (e) {
-    cbot.step = 'confirm';
-    cbotAdd('✕ Request failed: ' + e.message);
-    cbotChips(['✓ Create change', 'Start over']);
-  }
+  } catch (e) { cbot.busy = false; cbot.step = 'confirm'; cbotAdd('✕ Request failed: ' + e.message); cbotChips(['✓ Create change', 'Start over']); }
 }
 
 async function cbotRefine(text) {
-  cbot.step = 'refining'; cbotChips([]);
-  cbotAdd('Analysing your plan — structuring steps, verifying downtime, checking for gaps…');
+  cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
+  cbotAdd('Validating your plan — correcting steps and commands, verifying downtime, building the back-out plan, scoring risk…');
   try {
     const r = await (await fetch('/api/changes/refine-plan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ plan_text: text }),
     })).json();
-    cbot.refined = r;
-    if (r.title && !cbot.data.title) cbot.data.title = r.title;
-    cbotAdd(`Structured into ${r.steps.length} steps${r.refined_by === 'ai' ? '' : ' (AI unavailable — imported as manual steps)'}.`);
+    cbotApplyInferred(r.inferred_fields);
+    cbot.refined = r; cbotBusy(false);
+    if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
+    cbotAdd(`Validated into <b>${r.steps.length} steps</b>.${cbotAssessmentHtml(r)}`, 'bot', true);
     cbotReviewCard();
   } catch (e) {
-    cbot.step = 'plan';
-    cbotAdd('✕ Could not refine the plan: ' + e.message + ' — paste it again, or type skip to create without a plan.');
+    cbot.busy = false; cbot.step = 'plan';
+    cbotAdd('✕ Could not validate the plan: ' + e.message + ' — paste it again, or type skip to create without a plan.');
   }
 }
 
 function cbotHandle(text) {
   text = String(text).trim();
-  if (!text || cbot.step === 'submitting' || cbot.step === 'refining') return;
+  if (!text || cbot.busy || cbot.step === 'submitting' || cbot.step === 'refining') return;
   cbotAdd(text, 'user');
   const skip = /^skip$/i.test(text);
+  const val = (t) => t.replace(/\s*\(recommended\)\s*$/i, '').trim();
   switch (cbot.step) {
+    case 'entry':
+      if (/upload/i.test(text)) { cbotAdd('Opening the file picker — choose a .txt, .md, .docx or .pdf plan.'); cbotPickFile(); }
+      else { cbot.step = 'title'; cbotAdd("Let's build it. A one-line title for the change:"); }
+      break;
     case 'title':
       if (text.length < 5) { cbotAdd('A bit more detail for the title, please.'); break; }
-      cbot.data.title = text; cbot.step = 'type';
-      cbotAdd('Change type?'); cbotChips(['Normal', 'Standard', 'Emergency', 'Skip']);
+      cbot.data.title = text; cbot.step = 'desc';
+      cbotAdd('Briefly describe what this change does and why (a sentence or two) — this lets me recommend the right risk, impact and priority:');
+      break;
+    case 'desc':
+      cbot.data.description = text; cbotRecommend();
+      break;
+    case 'rec_choice':
+      if (/accept/i.test(text)) { cbotApplyRec(); cbot.step = 'requestor'; cbotAdd('Requestor email?'); cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []); }
+      else { cbot.step = 'type'; cbotAdd('Change type?'); cbotChips(cbotRecChip('type', ['Normal', 'Standard', 'Emergency'])); }
       break;
     case 'type':
-      if (!skip) cbot.data.type = text; cbot.step = 'category';
-      cbotAdd('Category?'); cbotChips(['Minor', 'Major', 'Significant', 'Skip']);
+      cbot.data.type = val(text); cbot.step = 'category';
+      cbotAdd('Category?'); cbotChips(cbotRecChip('category', ['Minor', 'Major', 'Significant']));
       break;
     case 'category':
-      if (!skip) cbot.data.category = text; cbot.step = 'risk';
-      cbotAdd('Risk level?'); cbotChips(['Low', 'Medium', 'High', 'Skip']);
+      cbot.data.category = val(text); cbot.step = 'risk';
+      cbotAdd('Risk level?'); cbotChips(cbotRecChip('risk', ['Low', 'Medium', 'High']));
       break;
     case 'risk':
-      if (!skip) cbot.data.risk = text; cbot.step = 'impact';
-      cbotAdd('Impact?'); cbotChips(['Low', 'Medium', 'High', 'Skip']);
+      cbot.data.risk = val(text); cbot.step = 'impact';
+      cbotAdd('Impact?'); cbotChips(cbotRecChip('impact', ['Low', 'Medium', 'High']));
       break;
     case 'impact':
-      if (!skip) cbot.data.impact = text; cbot.step = 'priority';
-      cbotAdd('Priority?'); cbotChips(['P1', 'P2', 'P3', 'P4', 'Skip']);
+      cbot.data.impact = val(text); cbot.step = 'priority';
+      cbotAdd('Priority?'); cbotChips(cbotRecChip('priority', ['P1', 'P2', 'P3', 'P4']));
       break;
     case 'priority':
-      if (!skip) cbot.data.priority = text; cbot.step = 'workgroup';
+      cbot.data.priority = val(text); cbot.step = 'workgroup';
       cbotAdd('Owner / assigned workgroup? (optional — must match a Summit workgroup)');
-      cbotChips(['Skip']);
+      cbotChips(cbot.rec && cbot.rec.workgroup ? [cbot.rec.workgroup, 'Skip'] : ['Skip']);
       break;
     case 'workgroup':
       if (!skip) cbot.data.workgroup = text; cbot.step = 'requestor';
-      cbotAdd('Requestor email?');
-      cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
+      cbotAdd('Requestor email?'); cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
       break;
     case 'requestor':
       if (!text.includes('@')) { cbotAdd('That does not look like an email — please retype it.'); break; }
-      cbot.data.requestor = text; cbot.step = 'plan';
-      cbotAdd('Now paste your implementation plan (any format — your org template is fine). I\'ll convert it into executable steps and verify downtime. Or type skip to create the change without a plan.');
-      cbotChips(['Skip plan']);
+      cbot.data.requestor = text;
+      if (cbot.refined) { cbotReviewCard(); break; }   // uploaded plan already validated
+      cbot.step = 'plan';
+      cbotAdd("Paste your implementation plan (any format) and I'll validate & correct it, or type skip to create without a plan.");
+      cbotChips(['📎 Upload instead', 'Skip plan']);
       break;
     case 'plan':
-      if (skip || /skip plan/i.test(text)) { cbot.refined = null; cbotReviewCard(); }
+      if (/upload/i.test(text)) { cbotPickFile(); }
+      else if (skip || /skip plan/i.test(text)) { cbot.refined = null; cbotReviewCard(); }
       else if (text.length < 20) cbotAdd('That looks too short for a plan — paste the full steps, or type skip.');
       else cbotRefine(text);
       break;
@@ -3117,6 +3236,23 @@ function closeImplementer() {
   $('chgImpl').className = ''; $('chgImpl').style.display = 'none'; $('chgImpl').innerHTML = '';
 }
 
+function implAssessmentHtml(plan) {
+  if (!plan) return '';
+  const ra = plan.risk_assessment || {}, sr = plan.success_rate || {};
+  if (!ra.level && sr.percent == null && !(plan.corrections || []).length) return '';
+  const rl = (ra.level || 'Medium').toLowerCase();
+  const rc = rl === 'high' ? 'var(--err)' : rl === 'low' ? 'var(--ok)' : 'var(--warn)';
+  let h = `<div class="ci-sug" style="border-left-color:${rc};margin-top:10px">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-weight:600">
+      ${ra.level ? `<span>Risk: <b style="color:${rc}">${escapeHtml(ra.level)}</b></span>` : ''}
+      ${sr.percent != null ? `<span>Est. success: <b style="color:${sr.percent >= 80 ? 'var(--ok)' : sr.percent >= 60 ? 'var(--warn)' : 'var(--err)'}">${sr.percent}%</b></span>` : ''}
+    </div>
+    ${ra.rationale ? `<div class="hint" style="margin-top:4px">${escapeHtml(ra.rationale)}</div>` : ''}`;
+  if ((plan.corrections || []).length) h += `<div style="margin-top:6px;font-size:12px"><b>Corrections applied:</b><ul style="margin:2px 0 0 16px">${plan.corrections.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`;
+  h += '</div>';
+  return h;
+}
+
 function renderImplementer() {
   const c = implState.change, plan = implState.plan;
   const steps = (plan && plan.steps) || [];
@@ -3176,6 +3312,7 @@ function renderImplementer() {
           <select id="implServer">${serverOpts}</select>
         </div>
         ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
+        ${implAssessmentHtml(plan)}
         <div class="sec-label" style="margin:14px 0 8px">Implementation plan — ${done}/${steps.length} done</div>
         <div class="hint" style="margin-bottom:10px">${ic('shield', 12)} The implementer runs only these commands, in order. Read-only checks are allowed off-plan; anything else is blocked.</div>
         ${stepHtml}
