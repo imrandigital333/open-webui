@@ -125,10 +125,25 @@ def apply_verification(change_id: str, order: int, verification: dict) -> dict |
                  concern=verification.get("concern"),
                  proceed=verification.get("proceed"),
                  verified_by=verification.get("verified_by"))
-    if entry.get("ok") and verification.get("verdict") != "failed" \
-            and order == int(plan.get("current_step") or 0) + 1:
-        plan["current_step"] = order
+    # NOTE: does not advance current_step — the operator reads the output and
+    # clicks "Next step" (advance_step) to move on.
     return save_plan(change_id, plan)
+
+
+def advance_step(change_id: str, order: int) -> dict | None:
+    """Operator-confirmed move to the next step. Only advances past the
+    current step, and only when it ran and the AI didn't judge it failed."""
+    plan = load_plan(change_id)
+    if plan is None:
+        return None
+    cur = int(plan.get("current_step") or 0)
+    if order != cur + 1:
+        return plan
+    entry = (plan.get("results") or {}).get(str(order))
+    if entry and entry.get("ok") and entry.get("verdict") != "failed":
+        plan["current_step"] = order
+        return save_plan(change_id, plan)
+    return plan
 
 
 def mark_manual_done(change_id: str, order: int) -> dict | None:

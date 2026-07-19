@@ -3558,8 +3558,29 @@ function renderImplementer() {
       </div>`;
     }
     if (isCur) {
+      const executed = res && !res.pending_verify && res.verdict;
+      const failed = executed && res.verdict === 'failed';
+      const isLast = order === total;
+      let actions;
+      if (!approved) {
+        actions = '<div class="hint" style="margin-top:6px">Approve the change in Summit to run steps.</div>';
+      } else if (!executed) {
+        actions = `<div style="margin-top:9px" id="impl-run-${order}">
+          <button class="ci-run ci-run-lg" onclick="runImplStep(${order}, this)">${s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done'}</button>
+          <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span></div>`;
+      } else {
+        // executed — stay here so the operator can read the output, then advance
+        actions = `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="impl-run-${order}">
+          ${failed
+            ? `<span style="color:var(--err);font-size:12.5px;font-weight:600">Resolve this before continuing.</span>
+               <button class="ci-run" onclick="runImplStep(${order}, this)">↻ Re-run</button>`
+            : `<button class="ci-run ci-run-lg" onclick="advanceImplStep(${order}, this)">${isLast ? '✓ Finish — mark change complete' : 'Next step →'}</button>
+               <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="runImplStep(${order}, this)">↻ Re-run</button>`}
+          <span class="hint" id="impl-msg-${order}"></span></div>
+          <div class="hint" style="margin-top:6px">${failed ? '' : 'Review the output above, then continue when you\'re ready.'}</div>`;
+      }
       return `<div class="ci-step cur" id="ci-step-${order}">
-        <div class="ci-cur-banner">▶ CURRENT STEP · ${order} of ${total}</div>
+        <div class="ci-cur-banner">▶ CURRENT STEP · ${order} of ${total}${executed ? (failed ? ' · needs attention' : ' · executed — review &amp; continue') : ''}</div>
         <div class="ci-step-h">
           <span class="ci-seq">${order}</span>
           <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
@@ -3570,10 +3591,7 @@ function renderImplementer() {
           ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : '<div class="ci-locked">Manual step — no command to run</div>'}
           ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
           ${outHtml(res)}
-          ${approved ? `<div style="margin-top:9px" id="impl-run-${order}">
-            <button class="ci-run ci-run-lg" onclick="runImplStep(${order}, this)">${s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done'}</button>
-            <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span></div>`
-            : '<div class="hint" style="margin-top:6px">Approve the change in Summit to run steps.</div>'}
+          ${actions}
         </div>
       </div>`;
     }
@@ -3768,6 +3786,17 @@ async function afterStepRun() {
   $('implAva')?.classList.remove('think');
   implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
   renderImplementer();
+}
+async function advanceImplStep(order, btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
+  try {
+    await fetch(`/api/changes/${encodeURIComponent(implState.id)}/advance-step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order }),
+    });
+    implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
+    renderImplementer();
+  } catch (e) { btn.disabled = false; btn.textContent = old; const m = $('impl-msg-' + order); if (m) m.textContent = '✕ ' + e.message; }
 }
 
 async function runImplAdhoc(btn) {

@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.51.0"
+APP_VERSION = "2.52.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -642,8 +642,14 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
         raise HTTPException(status_code=404, detail="No such step in the plan")
     done = int(plan.get("current_step") or 0)
     if not step.get("command"):
-        # manual step — confirming it done is the only action
-        updated = changeplan.mark_manual_done(change_id, req.order)
+        # manual step — record it done (verdict ok) but let the operator click
+        # "Next step" to advance, consistent with command steps
+        updated = changeplan.record_result(
+            change_id, req.order,
+            {"ok": True, "exit_code": None, "output": "(manual step confirmed done)"},
+            {"verdict": "ok", "summary": "Manual step confirmed done by the operator.",
+             "concern": "", "proceed": True, "verified_by": "manual"},
+            advance=False)
         await asyncio.to_thread(db.audit, _actor(request), "change_step_manual_done",
                                 {"change_id": change_id, "order": req.order})
         return {"ok": True, "manual": True,
@@ -701,6 +707,18 @@ async def change_verify_step(change_id: str, req: ChangeVerifyRequest, request: 
                              "verdict": verification.get("verdict")})
     return {"verification": verification,
             "current_step": (updated or plan).get("current_step")}
+
+
+@app.post("/api/changes/{change_id}/advance-step")
+async def change_advance_step(change_id: str, req: ChangeVerifyRequest, request: Request):
+    """Operator confirms a step's result and moves to the next one."""
+    updated = await asyncio.to_thread(changeplan.advance_step, change_id, req.order)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="No stored plan for this change")
+    await asyncio.to_thread(db.audit, _actor(request), "change_step_advanced",
+                            {"change_id": change_id, "order": req.order,
+                             "current_step": updated.get("current_step")})
+    return {"current_step": updated.get("current_step")}
 
 
 class ChangeRunCmdRequest(BaseModel):
