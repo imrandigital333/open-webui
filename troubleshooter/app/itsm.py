@@ -757,9 +757,13 @@ def create_change(f: dict) -> dict:
     end = str(f.get("end") or "").strip() or _fmt_dt(now + 2 * 86400)
     pir_planned = _fmt_dt(now + 3 * 86400)
 
-    # full CR container mirroring the working sample (order/keys preserved)
+    # full CR container mirroring the working sample (order/keys preserved).
+    # Change_Request_Id 0 = create a new CR — the sample's 1844 is an update,
+    # and omitting the key entirely makes Summit NRE ("Object reference not
+    # set to an instance of an object").
     create_status = str(cfg.get("change_create_status") or "").strip()
     container = {
+        "Change_Request_Id": 0,
         "Status": create_status,
         "Support_Function": str(cfg.get("change_support_function") or "IT"),
         "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
