@@ -122,9 +122,16 @@ executable, low-risk plan and honestly score it.
 
 Do ALL of this:
 
-1. Break the plan into ordered steps. Each step is either an exact shell command
-   ("command") or a manual action ("command": ""). Phases: pre | implement |
-   verify | rollback.
+1. Break the plan into ordered steps. Phases: pre | implement | verify |
+   rollback. For EVERY step that can be performed from a Linux shell, WRITE the
+   exact executable command in "command" — even when the plan document only
+   describes the action in words (e.g. "patch the kernel" → the concrete
+   yum/dnf command; "take a backup of the config" → the concrete tar/cp
+   command with dated filenames). The implementer assistant executes these
+   commands verbatim, so a step without a command cannot be automated. Leave
+   "command" empty ONLY for inherently manual actions (approvals, physical
+   work, coordination). Use concrete names from the plan; if a name is
+   uncertain, still write the most likely command and flag it in suggestions.
 2. VALIDATE AND CORRECT the commands and steps: fix wrong/unsafe syntax, add
    missing quoting, split compound risky commands, and put steps in a safe order
    (backups BEFORE state changes, verification AFTER). Record every change you

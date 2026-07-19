@@ -909,8 +909,8 @@
               <input id="it_change_support_function" maxlength="60" placeholder="IT"></div>
             <div><label>Support function name <span style="font-weight:normal">(required on create)</span></label>
               <input id="it_change_support_function_name" maxlength="120" placeholder="BIAL Services"></div>
-            <div><label>Initial status for new CRs <span style="font-weight:normal">(blank = let Summit auto-assign)</span></label>
-              <input id="it_change_create_status" maxlength="60" placeholder="leave blank to auto-assign"></div>
+            <div><label>Initial status for new CRs</label>
+              <input id="it_change_create_status" maxlength="60" placeholder="Initial Authorization"></div>
             <div><label>Default owner workgroup</label>
               <input id="it_change_default_workgroup" maxlength="120" placeholder="Windows Server Support"></div>
             <div><label>Owner workgroup ID</label>
@@ -2898,9 +2898,12 @@ function cbotReviewCard() {
   const row = (k, v) => v ? `<div class="sumrow"><b>${k}</b><span>${escapeHtml(String(v))}</span></div>` : '';
   let planHtml = '';
   if (r && r.steps) {
-    planHtml = `<div style="margin-top:8px;font-weight:700">Validated plan — ${r.steps.length} steps</div>
+    const withCmd = r.steps.filter(s => s.command).length;
+    planHtml = `<div style="margin-top:8px;font-weight:700">Validated plan — ${r.steps.length} steps
+        <span style="font-weight:400;color:var(--muted)">(${withCmd} executable, ${r.steps.length - withCmd} manual)</span></div>
       <ol style="margin:4px 0 0 16px;font-size:12px">${r.steps.map(s =>
-        `<li>${escapeHtml(s.description || s.command || '')}${s.downtime_required ? ' <span class="ci-dt">downtime</span>' : ''}</li>`).join('')}</ol>`;
+        `<li>${escapeHtml(s.description || '')}${s.downtime_required ? ' <span class="ci-dt">downtime</span>' : ''}
+          ${s.command ? `<div style="font-family:var(--mono);font-size:11px;color:var(--accent2);margin:2px 0 4px;word-break:break-all">$ ${escapeHtml(s.command)}</div>` : '<div class="hint" style="margin:2px 0 4px">manual step — no command</div>'}</li>`).join('')}</ol>`;
     if (r.backout_plan) planHtml += `<div class="hint" style="margin-top:6px"><b>Back-out:</b> ${escapeHtml(r.backout_plan)}</div>`;
     planHtml += cbotAssessmentHtml(r);
     if (r.suggestions && r.suggestions.length) {

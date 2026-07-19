@@ -77,9 +77,9 @@ DEFAULTS = {
     # Create-time values mirroring the vendor's working sample. These are
     # deployment-specific record IDs/names — adjust in Settings if a create
     # is rejected for one of them.
-    # Blank = let Summit assign the workflow's own initial status (the safe
-    # default; explicit create-time status names vary per deployment).
-    "change_create_status": "",
+    # The sample's status — with Change_Request_Id present, this validates.
+    # (Omitting Status makes Summit NRE during create.)
+    "change_create_status": "Initial Authorization",
     # Category NAME and ID must be a matching pair from Summit's category
     # master, so they're set together from config (not from free text / AI).
     "change_category_name": "Minor",
@@ -174,10 +174,6 @@ def load_config() -> dict:
     if cfg["incident_detail_service"] == "IM_GetIncidentDetails":
         # pre-2.35 placeholder — the vendor-confirmed detail service
         cfg["incident_detail_service"] = "IM_GetIncidentDetailsAndChangeHistory"
-    if cfg.get("change_create_status") in ("Initial Authorization", "Draft"):
-        # these were guessed create-time statuses that Summit rejects; clear
-        # them so Summit assigns the workflow's own initial status.
-        cfg["change_create_status"] = ""
     return cfg
 
 
