@@ -909,6 +909,8 @@
               <input id="it_change_support_function" maxlength="60" placeholder="IT"></div>
             <div><label>Support function name <span style="font-weight:normal">(required on create)</span></label>
               <input id="it_change_support_function_name" maxlength="120" placeholder="BIAL Services"></div>
+            <div><label>Initial status for new CRs</label>
+              <input id="it_change_create_status" maxlength="60" placeholder="Draft"></div>
             <div><label>Known CR number <span style="font-weight:normal">(optional — tests the detail service)</span></label>
               <input id="it_change_test_cr" maxlength="64" placeholder="e.g. 1842"></div>
           </div>
@@ -2273,6 +2275,7 @@ async function loadItsmConfig() {
   $('it_change_statuses').value = c.change_statuses || '';
   $('it_change_support_function').value = c.change_support_function || 'IT';
   $('it_change_support_function_name').value = c.change_support_function_name || 'BIAL Services';
+  $('it_change_create_status').value = c.change_create_status || 'Draft';
   $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
@@ -2317,6 +2320,7 @@ function itsmForm() {
     change_statuses: $('it_change_statuses').value.trim(),
     change_support_function: $('it_change_support_function').value.trim() || 'IT',
     change_support_function_name: $('it_change_support_function_name').value.trim() || 'BIAL Services',
+    change_create_status: $('it_change_create_status').value.trim() || 'Draft',
     caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',

@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.41.1"
+APP_VERSION = "2.41.2"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -218,6 +218,7 @@ class ItsmConfigRequest(BaseModel):
     change_lookback_days: int = Field(30, ge=1, le=365)
     change_support_function: str = Field("IT", max_length=60)
     change_support_function_name: str = Field("BIAL Services", max_length=120)
+    change_create_status: str = Field("Draft", max_length=60)
     caller_email: str = Field("", max_length=200)
     instance: str = Field("IT", max_length=50)
     incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",

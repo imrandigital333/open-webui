@@ -74,6 +74,9 @@ DEFAULTS = {
     # sample); deployment-specific, so it's configurable.
     "change_support_function": "IT",
     "change_support_function_name": "BIAL Services",
+    # initial workflow status for a NEW CR (varies per Summit workflow; the
+    # sample's "Initial Authorization" is an update status, not a create one)
+    "change_create_status": "Draft",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -114,6 +117,7 @@ _ENV_MAP = {
     "change_lookback_days": "SUMMITAI_CHANGE_LOOKBACK_DAYS",
     "change_support_function": "SUMMITAI_CHANGE_SUPPORT_FUNCTION",
     "change_support_function_name": "SUMMITAI_CHANGE_SUPPORT_FUNCTION_NAME",
+    "change_create_status": "SUMMITAI_CHANGE_CREATE_STATUS",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -762,6 +766,7 @@ def create_change(f: dict) -> dict:
         # required by Summit on create (deployment-specific display name)
         "Support_Function": str(cfg.get("change_support_function") or "IT"),
         "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
+        "Status": str(cfg.get("change_create_status") or "Draft"),
     })
     if f.get("workgroup"):
         container["Owner_Workgroup"] = str(f["workgroup"])
