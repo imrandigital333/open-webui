@@ -77,7 +77,9 @@ DEFAULTS = {
     # Create-time values mirroring the vendor's working sample. These are
     # deployment-specific record IDs/names — adjust in Settings if a create
     # is rejected for one of them.
-    "change_create_status": "Initial Authorization",
+    # Blank = let Summit assign the workflow's own initial status (the safe
+    # default; explicit create-time status names vary per deployment).
+    "change_create_status": "",
     "change_category_id": 132,
     "change_executive_id": "2",
     "change_owner_workgroup_id": "12",
@@ -168,6 +170,10 @@ def load_config() -> dict:
     if cfg["incident_detail_service"] == "IM_GetIncidentDetails":
         # pre-2.35 placeholder — the vendor-confirmed detail service
         cfg["incident_detail_service"] = "IM_GetIncidentDetailsAndChangeHistory"
+    if cfg.get("change_create_status") in ("Initial Authorization", "Draft"):
+        # these were guessed create-time statuses that Summit rejects; clear
+        # them so Summit assigns the workflow's own initial status.
+        cfg["change_create_status"] = ""
     return cfg
 
 
@@ -748,8 +754,9 @@ def create_change(f: dict) -> dict:
     pir_planned = _fmt_dt(now + 3 * 86400)
 
     # full CR container mirroring the working sample (order/keys preserved)
+    create_status = str(cfg.get("change_create_status") or "").strip()
     container = {
-        "Status": str(cfg.get("change_create_status") or "Initial Authorization"),
+        "Status": create_status,
         "Support_Function": str(cfg.get("change_support_function") or "IT"),
         "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
         "Category": str(f.get("category") or "Minor"),
@@ -802,6 +809,10 @@ def create_change(f: dict) -> dict:
         "RleasePlanned_StartTime": None, "IsCIUpdation": None,
         "ManualEscalationLevelID": 0, "ManualEscalationRemarks": None,
     }
+    # Blank create status → omit it so Summit assigns the workflow's own
+    # initial status (create-time status names are deployment-specific).
+    if not create_status:
+        container.pop("Status", None)
     params = {
         "cmParamsJSON": {
             "CMContainerJson": json.dumps(container),
