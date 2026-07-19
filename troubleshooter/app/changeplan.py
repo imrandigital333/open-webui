@@ -237,13 +237,21 @@ Reply with ONLY this JSON (identical schema to a refined plan; no fences):
 
 async def generate_plan(context: str) -> dict:
     """Build an executable plan from a change goal/description (no document)."""
-    data = await _one_shot_json(_GENERATE_PROMPT % context[:6000], timeout_s=120)
-    if not data or not (data.get("steps")):
-        fb = _fallback_steps(context)
-        fb["summary"] = ("Could not auto-generate a plan — add the implementation "
-                         "steps and commands manually.")
-        return fb
-    return _shape_refined(data)
+    data, err = await _one_shot_json(_GENERATE_PROMPT % context[:6000], timeout_s=150)
+    shaped = _shape_refined(data) if data else None
+    if shaped:
+        return shaped
+    # never fabricate steps from the description — say clearly it failed
+    return {
+        "title": "", "summary": "AI plan generation is unavailable on this server.",
+        "steps": [], "corrections": [], "suggestions": [],
+        "downtime_overall": {"required": False, "note": ""},
+        "backout_plan": "", "backout_validated": False, "inferred_fields": {},
+        "risk_assessment": {"level": "", "rationale": ""},
+        "success_rate": {"percent": None, "factors": []},
+        "missing_fields": [], "refined_by": "unavailable",
+        "ai_error": err or "the AI returned no usable plan",
+    }
 
 
 def _fallback_steps(plan_text: str) -> dict:
@@ -315,27 +323,15 @@ def _enforce_downtime(result: dict) -> dict:
 
 
 async def refine_plan(plan_text: str) -> dict:
-    text = ""
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions, query
-        from claude_agent_sdk.types import ResultMessage
-        async with asyncio.timeout(120):
-            options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
-            async for message in query(prompt=_REFINE_PROMPT % plan_text[:12000],
-                                       options=options):
-                if isinstance(message, ResultMessage) and not message.is_error:
-                    text = message.result or ""
-    except Exception:  # noqa: BLE001 — refinement must degrade, not fail
-        return _fallback_steps(plan_text)
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return _fallback_steps(plan_text)
-    try:
-        data = json.loads(m.group())
-    except json.JSONDecodeError:
-        return _fallback_steps(plan_text)
-    shaped = _shape_refined(data)
-    return shaped if shaped else _fallback_steps(plan_text)
+    data, err = await _one_shot_json(_REFINE_PROMPT % plan_text[:12000], timeout_s=150)
+    if data:
+        shaped = _shape_refined(data)
+        if shaped:
+            return shaped
+        err = err or "the AI response could not be parsed into steps"
+    fb = _fallback_steps(plan_text)
+    fb["ai_error"] = err or "AI returned no usable plan"
+    return fb
 
 
 def _shape_refined(data: dict) -> dict | None:
@@ -399,33 +395,43 @@ def _shape_refined(data: dict) -> dict | None:
 
 
 async def _one_shot_json(prompt: str, timeout_s: int = 90):
-    """Run a single-turn tool-less query and return parsed JSON, or None."""
+    """Run a single-turn tool-less query, returning (parsed_json, error).
+    Exactly one of the two is set. error is a short human string for the UI."""
     text = ""
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
         from claude_agent_sdk.types import ResultMessage
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Claude Agent SDK not installed on the server ({exc})"
+    try:
         async with asyncio.timeout(timeout_s):
             options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
             async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage) and not message.is_error:
+                if isinstance(message, ResultMessage):
+                    if message.is_error:
+                        return None, f"AI call returned an error: {getattr(message, 'result', '') or getattr(message, 'subtype', 'error')}"[:300]
                     text = message.result or ""
-    except Exception:  # noqa: BLE001
-        return None
+    except TimeoutError:
+        return None, f"AI call timed out after {timeout_s}s"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"AI call failed: {type(exc).__name__}: {exc}"[:300]
+    if not text.strip():
+        return None, "AI returned an empty response (check the Claude Code login / credentials for the service account)"
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        return None
+        return None, "AI response was not JSON: " + " ".join(text.split())[:180]
     try:
-        return json.loads(m.group())
-    except json.JSONDecodeError:
-        return None
+        return json.loads(m.group()), None
+    except json.JSONDecodeError as exc:
+        return None, f"AI response JSON was invalid ({exc})"
 
 
 async def recommend_change(context: str) -> dict:
     """Suggest CR attributes + an outline plan from a description (no attachment
     flow). Degrades to neutral defaults if the AI is unavailable."""
-    data = await _one_shot_json(_RECOMMEND_PROMPT % context[:6000])
+    data, err = await _one_shot_json(_RECOMMEND_PROMPT % context[:6000])
     if not data:
-        return {"available": False,
+        return {"available": False, "ai_error": err,
                 "category": "Minor", "type": "Normal", "risk": "Medium",
                 "impact": "Medium", "priority": "P3", "downtime_required": False,
                 "workgroup": "", "rationale": "AI recommendations unavailable — pick values manually.",

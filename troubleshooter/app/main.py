@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.46.0"
+APP_VERSION = "2.46.1"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -101,6 +101,21 @@ async def index():
 @app.get("/api/version")
 async def version():
     return {"version": APP_VERSION, "commit": GIT_COMMIT}
+
+
+@app.get("/api/ai/health")
+async def ai_health():
+    """Probe the Claude Agent SDK with a trivial one-shot call so operators can
+    see whether (and why) AI features like plan generation are working."""
+    data, err = await changeplan._one_shot_json(
+        'Reply with ONLY this JSON: {"ok": true}', timeout_s=60)
+    return {"ok": bool(data), "error": err,
+            "detail": ("AI is reachable — plan generation and validation will work."
+                       if data else
+                       "AI is NOT reachable from the service. Plan generation/validation "
+                       "will fall back. Ensure the service account is logged in to Claude "
+                       "Code (the same login the troubleshooting agent uses) and the "
+                       "`claude` CLI is on its PATH.")}
 
 
 @app.get("/api/selfcheck")
@@ -554,6 +569,11 @@ async def generate_change_plan(change_id: str, request: Request,
                + host_line
                + (f"Operator-supplied specifics: {req.details}\n" if req.details else ""))
     plan = await changeplan.generate_plan(context)
+    if not plan.get("steps"):
+        # AI unavailable / produced nothing — don't store an empty plan
+        raise HTTPException(status_code=503,
+                            detail="Couldn't generate a plan — " + (plan.get("ai_error")
+                                   or "the AI is unavailable on this server."))
     existing = changeplan.load_plan(change_id) or {}
     stored = changeplan.save_plan(change_id, {
         "title": change.get("title") or plan.get("title") or str(change_id),

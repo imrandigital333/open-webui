@@ -2919,6 +2919,7 @@ async function cbotRecommend() {
       body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}` }),
     })).json();
     cbotStopTyping(); cbot.rec = r; cbotBusy(false);
+    if (r.ai_error) cbotAdd('⚠️ AI recommendations unavailable — ' + r.ai_error + ' (using neutral defaults; you can set each field yourself).');
     const parts = [`type <b>${escapeHtml(r.type)}</b>`, `category <b>${escapeHtml(r.category)}</b>`,
       `risk <b>${escapeHtml(r.risk)}</b>`, `impact <b>${escapeHtml(r.impact)}</b>`,
       `priority <b>${escapeHtml(r.priority)}</b>`, `downtime <b>${r.downtime_required ? 'required' : 'not required'}</b>`];
@@ -3018,6 +3019,14 @@ async function cbotRefine(text, label) {
       body: JSON.stringify({ plan_text: text }),
     })).json();
     cbotStopTyping();
+    if (r.refined_by !== 'ai' || r.ai_error) {
+      cbot.step = 'plan';
+      cbotBusy(false);
+      cbotAdd('⚠️ AI plan validation is unavailable right now' + (r.ai_error ? ` — ${r.ai_error}` : '')
+        + '. I won\'t guess a plan. You can paste a plan again, upload a document, or type skip to create the change without a plan (add steps later in the implementer).');
+      cbotChips(['📎 Upload instead', 'Skip plan', 'Start over']);
+      return;
+    }
     cbotApplyInferred(r.inferred_fields);
     cbot.refined = r; cbotBusy(false);
     if (r.downtime_overall) cbot.data.downtime = !!r.downtime_overall.required;
