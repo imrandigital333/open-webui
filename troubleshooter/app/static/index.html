@@ -905,6 +905,10 @@
               <input id="it_change_list_filter_key" maxlength="60" placeholder="objChangeCommonFilter"></div>
             <div style="grid-column:1/-1"><label>Status filter <span style="font-weight:normal">(optional, comma-separated)</span></label>
               <input id="it_change_statuses" maxlength="300" placeholder="leave blank for all statuses"></div>
+            <div><label>Support function</label>
+              <input id="it_change_support_function" maxlength="60" placeholder="IT"></div>
+            <div><label>Support function name <span style="font-weight:normal">(required on create)</span></label>
+              <input id="it_change_support_function_name" maxlength="120" placeholder="BIAL Services"></div>
             <div><label>Known CR number <span style="font-weight:normal">(optional — tests the detail service)</span></label>
               <input id="it_change_test_cr" maxlength="64" placeholder="e.g. 1842"></div>
           </div>
@@ -2267,6 +2271,8 @@ async function loadItsmConfig() {
   $('it_change_lookback_days').value = c.change_lookback_days ?? 30;
   $('it_change_list_filter_key').value = c.change_list_filter_key || 'objChangeCommonFilter';
   $('it_change_statuses').value = c.change_statuses || '';
+  $('it_change_support_function').value = c.change_support_function || 'IT';
+  $('it_change_support_function_name').value = c.change_support_function_name || 'BIAL Services';
   $('it_caller_email').value = c.caller_email || '';
   $('it_instance').value = c.instance || 'IT';
   $('it_incident_statuses').value = c.incident_statuses || 'New,In-Progress,Assigned,Pending,Resolved,Closed';
@@ -2309,6 +2315,8 @@ function itsmForm() {
     change_lookback_days: parseInt($('it_change_lookback_days').value, 10) || 30,
     change_list_filter_key: $('it_change_list_filter_key').value.trim() || 'objChangeCommonFilter',
     change_statuses: $('it_change_statuses').value.trim(),
+    change_support_function: $('it_change_support_function').value.trim() || 'IT',
+    change_support_function_name: $('it_change_support_function_name').value.trim() || 'BIAL Services',
     caller_email: $('it_caller_email').value.trim(),
     instance: $('it_instance').value.trim() || 'IT',
     incident_statuses: $('it_incident_statuses').value.trim() || 'New,In-Progress,Assigned,Pending,Resolved,Closed',

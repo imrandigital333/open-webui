@@ -70,6 +70,10 @@ DEFAULTS = {
     "change_statuses": "",                       # optional Status filter (comma list)
     "change_list_filter_key": "objChangeCommonFilter",
     "change_lookback_days": 30,
+    # CR creation requires a support-function display name (per the vendor
+    # sample); deployment-specific, so it's configurable.
+    "change_support_function": "IT",
+    "change_support_function_name": "BIAL Services",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -108,6 +112,8 @@ _ENV_MAP = {
     "change_statuses": "SUMMITAI_CHANGE_STATUSES",
     "change_list_filter_key": "SUMMITAI_CHANGE_FILTER_KEY",
     "change_lookback_days": "SUMMITAI_CHANGE_LOOKBACK_DAYS",
+    "change_support_function": "SUMMITAI_CHANGE_SUPPORT_FUNCTION",
+    "change_support_function_name": "SUMMITAI_CHANGE_SUPPORT_FUNCTION_NAME",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -753,6 +759,9 @@ def create_change(f: dict) -> dict:
         "Back_Out_Plan": str(f.get("backout") or ""),
         "Requestor_Name": requestor,
         "Requested_By_Name": requestor,
+        # required by Summit on create (deployment-specific display name)
+        "Support_Function": str(cfg.get("change_support_function") or "IT"),
+        "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
     })
     if f.get("workgroup"):
         container["Owner_Workgroup"] = str(f["workgroup"])
