@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.49.0"
+APP_VERSION = "2.50.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -658,12 +658,15 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
     result = await _ssh_exec(server, step["command"])
-    updated = changeplan.record_result(change_id, req.order, result)
+    verification = await changeplan.verify_step(step, result, plan.get("title", ""))
+    updated = changeplan.record_result(change_id, req.order, result, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_step_executed",
                             {"change_id": change_id, "order": req.order,
                              "server": req.server, "ok": result["ok"],
-                             "exit_code": result["exit_code"]})
-    return {**result, "current_step": (updated or plan).get("current_step")}
+                             "exit_code": result["exit_code"],
+                             "verdict": verification.get("verdict")})
+    return {**result, "verification": verification,
+            "current_step": (updated or plan).get("current_step")}
 
 
 class ChangeRunCmdRequest(BaseModel):
@@ -686,13 +689,18 @@ async def change_run_cmd(change_id: str, req: ChangeRunCmdRequest, request: Requ
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
     result = await _ssh_exec(server, req.command)
+    verification = None
     if gate.get("step_order"):
-        changeplan.record_result(change_id, gate["step_order"], result)
+        step = next((s for s in plan.get("steps", [])
+                     if int(s.get("order", 0)) == gate["step_order"]), None)
+        if step:
+            verification = await changeplan.verify_step(step, result, plan.get("title", ""))
+        changeplan.record_result(change_id, gate["step_order"], result, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_cmd_executed",
                             {"change_id": change_id, "command": req.command[:200],
                              "kind": gate["kind"], "server": req.server,
                              "ok": result["ok"]})
-    return {**result, "gate": gate}
+    return {**result, "gate": gate, "verification": verification}
 
 
 class ChangeLogRequest(BaseModel):

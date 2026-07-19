@@ -615,6 +615,10 @@
             max-height: 220px; overflow: auto; display: none; }
   .ci-out.ok { border-left: 3px solid var(--ok); }
   .ci-out.err { border-left: 3px solid var(--err); }
+  .ci-verdict { background: var(--panel2); border-radius: 0 8px 8px 0; padding: 8px 11px;
+                margin-top: 7px; font-size: 12.5px; line-height: 1.5; }
+  .ci-narr { background: var(--panel2); border-radius: 0 8px 8px 0; padding: 7px 11px;
+             margin-top: 8px; font-size: 12.5px; line-height: 1.5; }
   .ci-locked { font-size: 11.5px; color: var(--muted); display: flex; align-items: center;
                gap: 6px; padding: 2px 0; }
   .ci-adhoc { display: flex; gap: 8px; margin-top: 4px; }
@@ -3489,8 +3493,20 @@ function renderImplementer() {
   const curOrder = done + 1;
   const allDone = done >= total && total > 0;
 
+  const verdictHtml = (res) => {
+    if (!res || !res.verdict) return '';
+    const v = res.verdict;
+    const col = v === 'failed' ? 'var(--err)' : v === 'warning' ? 'var(--warn)' : 'var(--ok)';
+    const ic = v === 'failed' ? '✕' : v === 'warning' ? '⚠' : '✓';
+    return `<div class="ci-verdict" style="border-left:3px solid ${col}">
+      <div style="font-weight:650;color:${col}">${ic} AI verified: ${escapeHtml(v)}${res.verified_by === 'exit-code' ? ' <span style="font-weight:400;color:var(--muted)">(exit code only — AI unavailable)</span>' : ''}</div>
+      ${res.summary ? `<div style="margin-top:2px">${escapeHtml(res.summary)}</div>` : ''}
+      ${res.concern ? `<div class="hint" style="margin-top:3px;color:var(--warn)">⚠ ${escapeHtml(res.concern)}</div>` : ''}
+      ${res.proceed === false ? '<div style="margin-top:3px;color:var(--err);font-weight:600">AI advises NOT to continue until this is resolved.</div>' : ''}
+    </div>`;
+  };
   const outHtml = (res) => res
-    ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>`
+    ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>${verdictHtml(res)}`
     : '';
 
   const stepHtml = steps.map(s => {
@@ -3500,12 +3516,16 @@ function renderImplementer() {
     const res = plan.results && plan.results[String(order)];
     if (isDone) {
       // compact, collapsed — click the header to expand its command/output
+      const vc = res && res.verdict === 'failed' ? 'var(--err)'
+        : res && res.verdict === 'warning' ? 'var(--warn)' : 'var(--ok)';
+      const vlabel = res && res.verdict && res.verdict !== 'ok'
+        ? `<span class="ci-dt" style="border-color:${vc};color:${vc}">${escapeHtml(res.verdict)}</span>` : '';
       return `<div class="ci-step done" id="ci-step-${order}">
         <div class="ci-step-h" style="cursor:pointer" onclick="this.parentNode.classList.toggle('open')">
-          <span class="ci-seq">✓</span>
+          <span class="ci-seq" style="background:${vc};color:#04210f">✓</span>
           <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
           <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.description || '')}</span>
-          ${res && !res.ok ? '<span class="ci-dt" style="border-color:var(--err);color:var(--err)">failed</span>' : ''}
+          ${vlabel}
           <span class="ci-chev">▾</span>
         </div>
         <div class="ci-body ci-collapsed">
@@ -3547,12 +3567,32 @@ function renderImplementer() {
     </div>`;
   }).join('');
 
+  // running narrative from the AI step verifications
+  const results = (plan && plan.results) || {};
+  const verds = Object.values(results).map(r => r.verdict).filter(Boolean);
+  const fails = verds.filter(v => v === 'failed').length;
+  const warns = verds.filter(v => v === 'warning').length;
+  const lastOrder = Math.max(0, ...Object.keys(results).map(Number));
+  const last = results[String(lastOrder)];
+  let narrative = '';
+  if (last) {
+    const nc = fails ? 'var(--err)' : warns ? 'var(--warn)' : 'var(--ok)';
+    const headline = fails ? `⚠ step ${lastOrder} did not verify cleanly — review before continuing`
+      : allDone ? `✓ change complete — all ${total} steps verified${warns ? `, ${warns} with warnings` : ''}`
+      : warns ? `on track — ${warns} step(s) completed with warnings`
+      : `on track — ${done}/${total} steps verified OK`;
+    narrative = `<div class="ci-narr" style="border-left:3px solid ${nc}">
+      <div style="font-weight:650;color:${nc}">${headline}</div>
+      ${last.summary ? `<div style="margin-top:2px;font-size:12px">Latest — step ${lastOrder}: ${escapeHtml(last.summary)}</div>` : ''}
+    </div>`;
+  }
   const progressHtml = `<div class="ci-prog">
     <div class="ci-prog-top"><b>Implementation</b> — ${allDone
       ? '<span style="color:var(--ok)">✓ all ' + total + ' steps complete</span>'
       : 'step ' + Math.min(curOrder, total) + ' of ' + total + ' · ' + done + ' done'}</div>
     <div class="ci-prog-bar">${steps.map(s =>
       `<i class="${s.order <= done ? 'done' : s.order === curOrder ? 'cur' : ''}"></i>`).join('')}</div>
+    ${narrative}
   </div>`;
 
   const d = $('chgImpl');
@@ -3665,17 +3705,20 @@ async function genImplPlan(btn) {
 }
 async function runImplStep(order, btn) {
   const msg = $('impl-msg-' + order);
-  btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'running…';
+  $('implAva')?.classList.add('think');
+  if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = 'executing, then the AI reads and verifies the output…'; }
   try {
     const r = await fetch(`/api/changes/${encodeURIComponent(implState.id)}/run-step`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order, server: implState.server }),
     });
     const d = await r.json();
-    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || r.statusText); btn.textContent = old; btn.disabled = false; return; }
+    $('implAva')?.classList.remove('think');
+    if (!r.ok) { if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || r.statusText); } btn.textContent = old; btn.disabled = false; return; }
     implState.plan = await (await fetch(`/api/changes/${encodeURIComponent(implState.id)}`)).json().then(x => x.plan);
     renderImplementer();
-  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; btn.textContent = old; btn.disabled = false; }
+  } catch (e) { $('implAva')?.classList.remove('think'); if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } btn.textContent = old; btn.disabled = false; }
 }
 
 async function runImplAdhoc(btn) {

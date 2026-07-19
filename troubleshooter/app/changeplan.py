@@ -85,15 +85,25 @@ def check_command(plan: dict | None, command: str) -> dict:
                       f" (policy: {why}) — only plan steps and read-only checks may run"}
 
 
-def record_result(change_id: str, order: int, result: dict) -> dict | None:
+def record_result(change_id: str, order: int, result: dict,
+                  verification: dict | None = None) -> dict | None:
     plan = load_plan(change_id)
     if plan is None:
         return None
-    plan.setdefault("results", {})[str(order)] = {
+    entry = {
         "ok": bool(result.get("ok")), "exit_code": result.get("exit_code"),
         "output": str(result.get("output") or "")[-4000:], "ts": time.time(),
     }
-    if result.get("ok") and order == int(plan.get("current_step") or 0) + 1:
+    if verification:
+        entry.update(verdict=verification.get("verdict"),
+                     summary=verification.get("summary"),
+                     concern=verification.get("concern"),
+                     proceed=verification.get("proceed"),
+                     verified_by=verification.get("verified_by"))
+    plan.setdefault("results", {})[str(order)] = entry
+    # advance only when the command ran AND the AI didn't judge it failed
+    verdict_ok = (verification or {}).get("verdict") != "failed"
+    if result.get("ok") and verdict_ok and order == int(plan.get("current_step") or 0) + 1:
         plan["current_step"] = order
     return save_plan(change_id, plan)
 
@@ -461,6 +471,53 @@ async def recommend_change(context: str) -> dict:
         "outline_steps": [str(x)[:200] for x in (data.get("outline_steps") or [])][:12],
         "backout_hint": str(data.get("backout_hint") or "")[:600],
     }
+
+
+_VERIFY_PROMPT = """You are a change implementer verifying a step you just ran on a production
+Linux server. Read the ACTUAL command output — do not trust the exit code alone
+(a command can exit 0 yet clearly fail, or exit non-zero yet be benign).
+
+Change: %s
+Step %s [%s]: %s
+Command: %s
+Exit code: %s
+Output:
+%s
+
+Decide whether this step achieved its intent and whether it is safe to continue.
+Reply with ONLY this JSON (no fences):
+{"verdict": "ok|warning|failed",
+ "summary": "1-2 plain sentences: what the output shows / what happened",
+ "concern": "any red flag to watch, or '' if none",
+ "proceed": true}
+verdict rules: ok = did what it should; warning = worked but something needs
+attention; failed = did not achieve its intent or broke something. proceed =
+false only when continuing would be unsafe."""
+
+
+async def verify_step(step: dict, result: dict, change_title: str = "") -> dict:
+    """AI reads a step's real output and judges success/summary/concern.
+    Falls back to an exit-code verdict if the AI is unavailable."""
+    out = (result.get("output") or "")[:4000]
+    data, err = await _one_shot_json(_VERIFY_PROMPT % (
+        change_title or "(change)", step.get("order"), step.get("phase", "step"),
+        step.get("description", ""), step.get("command") or "(manual step)",
+        result.get("exit_code"), out or "(no output)"), timeout_s=60)
+    if not data:
+        ok = bool(result.get("ok"))
+        tail = " ".join(out.split())[:200]
+        return {"verdict": "ok" if ok else "failed",
+                "summary": (f"Exit {result.get('exit_code')}. " + (tail or "(no output)"))[:300],
+                "concern": "" if ok else "Command reported a non-zero exit.",
+                "proceed": ok, "verified_by": "exit-code"}
+    v = str(data.get("verdict") or "").lower()
+    if v not in ("ok", "warning", "failed"):
+        v = "ok" if result.get("ok") else "failed"
+    return {"verdict": v,
+            "summary": str(data.get("summary") or "")[:400],
+            "concern": str(data.get("concern") or "")[:300],
+            "proceed": bool(data.get("proceed", v != "failed")),
+            "verified_by": "ai"}
 
 
 def extract_text(filename: str, data: bytes) -> str:
