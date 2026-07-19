@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import changeplan, cmdreview, db, healthprobe, itsm, orchestrator
+from . import changeplan, cmdreview, db, discovery, healthprobe, itsm, orchestrator
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.47.1"
+APP_VERSION = "2.48.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -590,12 +590,16 @@ async def generate_change_plan(change_id: str, request: Request,
                      f"services: {', '.join(srv.services) or 'unknown'}\n")
     elif req.server:
         host_line = f"Target host: {req.server}; OS: {req.os_family or 'linux'}\n"
+    # discovered facts give the AI real, server-specific grounding
+    disco = discovery.facts_summary(req.server) if req.server else ""
     context = (f"Change {change_id}: {change.get('title', '')}\n"
                f"{change.get('description', '')}\n"
                f"Affected CI/server: {change.get('ci', '')}\n"
                f"Risk: {change.get('risk', '')}  Category: {change.get('category', '')}\n"
                + host_line
-               + (f"Operator-supplied specifics: {req.details}\n" if req.details else ""))
+               + (f"\nDiscovered facts about the target server (use these — do not guess):\n{disco}\n"
+                  if disco else "")
+               + (f"\nOperator-supplied specifics: {req.details}\n" if req.details else ""))
     plan = await changeplan.generate_plan(context)
     if not plan.get("steps"):
         # AI unavailable / produced nothing — don't store an empty plan
@@ -1160,6 +1164,24 @@ async def get_probe(name: str):
 @app.get("/api/servers/{name}/health-history")
 async def get_health_history(name: str, limit: int = 30):
     return {"history": await asyncio.to_thread(db.health_history, name, min(limit, 100))}
+
+
+@app.post("/api/servers/{name}/discover")
+async def run_discovery(name: str, request: Request):
+    """SSH in and gather a full fact sheet (OS, virtualization, CPU/mem, disks,
+    network, services, package manager…) so plans are grounded in reality."""
+    server = load_inventory().get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not in inventory")
+    result = await discovery.discover(server)
+    await asyncio.to_thread(db.audit, _actor(request), "server_discovered",
+                            {"server": name, "ok": result.get("ok")})
+    return result
+
+
+@app.get("/api/servers/{name}/discovery")
+async def get_discovery(name: str):
+    return discovery.load_facts(name) or {"ok": False, "error": "not discovered yet"}
 
 
 def _get_state(session_id: str) -> orchestrator.SessionState:

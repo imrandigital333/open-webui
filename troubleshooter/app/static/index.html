@@ -813,12 +813,14 @@
           <div style="grid-column:1/-1"><label>Log hints <span style="font-weight:normal">(one per line — where the agent should look first)</span></label>
             <textarea id="f_log_hints" style="min-height:70px" placeholder="/var/log/nginx/error.log&#10;journalctl -u myapp"></textarea></div>
         </div>
-        <div style="display:flex; gap:10px; margin-top:14px;">
+        <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
           <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
           <button class="ghost" id="testServerBtn">Test connection</button>
+          <button class="ghost" id="discoverServerBtn" title="SSH in and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
           <button class="ghost danger" id="deleteServerBtn">Delete</button>
         </div>
         <div class="hint" id="invMsg" style="margin-top:8px"></div>
+        <div id="discoveryPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
       </div>
       <div class="panel" style="margin-top:16px">
         <h2>Agent script library <span class="count" id="scriptCount" style="float:right"></span></h2>
@@ -3499,8 +3501,9 @@ function renderImplementer() {
           <div class="sec-label" style="margin:0 0 8px">Generate an implementation plan</div>
           <div class="hint" style="margin-bottom:10px">Give me the specifics and I'll build a validated, executable plan — commands per step, downtime verified, a back-out plan, and a risk/success score. The more you tell me, the safer the plan.</div>
           <div class="incd-field" style="margin:8px 0"><label>Target server</label>
-            <select id="genServer"><option value="">— select the server this runs on —</option>${serverOpts}</select></div>
-          <div class="incd-field" style="margin:8px 0"><label>OS / distribution <span style="font-weight:normal">(optional)</span></label>
+            <select id="genServer" onchange="genOnServer()"><option value="">— select the server this runs on —</option>${serverOpts}</select>
+            <div class="hint" id="genDisco" style="margin-top:4px"></div></div>
+          <div class="incd-field" style="margin:8px 0"><label>OS / distribution <span style="font-weight:normal">(auto-filled from discovery when available)</span></label>
             <input id="genOs" placeholder="e.g. RHEL 8, Ubuntu 22.04, Windows Server 2019"></div>
           <div class="incd-field" style="margin:8px 0"><label>Specifics for the plan <span style="font-weight:normal">(versions, constraints, order, what to avoid)</span></label>
             <textarea id="genDetails" style="min-height:90px" placeholder="e.g. patch to kernel 4.18.0-513; app is behind LB lb-01, drain before restart; maintenance window 02:00-03:00; do NOT touch /data mount"></textarea></div>
@@ -3535,6 +3538,22 @@ function renderImplementer() {
   if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
 }
 
+async function genOnServer() {
+  const name = ($('genServer') || {}).value;
+  const note = $('genDisco');
+  if (!name) { if (note) note.textContent = ''; return; }
+  if (note) note.textContent = 'checking discovery…';
+  try {
+    const d = await (await fetch(`/api/servers/${encodeURIComponent(name)}/discovery`)).json();
+    if (d && d.ok) {
+      const f = d.facts;
+      if ($('genOs') && !$('genOs').value) $('genOs').value = (f.os || '') + (f.os_version ? ' ' + f.os_version : '');
+      if (note) note.innerHTML = `✓ Discovered ${escapeHtml(f.os || '')} · ${escapeHtml(f.machine_type)} (${escapeHtml(f.virtualization)}) · ${escapeHtml(f.package_manager)} — facts will ground the plan.`;
+    } else if (note) {
+      note.innerHTML = `Not discovered yet — <a href="#" onclick="switchView('settings');return false;">run discovery in Settings</a> for a plan grounded in this server's real facts.`;
+    }
+  } catch { if (note) note.textContent = ''; }
+}
 function implToggleMax() {
   const on = $('chgImpl').classList.toggle('max');
   const b = $('implMax'); if (b) { b.textContent = on ? '⤡' : '⤢'; b.title = on ? 'Restore' : 'Maximise'; }
@@ -3640,6 +3659,9 @@ function editServer(name) {
   $('invFormTitle').textContent = name ? `Edit server — ${name}` : 'Add server';
   $('deleteServerBtn').style.display = name ? '' : 'none';
   $('testServerBtn').style.display = name ? '' : 'none';
+  $('discoverServerBtn').style.display = name ? '' : 'none';
+  $('discoveryPanel').style.display = 'none';
+  if (name) loadDiscovery(name);
   $('f_name').value = s.name || '';
   $('f_host').value = s.host || '';
   $('f_user').value = s.user || '';
@@ -3704,6 +3726,51 @@ $('testServerBtn').onclick = async () => {
   $('invMsg').style.color = d.ok ? 'var(--ok)' : 'var(--err)';
   setTimeout(() => $('invMsg').style.color = '', 4000);
 };
+
+/* ---------- server discovery ---------- */
+function renderDiscovery(d) {
+  const panel = $('discoveryPanel');
+  panel.style.display = '';
+  if (!d || !d.ok) {
+    panel.innerHTML = `<div style="color:var(--muted)">${d && d.error
+      ? '✕ ' + escapeHtml(d.error) : 'Not discovered yet — click ⦿ Discover to gather this server\'s facts.'}</div>`;
+    return;
+  }
+  const f = d.facts, when = new Date(d.ts * 1000).toLocaleString();
+  const row = (k, v) => v ? `<div style="display:flex;gap:8px;margin:2px 0"><b style="min-width:120px;color:var(--muted);font-weight:600">${k}</b><span style="word-break:break-word">${escapeHtml(String(v))}</span></div>` : '';
+  const mem = f.memory_mb || {};
+  panel.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <b>Discovered facts</b><span class="hint" style="margin:0">${when}</span>
+      <button class="link" style="margin-left:auto" onclick="runDiscovery()">re-discover</button></div>
+    ${row('Hostname', f.hostname)}
+    ${row('OS', f.os + (f.os_version ? ' ' + f.os_version : '') + ` (${f.os_family})`)}
+    ${row('Kernel', f.kernel + ' · ' + f.arch)}
+    ${row('Type', f.machine_type + ' (' + f.virtualization + ')' + (f.product && f.product.trim() ? ' · ' + f.product.trim() : ''))}
+    ${row('CPU', (f.cpu_model || '') + (f.cpu_cores ? ` · ${f.cpu_cores} vCPU` : ''))}
+    ${row('Memory', mem.total_mb ? `${mem.total_mb} MB total, ${mem.free_mb} MB free` : '')}
+    ${row('IPs', (f.ip_addresses || []).map(x => x.cidr).join(', '))}
+    ${row('Gateway', f.gateway)}
+    ${row('Package mgr', f.package_manager)}
+    ${row('SELinux', f.selinux)}
+    ${row('Uptime', f.uptime)}
+    ${(f.disks || []).length ? `<div style="margin-top:6px"><b style="color:var(--muted)">Filesystems</b><ul style="margin:2px 0 0 16px">${f.disks.map(x => `<li>${escapeHtml(x.mount)} — ${escapeHtml(x.used)}/${escapeHtml(x.size)} (${escapeHtml(x['use%'])})</li>`).join('')}</ul></div>` : ''}
+    ${(f.running_services || []).length ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--muted)">${f.running_services.length} running services</summary><div style="margin-top:4px;font-family:var(--mono);font-size:11.5px;word-break:break-word">${f.running_services.map(s => escapeHtml(s.replace('.service', ''))).join(', ')}</div></details>` : ''}
+    ${(f.listening_ports || []).length ? row('Listening ports', f.listening_ports.join(', ')) : ''}
+    ${(f.installed_kernels || []).length ? row('Kernels', f.installed_kernels.join(', ')) : ''}`;
+}
+async function loadDiscovery(name) {
+  try { renderDiscovery(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discovery`)).json()); }
+  catch { /* leave hidden */ }
+}
+async function runDiscovery() {
+  const name = editingName; if (!name) return;
+  const panel = $('discoveryPanel'); panel.style.display = '';
+  panel.innerHTML = '<span class="spinner"></span> discovering — SSHing in and gathering facts (a few seconds)…';
+  try {
+    renderDiscovery(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discover`, { method: 'POST' })).json());
+  } catch (e) { panel.innerHTML = '✕ ' + escapeHtml(e.message); }
+}
+$('discoverServerBtn').onclick = runDiscovery;
 
 /* ---------- settings: script library ---------- */
 async function loadScripts() {
