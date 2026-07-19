@@ -569,10 +569,29 @@
   #chgImpl .incd-head .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
   #chgImpl .incd-head .rc-ava svg { width: 16px; height: 16px; }
   /* change implementer */
-  .ci-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px;
+  .ci-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
              overflow: hidden; }
-  .ci-step.cur { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .ci-step.done { opacity: .72; }
+  .ci-step.cur { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .ci-step.done { opacity: .68; }
+  .ci-step.done:hover { opacity: 1; }
+  .ci-step.locked { opacity: .5; }
+  .ci-step.locked .ci-step-h { background: transparent; }
+  .ci-chev { margin-left: 6px; color: var(--muted); transition: transform .15s; }
+  .ci-step.open .ci-chev { transform: rotate(180deg); }
+  .ci-collapsed { display: none; }
+  .ci-step.open .ci-collapsed { display: block; }
+  .ci-lock { margin-left: auto; color: var(--muted); display: inline-flex; }
+  .ci-cur-banner { background: var(--accent); color: #fff; font-size: 10px; font-weight: 800;
+                   letter-spacing: .06em; padding: 3px 12px; }
+  .ci-run-lg { padding: 9px 20px; font-size: 13px; font-weight: 650; }
+  /* progress header, sticky at the top of the implementer body */
+  .ci-prog { position: sticky; top: -16px; z-index: 2; background: var(--panel);
+             padding: 8px 0 10px; margin: 6px 0 4px; }
+  .ci-prog-top { font-size: 13px; margin-bottom: 6px; }
+  .ci-prog-bar { display: flex; gap: 3px; }
+  .ci-prog-bar i { flex: 1; height: 6px; border-radius: 3px; background: var(--border); }
+  .ci-prog-bar i.done { background: var(--ok); }
+  .ci-prog-bar i.cur { background: var(--accent); animation: pulse 1.4s infinite; }
   .ci-step-h { display: flex; align-items: center; gap: 9px; padding: 9px 12px;
                background: var(--panel2); font-size: 12.5px; }
   .ci-seq { width: 22px; height: 22px; border-radius: 50%; display: inline-flex;
@@ -3466,31 +3485,75 @@ function renderImplementer() {
     `<option value="${escapeHtml(s.name)}" ${s.name === implState.server ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
   const sug = (plan && plan.suggestions) || [];
 
+  const total = steps.length;
+  const curOrder = done + 1;
+  const allDone = done >= total && total > 0;
+
+  const outHtml = (res) => res
+    ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>`
+    : '';
+
   const stepHtml = steps.map(s => {
     const order = s.order;
     const isDone = order <= done;
-    const isCur = order === done + 1;
+    const isCur = order === curOrder;
     const res = plan.results && plan.results[String(order)];
-    const locked = !isDone && !isCur;
-    return `<div class="ci-step ${isDone ? 'done' : ''} ${isCur ? 'cur' : ''}">
+    if (isDone) {
+      // compact, collapsed — click the header to expand its command/output
+      return `<div class="ci-step done" id="ci-step-${order}">
+        <div class="ci-step-h" style="cursor:pointer" onclick="this.parentNode.classList.toggle('open')">
+          <span class="ci-seq">✓</span>
+          <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.description || '')}</span>
+          ${res && !res.ok ? '<span class="ci-dt" style="border-color:var(--err);color:var(--err)">failed</span>' : ''}
+          <span class="ci-chev">▾</span>
+        </div>
+        <div class="ci-body ci-collapsed">
+          ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : ''}
+          ${outHtml(res)}
+          ${approved ? `<button class="ci-run" onclick="runImplStep(${order}, this)">↻ Re-run</button> <span class="hint" id="impl-msg-${order}"></span>` : ''}
+        </div>
+      </div>`;
+    }
+    if (isCur) {
+      return `<div class="ci-step cur" id="ci-step-${order}">
+        <div class="ci-cur-banner">▶ CURRENT STEP · ${order} of ${total}</div>
+        <div class="ci-step-h">
+          <span class="ci-seq">${order}</span>
+          <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
+          <span>${escapeHtml(s.description || '')}</span>
+          ${s.downtime_required ? '<span class="ci-dt">downtime</span>' : ''}
+        </div>
+        <div class="ci-body">
+          ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : '<div class="ci-locked">Manual step — no command to run</div>'}
+          ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
+          ${outHtml(res)}
+          ${approved ? `<div style="margin-top:9px">
+            <button class="ci-run ci-run-lg" onclick="runImplStep(${order}, this)">${s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done'}</button>
+            <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span></div>`
+            : '<div class="hint" style="margin-top:6px">Approve the change in Summit to run steps.</div>'}
+        </div>
+      </div>`;
+    }
+    // future / locked — compact, dimmed
+    return `<div class="ci-step locked" id="ci-step-${order}">
       <div class="ci-step-h">
-        <span class="ci-seq">${isDone ? '✓' : order}</span>
+        <span class="ci-seq">${order}</span>
         <span class="ci-phase">${escapeHtml(s.phase || 'step')}</span>
-        <span>${escapeHtml(s.description || '')}</span>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.description || '')}</span>
         ${s.downtime_required ? '<span class="ci-dt">downtime</span>' : ''}
-      </div>
-      <div class="ci-body">
-        ${s.command ? `<div class="ci-cmd">${escapeHtml(s.command)}</div>` : '<div class="ci-locked">Manual step — no command</div>'}
-        ${s.downtime_note ? `<div class="hint" style="margin:2px 0">${escapeHtml(s.downtime_note)}</div>` : ''}
-        ${res ? `<div class="ci-out ${res.ok ? 'ok' : 'err'}" style="display:block">exit ${res.exit_code ?? '—'}\n${escapeHtml((res.output || '').trim() || '(no output)')}</div>` : ''}
-        ${approved ? `<div style="margin-top:7px">
-          ${locked ? `<span class="ci-locked">${ic('shield', 12)} locked — complete step ${done + 1} first</span>`
-            : `<button class="ci-run" onclick="runImplStep(${order}, this)">${isDone ? '↻ Re-run' : (s.command ? '▶ Run step ' + order : '✓ Mark step ' + order + ' done')}</button>`}
-          <span class="hint" id="impl-msg-${order}" style="margin-left:8px"></span>
-        </div>` : ''}
+        <span class="ci-lock" title="runs after step ${curOrder}">${ic('shield', 12)}</span>
       </div>
     </div>`;
   }).join('');
+
+  const progressHtml = `<div class="ci-prog">
+    <div class="ci-prog-top"><b>Implementation</b> — ${allDone
+      ? '<span style="color:var(--ok)">✓ all ' + total + ' steps complete</span>'
+      : 'step ' + Math.min(curOrder, total) + ' of ' + total + ' · ' + done + ' done'}</div>
+    <div class="ci-prog-bar">${steps.map(s =>
+      `<i class="${s.order <= done ? 'done' : s.order === curOrder ? 'cur' : ''}"></i>`).join('')}</div>
+  </div>`;
 
   const d = $('chgImpl');
   d.querySelector('.incd-panel') && (d.innerHTML = '');
@@ -3534,8 +3597,8 @@ function renderImplementer() {
         </div>
         ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
         ${implAssessmentHtml(plan)}
-        <div class="sec-label" style="margin:14px 0 8px">Implementation plan — ${done}/${steps.length} done</div>
-        <div class="hint" style="margin-bottom:10px">${ic('shield', 12)} The implementer runs only these commands, in order. Read-only checks are allowed off-plan; anything else is blocked.</div>
+        ${progressHtml}
+        <div class="hint" style="margin:0 0 10px">${ic('shield', 12)} Runs only these commands, in order. Completed steps are collapsed — click one to review its output. Read-only checks are allowed off-plan; anything else is blocked.</div>
         ${stepHtml}
         <div class="sec-label" style="margin:16px 0 8px">Ad-hoc check (read-only only)</div>
         <div class="ci-adhoc">
@@ -3555,6 +3618,9 @@ function renderImplementer() {
   if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
   // generate-intake: reflect the CI-matched server and pull its discovery now
   if ($('genServer')) { if (implState.server) $('genServer').value = implState.server; genOnServer(); }
+  // keep the operator on the current step — don't jump back to the top
+  const cur = d.querySelector('.ci-step.cur');
+  if (cur) requestAnimationFrame(() => cur.scrollIntoView({ block: 'center', behavior: 'smooth' }));
 }
 
 async function genOnServer() {
