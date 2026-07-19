@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.37.1"
+APP_VERSION = "2.38.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -212,6 +212,7 @@ class ItsmConfigRequest(BaseModel):
     changes_service: str = Field("CM_FetchChanges", max_length=100)
     change_detail_service: str = Field("CM_GetCR_Details", max_length=100)
     change_update_service: str = Field("CM_LogOrUpdateCR", max_length=100)
+    change_token: str = Field("", max_length=1000)   # empty = keep stored change key
     caller_email: str = Field("", max_length=200)
     instance: str = Field("IT", max_length=50)
     incident_statuses: str = Field("New,In-Progress,Assigned,Pending,Resolved,Closed",
@@ -234,12 +235,16 @@ async def get_itsm_config():
 @app.put("/api/admin/itsm")
 async def save_itsm_config(req: ItsmConfigRequest, request: Request):
     cfg = req.model_dump()
+    stored = itsm.load_config()
     if not cfg["token"]:
-        cfg["token"] = itsm.load_config()["token"]   # keep the stored secret
+        cfg["token"] = stored["token"]                 # keep the stored secret
+    if not cfg.get("change_token"):
+        cfg["change_token"] = stored["change_token"]   # keep the stored change key
     await asyncio.to_thread(itsm.save_config, cfg)
     await asyncio.to_thread(db.audit, _actor(request), "itsm_config_saved",
                             {"base_url": cfg["base_url"],
-                             "token_changed": bool(req.token)})
+                             "token_changed": bool(req.token),
+                             "change_token_changed": bool(req.change_token)})
     return itsm.public_config()
 
 
@@ -249,6 +254,20 @@ async def test_itsm_config(req: ItsmConfigRequest, request: Request):
     result = await asyncio.to_thread(itsm.test_config, req.model_dump())
     await asyncio.to_thread(db.audit, _actor(request), "itsm_config_tested",
                             {"base_url": req.base_url, "ok": result.get("ok")})
+    return result
+
+
+class ItsmChangeTestRequest(ItsmConfigRequest):
+    cr_id: str = Field("", max_length=64)   # known CR → test the detail service
+
+
+@app.post("/api/admin/itsm/test-change")
+async def test_itsm_change_config(req: ItsmChangeTestRequest, request: Request):
+    """Probe the CHANGE integration (its own API key) with form values."""
+    result = await asyncio.to_thread(itsm.test_change_config, req.model_dump(), req.cr_id)
+    await asyncio.to_thread(db.audit, _actor(request), "itsm_change_tested",
+                            {"base_url": req.base_url, "ok": result.get("ok"),
+                             "mode": result.get("mode")})
     return result
 
 

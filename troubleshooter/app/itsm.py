@@ -63,6 +63,9 @@ DEFAULTS = {
     "changes_service": "CM_FetchChanges",
     "change_detail_service": "CM_GetCR_Details",
     "change_update_service": "CM_LogOrUpdateCR",
+    # Change operations use a DIFFERENT API key than incidents; when blank
+    # they fall back to the incident token so existing setups keep working.
+    "change_token": "",
     # sent as Ticket.Caller_EmailID on ticket updates (who the update is from)
     "caller_email": "",
     # IM_GetIncidentList requires an objIncidentCommonFilter block; these
@@ -97,6 +100,7 @@ _ENV_MAP = {
     "changes_service": "SUMMITAI_CHANGES_SERVICE",
     "change_detail_service": "SUMMITAI_CHANGE_DETAIL_SERVICE",
     "change_update_service": "SUMMITAI_CHANGE_UPDATE_SERVICE",
+    "change_token": "SUMMITAI_CHANGE_TOKEN",
     "caller_email": "SUMMITAI_CALLER_EMAIL",
     "auth_header": "SUMMITAI_AUTH_HEADER",
     "auth_prefix": "SUMMITAI_AUTH_PREFIX",
@@ -433,9 +437,10 @@ def _fetch_incident_rows(cfg: dict) -> list[dict]:
 
 
 def _fetch_change_rows(cfg: dict) -> list[dict]:
+    ccfg = _change_cfg(cfg)
     if cfg["api_style"] == "rest":
-        return _rest_get(cfg["changes_path"], cfg)
-    return _wcf_call(cfg["changes_service"], None, cfg)
+        return _rest_get(cfg["changes_path"], ccfg)
+    return _wcf_call(cfg["changes_service"], None, ccfg)
 
 
 # ---------- public API ----------
@@ -637,6 +642,15 @@ def list_changes() -> list[dict]:
     return [_norm_change(r) for r in _fetch_change_rows(cfg)]
 
 
+def _change_cfg(cfg: dict) -> dict:
+    """Config with the CHANGE API key swapped in (falls back to the incident
+    token when no separate change key is set)."""
+    c = dict(cfg)
+    if cfg.get("change_token"):
+        c["token"] = cfg["change_token"]
+    return c
+
+
 def get_change(change_id: str) -> dict | None:
     """One change request via CM_GetCR_Details {ChangeRequestID: int}."""
     cfg = load_config()
@@ -644,7 +658,7 @@ def get_change(change_id: str) -> dict | None:
         return next((c for c in _demo_changes() if str(c["id"]) == str(change_id)), None)
     try:
         rows = _wcf_call(cfg.get("change_detail_service") or "CM_GetCR_Details",
-                         {"ChangeRequestID": _ticket_no(change_id)}, cfg)
+                         {"ChangeRequestID": _ticket_no(change_id)}, _change_cfg(cfg))
     except RuntimeError:
         rows = []
     for r in rows:
@@ -734,7 +748,7 @@ def create_change(f: dict) -> dict:
     }
     try:
         data = _wcf_raw(cfg.get("change_update_service") or "CM_LogOrUpdateCR",
-                        params, cfg)
+                        params, _change_cfg(cfg))
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)[:400]}
     reply = data if isinstance(data, str) else json.dumps(data, default=str)
@@ -759,7 +773,7 @@ def update_change_log(change_id: str, text: str) -> dict:
     }
     try:
         data = _wcf_raw(cfg.get("change_update_service") or "CM_LogOrUpdateCR",
-                        params, cfg)
+                        params, _change_cfg(cfg))
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)[:400]}
     reply = data if isinstance(data, str) else json.dumps(data, default=str)
@@ -772,11 +786,16 @@ def status() -> dict:
             "source": "SummitAI" + ("" if ok else " (demo data)")}
 
 
+_SECRET_KEYS = ("token", "change_token")
+
+
 def public_config() -> dict:
-    "Config for the settings UI; the API key never leaves the server."
+    "Config for the settings UI; the API keys never leave the server."
     cfg = load_config()
-    return {**{k: cfg[k] for k in DEFAULTS if k != "token"},
-            "token_set": bool(cfg["token"]), "configured": configured(cfg)}
+    return {**{k: cfg[k] for k in DEFAULTS if k not in _SECRET_KEYS},
+            "token_set": bool(cfg["token"]),
+            "change_token_set": bool(cfg["change_token"]),
+            "configured": configured(cfg)}
 
 
 def _merged(overrides: dict | None) -> dict:
@@ -793,23 +812,43 @@ def _merged(overrides: dict | None) -> dict:
 
 
 def test_config(overrides: dict | None = None) -> dict:
-    """Try the API with (unsaved) form values so the operator can verify
-    before saving."""
+    """Verify the INCIDENT integration with (unsaved) form values. Changes
+    have their own key and Test button, so they're not probed here."""
     cfg = _merged(overrides)
     if not cfg["base_url"]:
         return {"ok": False, "error": "Base URL is required"}
-    out = {"ok": True, "incidents": None, "changes": None, "changes_error": None}
+    out = {"ok": True, "incidents": None}
     try:
         out["incidents"] = len(_fetch_incident_rows(cfg))
     except Exception as exc:  # noqa: BLE001
         out.update(ok=False, error=f"incidents: {exc}")
-        return out
-    try:
-        out["changes"] = len(_fetch_change_rows(cfg))
-    except Exception as exc:  # noqa: BLE001
-        # incidents worked — a wrong changes ServiceName shouldn't fail the test
-        out["changes_error"] = str(exc)[:300]
     return out
+
+
+def test_change_config(overrides: dict | None = None, cr_id: str = "") -> dict:
+    """Verify the CHANGE integration (separate API key). With a known CR
+    number it reads that change via the detail service (a safe read); without
+    one it tries the change list service, which may be unknown per deployment."""
+    cfg = _merged(overrides)
+    if not cfg["base_url"]:
+        return {"ok": False, "error": "Base URL is required"}
+    ccfg = _change_cfg(cfg)
+    if not ccfg.get("token"):
+        return {"ok": False, "error": "No change API key set (and no incident key to fall back on)"}
+    if cr_id.strip():
+        try:
+            rows = _wcf_call(cfg.get("change_detail_service") or "CM_GetCR_Details",
+                             {"ChangeRequestID": _ticket_no(cr_id)}, ccfg)
+            return {"ok": True, "mode": "detail", "cr": cr_id.strip(),
+                    "found": bool(rows)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"change detail: {exc}"}
+    try:
+        return {"ok": True, "mode": "list", "changes": len(_fetch_change_rows(cfg))}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"changes list: {exc}",
+                "hint": "Enter a known CR number to test the detail service instead,"
+                        " or confirm the change list ServiceName with your Summit admin."}
 
 
 # ServiceNames seen across SummitAI deployments; wrong ones are harmless
