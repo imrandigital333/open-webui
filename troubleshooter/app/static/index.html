@@ -915,7 +915,9 @@
               <input id="it_change_default_workgroup" maxlength="120" placeholder="Windows Server Support"></div>
             <div><label>Owner workgroup ID</label>
               <input id="it_change_owner_workgroup_id" maxlength="20" placeholder="12"></div>
-            <div><label>Change category ID</label>
+            <div><label>Change category name</label>
+              <input id="it_change_category_name" maxlength="60" placeholder="Minor"></div>
+            <div><label>Change category ID <span style="font-weight:normal">(must match the name)</span></label>
               <input id="it_change_category_id" type="number" placeholder="132"></div>
             <div><label>Assigned executive ID</label>
               <input id="it_change_executive_id" maxlength="20" placeholder="2"></div>
@@ -2289,6 +2291,7 @@ async function loadItsmConfig() {
   $('it_change_create_status').value = c.change_create_status || '';
   $('it_change_default_workgroup').value = c.change_default_workgroup || 'Windows Server Support';
   $('it_change_owner_workgroup_id').value = c.change_owner_workgroup_id || '12';
+  $('it_change_category_name').value = c.change_category_name || 'Minor';
   $('it_change_category_id').value = c.change_category_id ?? 132;
   $('it_change_executive_id').value = c.change_executive_id || '2';
   $('it_caller_email').value = c.caller_email || '';
@@ -2338,6 +2341,7 @@ function itsmForm() {
     change_create_status: $('it_change_create_status').value.trim(),
     change_default_workgroup: $('it_change_default_workgroup').value.trim() || 'Windows Server Support',
     change_owner_workgroup_id: $('it_change_owner_workgroup_id').value.trim() || '12',
+    change_category_name: $('it_change_category_name').value.trim() || 'Minor',
     change_category_id: parseInt($('it_change_category_id').value, 10) || 132,
     change_executive_id: $('it_change_executive_id').value.trim() || '2',
     caller_email: $('it_caller_email').value.trim(),

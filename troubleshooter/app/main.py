@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.43.0"
+APP_VERSION = "2.43.1"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -221,6 +221,7 @@ class ItsmConfigRequest(BaseModel):
     change_create_status: str = Field("", max_length=60)   # blank = Summit auto-assigns
     change_default_workgroup: str = Field("Windows Server Support", max_length=120)
     change_owner_workgroup_id: str = Field("12", max_length=20)
+    change_category_name: str = Field("Minor", max_length=60)
     change_category_id: int = Field(132, ge=0, le=10_000_000)
     change_executive_id: str = Field("2", max_length=20)
     change_classification: str = Field("Normal", max_length=60)

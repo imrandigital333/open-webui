@@ -80,6 +80,9 @@ DEFAULTS = {
     # Blank = let Summit assign the workflow's own initial status (the safe
     # default; explicit create-time status names vary per deployment).
     "change_create_status": "",
+    # Category NAME and ID must be a matching pair from Summit's category
+    # master, so they're set together from config (not from free text / AI).
+    "change_category_name": "Minor",
     "change_category_id": 132,
     "change_executive_id": "2",
     "change_owner_workgroup_id": "12",
@@ -126,6 +129,7 @@ _ENV_MAP = {
     "change_support_function": "SUMMITAI_CHANGE_SUPPORT_FUNCTION",
     "change_support_function_name": "SUMMITAI_CHANGE_SUPPORT_FUNCTION_NAME",
     "change_create_status": "SUMMITAI_CHANGE_CREATE_STATUS",
+    "change_category_name": "SUMMITAI_CHANGE_CATEGORY_NAME",
     "change_category_id": "SUMMITAI_CHANGE_CATEGORY_ID",
     "change_executive_id": "SUMMITAI_CHANGE_EXECUTIVE_ID",
     "change_owner_workgroup_id": "SUMMITAI_CHANGE_OWNER_WORKGROUP_ID",
@@ -759,7 +763,8 @@ def create_change(f: dict) -> dict:
         "Status": create_status,
         "Support_Function": str(cfg.get("change_support_function") or "IT"),
         "Support_Function_Name": str(cfg.get("change_support_function_name") or "BIAL Services"),
-        "Category": str(f.get("category") or "Minor"),
+        # name+ID must be a consistent pair from Summit's category master
+        "Category": str(cfg.get("change_category_name") or "Minor"),
         "ChangeTypeName": str(f.get("type") or "Normal"),
         "Requestor_Name": requestor,
         "Requested_By_Name": requestor,
