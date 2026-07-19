@@ -2769,8 +2769,11 @@ function cbotBusy(on) { cbot.busy = on; }
 async function cbotStart() {
   cbot.step = 'entry'; cbot.data = {}; cbot.refined = null; cbot.rec = null; cbot.busy = false;
   $('cbotMsgs').innerHTML = ''; cbotChips([]);
-  try { cbot.cfgEmail = (await (await fetch('/api/admin/itsm')).json()).caller_email || ''; }
-  catch { cbot.cfgEmail = ''; }
+  try {
+    const c = await (await fetch('/api/admin/itsm')).json();
+    cbot.cfgEmail = c.caller_email || '';
+    cbot.cfgWorkgroup = c.change_default_workgroup || 'Windows Server Support';
+  } catch { cbot.cfgEmail = ''; cbot.cfgWorkgroup = 'Windows Server Support'; }
   cbotAdd("Hi — I'm your change assistant. My job is to reduce failed changes: I validate and correct your implementation plan, verify downtime, build a back-out plan, and score the risk and likely success rate.");
   cbotAdd('Do you have an implementation plan document to upload, or should we build the change together?');
   cbotChips(['📎 Upload a plan', 'Build manually']);
@@ -2811,7 +2814,9 @@ async function cbotUpload(file) {
 function cbotApplyInferred(inf) {
   if (!inf) return;
   const d = cbot.data;
-  ['type', 'category', 'risk', 'impact', 'priority', 'workgroup'].forEach(k => {
+  // workgroup is deliberately NOT auto-applied: it must match a Summit
+  // record exactly, and an invented name makes the create fail.
+  ['type', 'category', 'risk', 'impact', 'priority'].forEach(k => {
     if (inf[k] && !d[k]) d[k] = inf[k];
   });
 }
@@ -2841,10 +2846,13 @@ function cbotApplyRefined(r) {
     ${cbotAssessmentHtml(r)}`, 'bot', true);
   const miss = r.missing_fields || [];
   if (miss.length) cbotAdd('Still needed from you: ' + miss.join(', ') + '.');
-  // the one field we always must have and can't infer: requestor email
-  cbot.step = 'requestor';
-  cbotAdd('Who is the requestor? (email)');
-  cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
+  cbot.step = 'workgroup';
+  const sugWg = (r.inferred_fields || {}).workgroup;
+  cbotAdd('Owner workgroup? It must exist in Summit exactly — the default is known-good.'
+    + (sugWg ? ` (The plan suggests "${sugWg}" — pick it only if that workgroup really exists in Summit.)` : ''));
+  const wgChips = [cbot.cfgWorkgroup + ' (default)'];
+  if (sugWg && sugWg !== cbot.cfgWorkgroup) wgChips.push(sugWg + ' (suggested)');
+  cbotChips(wgChips);
 }
 
 /* --- manual recommendations --- */
@@ -2926,8 +2934,15 @@ async function cbotSubmit() {
       loadChanges();
     } else {
       cbot.step = 'confirm';
-      cbotAdd('✕ Summit rejected the request: ' + (res.error || 'unknown error'));
-      cbotChips(['✓ Create change', 'Start over']);
+      const err = res.error || 'unknown error';
+      cbotAdd('✕ Summit rejected the request: ' + err);
+      if (/Owner_Workgroup|workgroup/i.test(err) && cbot.data.workgroup
+          && cbot.data.workgroup !== cbot.cfgWorkgroup) {
+        cbotAdd(`Summit does not recognise the workgroup "${cbot.data.workgroup}". You can retry with the known-good default ("${cbot.cfgWorkgroup}"), or start over with the exact Summit workgroup name.`);
+        cbotChips(['Retry with default workgroup', 'Start over']);
+      } else {
+        cbotChips(['✓ Create change', 'Start over']);
+      }
     }
   } catch (e) { cbot.busy = false; cbot.step = 'confirm'; cbotAdd('✕ Request failed: ' + e.message); cbotChips(['✓ Create change', 'Start over']); }
 }
@@ -2956,7 +2971,7 @@ function cbotHandle(text) {
   if (!text || cbot.busy || cbot.step === 'submitting' || cbot.step === 'refining') return;
   cbotAdd(text, 'user');
   const skip = /^skip$/i.test(text);
-  const val = (t) => t.replace(/\s*\(recommended\)\s*$/i, '').trim();
+  const val = (t) => t.replace(/\s*\((recommended|default|suggested)\)\s*$/i, '').trim();
   switch (cbot.step) {
     case 'entry':
       if (/upload/i.test(text)) { cbotAdd('Opening the file picker — choose a .txt, .md, .docx or .pdf plan.'); cbotPickFile(); }
@@ -2996,7 +3011,7 @@ function cbotHandle(text) {
       cbotChips(cbot.rec && cbot.rec.workgroup ? [cbot.rec.workgroup, 'Skip'] : ['Skip']);
       break;
     case 'workgroup':
-      if (!skip) cbot.data.workgroup = text; cbot.step = 'requestor';
+      if (!skip) cbot.data.workgroup = val(text); cbot.step = 'requestor';
       cbotAdd('Requestor email?'); cbotChips(cbot.cfgEmail ? [cbot.cfgEmail] : []);
       break;
     case 'requestor':
@@ -3014,7 +3029,8 @@ function cbotHandle(text) {
       else cbotRefine(text);
       break;
     case 'confirm':
-      if (/create|yes|confirm|✓/i.test(text)) cbotSubmit();
+      if (/default workgroup/i.test(text)) { delete cbot.data.workgroup; cbotSubmit(); }
+      else if (/create|yes|confirm|✓/i.test(text)) cbotSubmit();
       else if (/start over|restart|reset/i.test(text)) cbotStart();
       else cbotAdd('Choose "✓ Create change" to submit, or "Start over".');
       break;

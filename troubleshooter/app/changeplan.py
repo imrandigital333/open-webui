@@ -129,9 +129,14 @@ Do ALL of this:
    missing quoting, split compound risky commands, and put steps in a safe order
    (backups BEFORE state changes, verification AFTER). Record every change you
    made in "corrections".
-3. VERIFY each step's downtime claim yourself (service restarts/reboots/network
-   changes usually need downtime; backups and read-only checks do not); correct
-   it in downtime_required and explain in downtime_note.
+3. VERIFY each step's downtime claim yourself and correct it in
+   downtime_required, explaining in downtime_note. HARD RULES: kernel patches/
+   upgrades ALWAYS require downtime (a reboot is needed for the new kernel to
+   take effect) unless the plan explicitly uses live patching (kpatch/ksplice/
+   livepatch); reboots and shutdowns are always downtime; restarting or
+   stopping a service is downtime for that service unless a redundant node
+   demonstrably takes over; backups and read-only checks are not downtime.
+   Never mark a kernel/reboot step as no-downtime.
 4. Ensure there is a real, tested-style BACK-OUT plan. If missing or weak, write
    one derived from the steps (how to undo each state change) and set
    backout_validated accordingly.
@@ -189,13 +194,15 @@ failed change. Reply with ONLY this JSON (no fences):
 
 
 def _fallback_steps(plan_text: str) -> dict:
-    """No-AI fallback: one manual step per non-empty line, no commands."""
+    """No-AI fallback: one manual step per non-empty line, no commands.
+    The downtime policy floor still applies to the imported lines."""
     lines = [ln.strip(" -*\t") for ln in plan_text.splitlines() if ln.strip()]
     steps = [{"order": i + 1, "phase": "implement", "description": ln[:300],
               "command": "", "downtime_required": False,
               "downtime_note": "", "risk": "medium"}
              for i, ln in enumerate(lines[:40])]
-    return {"title": (lines[0][:120] if lines else "Change plan"),
+    return _enforce_downtime({
+            "title": (lines[0][:120] if lines else "Change plan"),
             "summary": "AI refinement unavailable — plan imported line-by-line as manual steps.",
             "steps": steps,
             "corrections": [],
@@ -206,7 +213,52 @@ def _fallback_steps(plan_text: str) -> dict:
             "risk_assessment": {"level": "Medium", "rationale": "Not assessed — AI unavailable."},
             "success_rate": {"percent": None, "factors": ["not assessed"]},
             "missing_fields": [],
-            "refined_by": "fallback"}
+            "refined_by": "fallback"})
+
+
+# Deterministic downtime floor — patterns whose downtime the AI is never
+# allowed to wave away (the kernel-patch case: "no downtime" is exactly the
+# kind of wrong claim that causes failed changes).
+_FORCED_DOWNTIME = [
+    (r"\breboot\b|\bshutdown\s+-r\b|\binit\s+6\b|\btelinit\s+6\b",
+     "a reboot always requires downtime"),
+    (r"kernel|vmlinuz|linux-image|kernel-core|\bdracut\b|grub2?-(mkconfig|install)",
+     "kernel changes require a reboot to take effect — downtime is required"),
+    (r"\bsystemctl\s+(restart|stop)\b|\bservice\s+\S+\s+(restart|stop)\b",
+     "restarting/stopping a service interrupts it"),
+    (r"\b(ifdown|nmcli\s+con(nection)?\s+down|ip\s+link\s+set\s+\S+\s+down)\b",
+     "taking a network interface down interrupts connectivity"),
+]
+_LIVEPATCH = re.compile(r"kpatch|ksplice|livepatch", re.I)
+
+
+def _enforce_downtime(result: dict) -> dict:
+    """Policy floor over the AI verdicts: steps matching forced-downtime
+    patterns are marked downtime_required no matter what the model said."""
+    forced = []
+    for s in result.get("steps") or []:
+        text = f"{s.get('command') or ''} {s.get('description') or ''}"
+        if _LIVEPATCH.search(text):
+            continue   # explicit live patching is the one legitimate exception
+        cmd = s.get("command") or ""
+        if cmd and classify(cmd)[0] == "readonly":
+            continue   # a read-only command can't cause downtime (e.g. uname -r)
+        for pattern, why in _FORCED_DOWNTIME:
+            if re.search(pattern, text, re.I):
+                if not s.get("downtime_required"):
+                    s["downtime_required"] = True
+                    note = (s.get("downtime_note") or "").strip()
+                    s["downtime_note"] = (f"[policy] {why}" + (f" — {note}" if note else ""))[:300]
+                    forced.append(f"step {s.get('order')}: {why}")
+                break
+    if forced:
+        overall = result.setdefault("downtime_overall", {})
+        if not overall.get("required"):
+            overall["required"] = True
+            overall["note"] = ("Corrected by policy: " + "; ".join(forced))[:400]
+        result.setdefault("corrections", []).extend(
+            f"Downtime forced ON for {f} (policy override)" for f in forced[:5])
+    return result
 
 
 async def refine_plan(plan_text: str) -> dict:
@@ -252,7 +304,7 @@ async def refine_plan(plan_text: str) -> dict:
         pct = max(0, min(100, int(pct))) if pct is not None else None
     except (TypeError, ValueError):
         pct = None
-    return {
+    out = {
         "title": str(data.get("title") or "")[:150],
         "summary": str(data.get("summary") or "")[:800],
         "steps": steps,
@@ -283,6 +335,7 @@ async def refine_plan(plan_text: str) -> dict:
         "missing_fields": [str(x)[:120] for x in (data.get("missing_fields") or [])][:12],
         "refined_by": "ai",
     }
+    return _enforce_downtime(out)
 
 
 async def _one_shot_json(prompt: str, timeout_s: int = 90):
