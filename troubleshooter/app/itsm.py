@@ -814,10 +814,6 @@ def create_change(f: dict) -> dict:
         "RleasePlanned_StartTime": None, "IsCIUpdation": None,
         "ManualEscalationLevelID": 0, "ManualEscalationRemarks": None,
     }
-    # Blank create status → omit it so Summit assigns the workflow's own
-    # initial status (create-time status names are deployment-specific).
-    if not create_status:
-        container.pop("Status", None)
     params = {
         "cmParamsJSON": {
             "CMContainerJson": json.dumps(container),
@@ -847,13 +843,50 @@ def create_change(f: dict) -> dict:
         },
         "RequestType": "RemoteCall",
     }
-    try:
-        data = _wcf_raw(cfg.get("change_update_service") or "CM_LogOrUpdateCR",
-                        params, _change_cfg(cfg))
-    except RuntimeError as exc:
-        return {"ok": False, "error": str(exc)[:400]}
-    reply = data if isinstance(data, str) else json.dumps(data, default=str)
-    return {"ok": True, "change_id": _find_ticket_no(data), "response": reply[:400]}
+    # Valid create-time status names vary per Summit change workflow and the
+    # deployment gives no way to list them — so on "Invalid Status Name" we
+    # walk the common Symphony SUMMIT initial statuses and, when one is
+    # accepted, persist it so future creates go straight through.
+    candidates = [create_status] + [s for s in _CANDIDATE_CREATE_STATUSES
+                                    if s != create_status]
+    tried = []
+    last_err = ""
+    ccfg = _change_cfg(cfg)
+    service = cfg.get("change_update_service") or "CM_LogOrUpdateCR"
+    for st in candidates:
+        container["Status"] = st
+        params["cmParamsJSON"]["CMContainerJson"] = json.dumps(container)
+        tried.append(st)
+        try:
+            data = _wcf_raw(service, params, ccfg)
+        except RuntimeError as exc:
+            last_err = str(exc)
+            if "Invalid Status Name" in last_err:
+                continue                      # try the next candidate status
+            return {"ok": False, "error": last_err[:400],
+                    "status_tried": tried}
+        if st != str(cfg.get("change_create_status") or ""):
+            try:                              # learn the working status
+                stored = load_config()
+                stored["change_create_status"] = st
+                save_config(stored)
+            except OSError:
+                pass
+        reply = data if isinstance(data, str) else json.dumps(data, default=str)
+        return {"ok": True, "change_id": _find_ticket_no(data),
+                "response": reply[:400], "status_used": st}
+    return {"ok": False,
+            "error": (f"Summit rejected every known initial status "
+                      f"({', '.join(tried)}) with 'Invalid Status Name' — ask the "
+                      f"change admin for the first status in your CR workflow and "
+                      f"set it in Settings."),
+            "status_tried": tried}
+
+
+_CANDIDATE_CREATE_STATUSES = [
+    "Initial Authorization", "Draft", "Requested", "Submitted", "Registered",
+    "New", "Open", "Logged", "Pending Authorization", "For Authorization",
+]
 
 
 def update_change_log(change_id: str, text: str) -> dict:
