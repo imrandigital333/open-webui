@@ -3407,6 +3407,19 @@ $('chgOpenId').addEventListener('keydown', (e) => { if (e.key === 'Enter') chgAd
 /* ---------- change implementer (slide-over) ---------- */
 let implState = { id: null, change: null, plan: null, server: '' };
 
+// map a change/incident CI value to an inventory server (name or host match)
+function matchServerToCi(ci) {
+  if (!ci) return '';
+  const wanted = String(ci).split(/[,;/]/).map(x => x.trim().toLowerCase()).filter(Boolean);
+  for (const s of (inventory || [])) {
+    const n = (s.name || '').toLowerCase(), h = (s.host || '').toLowerCase();
+    const hn = h.split('.')[0];   // short hostname
+    if (wanted.some(w => w === n || w === h || w === hn
+        || (w && (n.includes(w) || w.includes(n))))) return s.name;
+  }
+  return '';
+}
+
 async function openImplementer(id) {
   const d = $('chgImpl');
   d.className = 'open'; d.style.display = 'block';
@@ -3415,8 +3428,10 @@ async function openImplementer(id) {
   let data;
   try { data = await (await fetch(`/api/changes/${encodeURIComponent(id)}`)).json(); }
   catch { d.querySelector('.incd-body').textContent = 'Failed to load change.'; return; }
-  implState = { id, change: data.change || {}, plan: data.plan,
-                server: implState.server || (inventory[0] && inventory[0].name) || '' };
+  const change = data.change || {};
+  implState = { id, change, plan: data.plan,
+                server: matchServerToCi(change.ci) || implState.server
+                        || (inventory[0] && inventory[0].name) || '' };
   renderImplementer();
 }
 function closeImplementer() {
@@ -3500,7 +3515,8 @@ function renderImplementer() {
           <div class="empty" style="margin-bottom:12px">No executable implementation plan is stored for this change yet.</div>
           <div class="sec-label" style="margin:0 0 8px">Generate an implementation plan</div>
           <div class="hint" style="margin-bottom:10px">Give me the specifics and I'll build a validated, executable plan — commands per step, downtime verified, a back-out plan, and a risk/success score. The more you tell me, the safer the plan.</div>
-          <div class="incd-field" style="margin:8px 0"><label>Target server</label>
+          <div class="incd-field" style="margin:8px 0"><label>Target server
+            ${implState.server ? '<span style="font-weight:normal;color:var(--ok)">· auto-selected from the change CI</span>' : (c.ci ? `<span style="font-weight:normal;color:var(--warn)">· CI "${escapeHtml(c.ci)}" not matched to inventory — pick it</span>` : '')}</label>
             <select id="genServer" onchange="genOnServer()"><option value="">— select the server this runs on —</option>${serverOpts}</select>
             <div class="hint" id="genDisco" style="margin-top:4px"></div></div>
           <div class="incd-field" style="margin:8px 0"><label>OS / distribution <span style="font-weight:normal">(auto-filled from discovery when available)</span></label>
@@ -3512,7 +3528,8 @@ function renderImplementer() {
           <div class="hint" style="margin-top:8px">Or raise the change through the Change Assistant with your own plan document.</div>
         </div>` : `
         <div class="incd-field" style="margin:12px 0">
-          <label>Target server</label>
+          <label>Target server
+            ${implState.server && matchServerToCi(c.ci) ? '<span style="font-weight:normal;color:var(--ok)">· auto-selected from the change CI</span>' : (c.ci && !matchServerToCi(c.ci) ? `<span style="font-weight:normal;color:var(--warn)">· CI "${escapeHtml(c.ci)}" not matched — pick it</span>` : '')}</label>
           <select id="implServer">${serverOpts}</select>
         </div>
         ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
@@ -3536,6 +3553,8 @@ function renderImplementer() {
   </div>`;
   const sel = $('implServer');
   if (sel) sel.onchange = (e) => { implState.server = e.target.value; };
+  // generate-intake: reflect the CI-matched server and pull its discovery now
+  if ($('genServer')) { if (implState.server) $('genServer').value = implState.server; genOnServer(); }
 }
 
 async function genOnServer() {
