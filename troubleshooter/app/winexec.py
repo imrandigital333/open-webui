@@ -13,8 +13,37 @@ misconfigured Windows host never takes down the request.
 """
 
 import asyncio
+import re
 
 from .inventory import Server
+
+# PowerShell serialises its progress/verbose/error streams onto std_err as a
+# CLIXML document (leading "#< CLIXML"). Progress records — e.g. "Preparing
+# modules for first use" — are noise; only Error/Warning strings are worth
+# surfacing. This pulls the real messages out and drops the rest.
+_CLIXML_MSG = re.compile(r'<S S="(?:Error|Warning)">(.*?)</S>', re.S)
+
+
+def _clean_stderr(raw: bytes) -> str:
+    text = (raw or b"").decode(errors="replace").strip()
+    if not text:
+        return ""
+    if not text.startswith("#< CLIXML"):
+        return text
+    parts = _CLIXML_MSG.findall(text)
+    if not parts:
+        return ""   # pure progress/verbose noise — nothing to show
+    msg = "".join(parts)
+    # undo the common CLIXML escapes so the message reads normally
+    msg = (msg.replace("_x000D_", "").replace("_x000A_", "\n")
+              .replace("_x0009_", "\t").replace("&lt;", "<")
+              .replace("&gt;", ">").replace("&amp;", "&"))
+    return msg.strip()
+
+
+# Prepended to every script so module auto-loading progress bars don't pollute
+# the output stream.
+_PS_PREAMBLE = "$ProgressPreference='SilentlyContinue';"
 
 try:
     import winrm  # pywinrm
@@ -44,16 +73,11 @@ def _session(server: Server):
 
 def _run_ps_sync(server: Server, script: str) -> dict:
     session = _session(server)
-    result = session.run_ps(script)
-    out = result.std_out or b""
-    err = result.std_err or b""
-    text = out.decode(errors="replace")
-    if err:
-        etext = err.decode(errors="replace").strip()
-        # pywinrm returns PowerShell error records as CLIXML on std_err; keep it
-        # readable but don't try to fully parse it.
-        if etext:
-            text = (text + "\n" + etext).strip() if text.strip() else etext
+    result = session.run_ps(_PS_PREAMBLE + "\n" + script)
+    text = (result.std_out or b"").decode(errors="replace").rstrip()
+    etext = _clean_stderr(result.std_err)
+    if etext:
+        text = (text + "\n" + etext).strip() if text.strip() else etext
     return {
         "ok": result.status_code == 0,
         "exit_code": result.status_code,
