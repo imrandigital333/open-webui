@@ -31,6 +31,10 @@ class Server:
     winrm_port: int = 5985             # 5985 http, 5986 https by convention
     winrm_scheme: str = "http"         # http | https
     winrm_cert_validation: str = "ignore"   # ignore | validate
+    # WinRM hosts are internal; by default bypass any corporate HTTP proxy set
+    # on this host (the proxy 403s internal IPs). True only if the target must
+    # actually be reached through a proxy.
+    winrm_use_proxy: bool = False
 
     @property
     def is_windows(self) -> bool:
@@ -130,6 +134,7 @@ def load_inventory() -> dict[str, Server]:
             winrm_port=int(entry.get("winrm_port", 5985)),
             winrm_scheme=str(entry.get("winrm_scheme", "http") or "http"),
             winrm_cert_validation=str(entry.get("winrm_cert_validation", "ignore") or "ignore"),
+            winrm_use_proxy=bool(entry.get("winrm_use_proxy", False)),
         )
         servers[server.name] = server
     return servers

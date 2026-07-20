@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.56.0"
+APP_VERSION = "2.56.1"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -1138,6 +1138,7 @@ class ServerEntry(BaseModel):
     winrm_port: int = Field(5985, ge=1, le=65535)
     winrm_scheme: str = Field("http", pattern=r"^(http|https)$")
     winrm_cert_validation: str = Field("ignore", pattern=r"^(ignore|validate)$")
+    winrm_use_proxy: bool = False
 
     def to_yaml_dict(self) -> dict:
         out = {"name": self.name, "host": self.host, "port": self.port, "user": self.user}
@@ -1152,6 +1153,8 @@ class ServerEntry(BaseModel):
             out["winrm_port"] = self.winrm_port
             out["winrm_scheme"] = self.winrm_scheme
             out["winrm_cert_validation"] = self.winrm_cert_validation
+            if self.winrm_use_proxy:
+                out["winrm_use_proxy"] = True
         for key in ("tags", "services", "log_hints"):
             if getattr(self, key):
                 out[key] = getattr(self, key)

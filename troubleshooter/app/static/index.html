@@ -879,6 +879,9 @@
                 <select id="f_winrm_scheme"><option value="http">http</option><option value="https">https</option></select></div>
               <div><label>Cert validation</label>
                 <select id="f_winrm_cert"><option value="ignore">ignore (self-signed)</option><option value="validate">validate</option></select></div>
+              <div style="grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:4px">
+                <input type="checkbox" id="f_winrm_use_proxy" style="width:auto;margin:0">
+                <label for="f_winrm_use_proxy" style="margin:0;font-weight:normal">Route WinRM through the corporate HTTP proxy (leave OFF for internal hosts — the proxy 403s internal IPs)</label></div>
             </div>
           </div>
           <div><label>Description</label><input id="f_description" maxlength="500"></div>
@@ -3971,6 +3974,7 @@ function editServer(name) {
   $('f_winrm_port').value = s.winrm_port || 5985;
   $('f_winrm_scheme').value = s.winrm_scheme || 'http';
   $('f_winrm_cert').value = s.winrm_cert_validation || 'ignore';
+  $('f_winrm_use_proxy').checked = !!s.winrm_use_proxy;
   $('f_description').value = s.description || '';
   $('f_os').value = s.os || '';
   $('f_tags').value = (s.tags || []).join(', ');
@@ -4005,6 +4009,7 @@ $('saveServerBtn').onclick = async () => {
     body.winrm_port = parseInt($('f_winrm_port').value, 10) || 5985;
     body.winrm_scheme = $('f_winrm_scheme').value;
     body.winrm_cert_validation = $('f_winrm_cert').value;
+    body.winrm_use_proxy = $('f_winrm_use_proxy').checked;
   }
   if (!body.name || !body.host || !body.user) { $('invMsg').textContent = 'Name, host and user are required.'; return; }
   const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName || body.name)}`, {

@@ -61,11 +61,18 @@ _READ_TIMEOUT = 60
 
 def _session(server: Server):
     cert = "validate" if str(server.winrm_cert_validation).lower() == "validate" else "ignore"
+    # WinRM targets are internal (10.x). By default bypass any corporate HTTP
+    # proxy set on this host — pywinrm defaults to 'legacy_requests', which
+    # honours HTTP(S)_PROXY env vars and makes the proxy answer 403 for internal
+    # IPs. proxy=None disables it. Set winrm_use_proxy on the server only if the
+    # host genuinely sits behind a proxy that must be traversed.
+    proxy = "legacy_requests" if getattr(server, "winrm_use_proxy", False) else None
     return winrm.Session(
         server.winrm_endpoint(),
         auth=(server.user, server.winrm_password or ""),
         transport=(server.winrm_transport or "ntlm"),
         server_cert_validation=cert,
+        proxy=proxy,
         operation_timeout_sec=_OPERATION_TIMEOUT,
         read_timeout_sec=_READ_TIMEOUT,
     )
