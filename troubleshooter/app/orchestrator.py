@@ -130,6 +130,8 @@ def build_remediation_prompt(server: Server, remediation: dict, workdir: Path) -
             f"   purpose: {step.get('description', '')}"
         )
     plan_text = "\n".join(plan_lines) or "(empty plan)"
+    ro_checks = ("Get-Service, Get-WinEvent, Get-Content, Test-NetConnection"
+                 if server.is_windows else "systemctl status, tail, grep, curl to localhost")
     return f"""You are an SRE executing an APPROVED remediation plan on a server. A human
 operator reviewed this exact plan and authorized its execution.
 
@@ -151,7 +153,7 @@ exactly one of: PHASE: BACKUP | PHASE: FIX | PHASE: VERIFY | PHASE: REPORT
 
 ## Execution rules — read carefully
 - Execute ONLY the commands in the plan, in the given order. You may also run
-  READ-ONLY checks (systemctl status, tail, grep, curl to localhost) between
+  READ-ONLY checks ({ro_checks}) between
   steps to confirm state — but NO state-changing command outside the plan.
 - BACKUP steps come first. If a backup step fails, STOP — do not run any fix.
 - After every command, check it succeeded (exit code + output) and save the
@@ -268,10 +270,104 @@ Maintain a machine-readable health snapshot of the target server in
 """
 
 
+# Windows equivalent of HEALTH_SECTION — same 20 dashboard keys, PowerShell
+# probes over WinRM. Aspects with no Windows analogue (inodes) report "n/a".
+WINDOWS_HEALTH_SECTION = r"""## Live health checklist (./health.json)
+Maintain a machine-readable health snapshot of this WINDOWS server in
+./health.json so the operator's dashboard updates live:
+- IMMEDIATELY after your first message, write the initial file with every
+  aspect set to {"status": "unknown"}.
+- PROGRESSIVE UPDATES ARE MANDATORY. Collect in SIX ordered groups, ONE winps
+  PowerShell call per group, and rewrite ./health.json IMMEDIATELY after each
+  group returns — the dashboard animates the group being checked, so one big
+  sweep (or batching the writes) is a FAILURE even if the values are correct.
+  Run each group as `python3 -m app.winps <server> '<powershell>'`. The groups,
+  in this exact order:
+  G1 basics   (connectivity, uptime):
+     $o=Get-CimInstance Win32_OperatingSystem; hostname; $o.LastBootUpTime
+  G2 compute  (cpu, load, memory, swap):
+     (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue;
+     (Get-Counter '\System\Processor Queue Length').CounterSamples.CookedValue;
+     $o=Get-CimInstance Win32_OperatingSystem;
+     "mem_used_pct=$([math]::Round(100-($o.FreePhysicalMemory/$o.TotalVisibleMemorySize*100)))";
+     (Get-Counter '\Paging File(_Total)\% Usage').CounterSamples.CookedValue
+  G3 storage  (storage, inodes, disk_io):
+     Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {"$($_.DeviceID) used=$([math]::Round(($_.Size-$_.FreeSpace)/$_.Size*100))%"};
+     # inodes: report value "n/a", status ok (NTFS has no inode concept)
+     (Get-Counter '\PhysicalDisk(_Total)\Avg. Disk Queue Length').CounterSamples.CookedValue
+  G4 runtime  (services, processes, network, dns, time_sync):
+     Get-Service | Where-Object {$_.StartType -eq 'Automatic' -and $_.Status -ne 'Running'} | Select-Object -Expand Name;
+     Get-Process | Sort-Object CPU -Descending | Select-Object -First 3 Name,CPU;
+     Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -Expand Name;
+     Resolve-DnsName $env:COMPUTERNAME -ErrorAction SilentlyContinue;
+     w32tm /query /status
+  G5 security (firewall, security, certificates, patching):
+     Get-NetFirewallProfile | Select-Object Name,Enabled;
+     (Get-MpComputerStatus).RealTimeProtectionEnabled 2>$null;
+     @(Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625;StartTime=(Get-Date).AddHours(-2)} -ErrorAction SilentlyContinue).Count;
+     Get-ChildItem Cert:\LocalMachine\My | Select-Object Subject,NotAfter;
+     # pending reboot: Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending';
+     # pending updates: (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().Search("IsInstalled=0").Updates.Count
+  G6 logs     (kernel, logs):
+     # 'kernel' aspect => System event log on Windows
+     Get-WinEvent -FilterHashtable @{LogName='System';Level=1,2;StartTime=(Get-Date).AddHours(-2)} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,ProviderName,Message;
+     Get-WinEvent -FilterHashtable @{LogName='Application';Level=1,2;StartTime=(Get-Date).AddHours(-2)} -MaxEvents 15 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,ProviderName,Message
+- Statuses: "ok" | "warning" | "critical" | "unknown". Judge like an SRE:
+  disk >90% critical, >80% warning; cpu sustained >90% critical, >80% warning;
+  processor queue length > 2x cores warning; memory >90% critical, >80% warning;
+  pagefile >80% used critical, >50% warning; disk queue length >2 warning;
+  any Automatic service not Running critical; DNS failure critical; time not
+  synced (w32tm) warning; a firewall profile disabled warning; Defender RTP off
+  warning; burst of 4625 failed logons warning; cert expiring <30d warning,
+  expired/<7d critical; pending reboot or pending security updates warning;
+  Level 1/2 System or Application events critical/warning by severity.
+- inodes has no Windows analogue: set value "n/a", status "ok".
+- EXACT format — ALL TWENTY keys always present (same keys as Linux; for
+  Windows, 'load' = processor queue length, 'swap' = pagefile, 'kernel' =
+  System event log):
+{
+  "checks": {
+    "connectivity": {"status": "...", "value": "reachable, winrm ok", "note": "one line"},
+    "uptime":       {"status": "...", "value": "up 12 days", "note": "no unexpected reboot"},
+    "cpu":          {"status": "...", "value": "18%", "note": "top consumer: sqlservr"},
+    "load":         {"status": "...", "value": "0 queue / 8 cores", "note": "processor queue length"},
+    "memory":       {"status": "...", "value": "62%", "note": "physical memory in use"},
+    "swap":         {"status": "...", "value": "8%", "note": "pagefile usage"},
+    "storage":      {"status": "...", "value": "72% C:", "note": "worst drive"},
+    "inodes":       {"status": "ok", "value": "n/a", "note": "not applicable on NTFS"},
+    "disk_io":      {"status": "...", "value": "0.3 queue", "note": "avg disk queue length"},
+    "services":     {"status": "...", "value": "0 stopped", "note": "all Automatic services running"},
+    "processes":    {"status": "...", "value": "ok", "note": "top hog: sqlservr"},
+    "network":      {"status": "...", "value": "adapters up", "note": "expected NICs up"},
+    "dns":          {"status": "...", "value": "resolving", "note": "name resolution ok"},
+    "time_sync":    {"status": "...", "value": "synced", "note": "w32tm source ok"},
+    "firewall":     {"status": "...", "value": "3 profiles on", "note": "Domain/Private/Public enabled"},
+    "security":     {"status": "...", "value": "clean", "note": "Defender RTP on; no 4625 burst"},
+    "certificates": {"status": "...", "value": "ok, 120d", "note": "nearest expiry in LocalMachine\\My"},
+    "patching":     {"status": "...", "value": "4 pending", "note": "no reboot pending"},
+    "kernel":       {"status": "...", "value": "clean", "note": "no critical System events"},
+    "logs":         {"status": "...", "value": "clean", "note": "no error burst in Application log"}
+  }
+}
+- Start each value with "NN%" when a percentage applies (cpu, memory, swap,
+  storage, disk_io) so the dashboard can draw a gauge.
+"""
+
+
 def build_healthcheck_prompt(server: Server, workdir: Path | None = None) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided)"
     services = ", ".join(server.services) or "(unknown)"
     wd_section = workdir_section(workdir) if workdir else ""
+    win = server.is_windows
+    health_section = WINDOWS_HEALTH_SECTION if win else HEALTH_SECTION
+    # the script library is a bash library — only relevant to Linux targets
+    library_section = "" if win else script_library_section()
+    library_tip = "" if win else (
+        "Library tip: reuse per-group scripts (health_g1.sh … health_g6.sh) from the\n"
+        "library when they exist, and save parameterized ones back after a successful\n"
+        "run. Do NOT use the all-in-one health_sweep.sh for an interactive check — it\n"
+        "returns everything at once, which defeats the live group-by-group progress.\n")
+    call_word = "winps PowerShell" if win else "SSH"
     return f"""You are an SRE running a PROACTIVE HEALTH CHECK on a server — there is no
 reported incident. Assess its health quickly and thoroughly.
 
@@ -284,20 +380,16 @@ reported incident. Assess its health quickly and thoroughly.
 - Log locations / hints:
 {hints}
 
-{script_library_section()}
-{HEALTH_SECTION}
+{library_section}
+{health_section}
 ## Progress markers
 When you enter a new phase, start the FIRST line of your next message with
 exactly one of: PHASE: CONNECT | PHASE: SWEEP | PHASE: REPORT
-Library tip: reuse per-group scripts (health_g1.sh … health_g6.sh) from the
-library when they exist, and save parameterized ones back after a successful
-run. Do NOT use the all-in-one health_sweep.sh for an interactive check — it
-returns everything at once, which defeats the live group-by-group progress.
-
+{library_tip}
 ## Hard rules
 - READ-ONLY on the remote server: diagnostic and log-reading commands only.
   Never change any state.
-- Be fast: this is a sweep, not an investigation. Use a few combined SSH
+- Be fast: this is a sweep, not an investigation. Use a few combined {call_word}
   commands, and only dig deeper into an aspect that looks unhealthy (e.g.
   check WHY a service is down, WHAT is filling a disk).
 - Save command outputs under ./logs/ for the operator.
@@ -305,7 +397,7 @@ returns everything at once, which defeats the live group-by-group progress.
 ## Workflow
 1. CONNECT: verify reachability, and write the initial all-unknown
    ./health.json.
-2. SWEEP: run groups G1→G6 in order — one SSH call per group, then
+2. SWEEP: run groups G1→G6 in order — one {call_word} call per group, then
    immediately update ./health.json for that group's aspects before starting
    the next group. Briefly investigate anything warning/critical after its
    group completes.
@@ -548,6 +640,43 @@ def build_prompt(
     # experience showed side-quests dilute the root-cause hunt (e.g. the agent
     # assesses patching/firewall instead of running `dnf history`). Keep it
     # focused; auxiliary features live in healthcheck mode.
+    if server.is_windows:
+        readonly_examples = (
+            "commands only (Get-Content, Get-WinEvent, Get-EventLog, Get-Service, "
+            "Get-Process, Get-Counter, Test-NetConnection, Get-NetTCPConnection, "
+            "Get-CimInstance, Get-Hotfix, etc.). NEVER restart services, edit "
+            "files, delete anything, or change any state on the remote host.")
+        pinpoint_block = (
+            "   - `Get-Service <name>` and the service's start time via\n"
+            "     `Get-CimInstance Win32_Service -Filter \"Name='<name>'\"` / `Get-Process -Id <pid>`.StartTime\n"
+            "   - the service's own log/event source: `Get-WinEvent -FilterHashtable @{LogName='Application';ProviderName='<src>'} -MaxEvents 50`\n"
+            "   - the System/Application event logs around the failure, and Service Control\n"
+            "     Manager events (`Get-WinEvent -FilterHashtable @{LogName='System';Id=7034,7031,7036}`)\n"
+            "   - `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime` for the last reboot")
+        collect_block = (
+            "   - `Get-WinEvent -FilterHashtable @{LogName='System';StartTime=$start;EndTime=$end}`\n"
+            "     (and LogName='Application'/'Security') bracketing the failure window\n"
+            "   - filter provider/level as needed; export with `| Format-List *` or `Export-Csv`\n"
+            "   - a bare `-MaxEvents N` is NOT sufficient — confirm the extract's first/last\n"
+            "     TimeCreated actually cover the failure window and widen if not.")
+    else:
+        readonly_examples = (
+            "commands only (cat, tail, grep, journalctl, systemctl status, df, free, "
+            "ps, top -b -n1, ss, netstat, dmesg, uptime, etc.). NEVER restart services, "
+            "edit files, delete anything, or change any state on the remote host.")
+        pinpoint_block = (
+            "   - `systemctl status <service>` (the \"Active: ... since <timestamp>\" line)\n"
+            "     and `systemctl show <service> -p ActiveState,InactiveEnterTimestamp,ExecMainStartTimestamp,NRestarts`\n"
+            "   - the LAST lines of the service's own log (when did it stop writing?)\n"
+            "   - `journalctl -u <service> -n 50` and file mtimes\n"
+            "     (`ls -l --time-style=full-iso /var/log/...`)\n"
+            "   - process start times (`ps -eo pid,lstart,cmd | grep <svc>`), `uptime`")
+        collect_block = (
+            "   - `journalctl --since '<failure minus 60min>' --until '<failure plus 15min>'`\n"
+            "   - grep plain log files by the timestamp prefixes of that window\n"
+            "   - `tail -n` alone is NOT sufficient — after collecting, CHECK the first\n"
+            "     and last timestamps of each extract actually cover the failure window,\n"
+            "     and re-collect with a wider window or timestamp grep if they don't.")
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
 ## Target server
@@ -567,9 +696,7 @@ def build_prompt(
 
 ## Hard rules
 - READ-ONLY on the remote server. You may run diagnostic and log-reading
-  commands only (cat, tail, grep, journalctl, systemctl status, df, free,
-  ps, top -b -n1, ss, netstat, dmesg, uptime, etc.). NEVER restart services,
-  edit files, delete anything, or change any state on the remote host.
+  {readonly_examples}
 - Save everything you collect into ./logs/ in your working directory so the
   operator can review the raw evidence later.
 - If the server is unreachable, report that clearly as the finding instead of
@@ -582,24 +709,15 @@ def build_prompt(
 2. PINPOINT THE FAILURE TIME — do this BEFORE pulling any logs. The incident
    may be hours or days old; the operator's timing information may be vague
    or wrong. Establish when the affected service actually stopped working:
-   - `systemctl status <service>` (the "Active: ... since <timestamp>" line)
-     and `systemctl show <service> -p ActiveState,InactiveEnterTimestamp,ExecMainStartTimestamp,NRestarts`
-   - the LAST lines of the service's own log (when did it stop writing?)
-   - `journalctl -u <service> -n 50` and file mtimes
-     (`ls -l --time-style=full-iso /var/log/...`)
-   - process start times (`ps -eo pid,lstart,cmd | grep <svc>`), `uptime`
+{pinpoint_block}
    State the failure timestamp explicitly before moving on.
 3. COLLECT — server first: use the log-collector subagent (or do it directly)
-   to pull the relevant server logs and diagnostics over SSH into ./logs/.
+   to pull the relevant server logs and diagnostics into ./logs/.
    ANCHOR EVERY EXTRACT TO THE FAILURE TIMESTAMP FROM STEP 2, NEVER TO THE
    CURRENT TIME: the window that matters runs from ~60 minutes BEFORE the
    failure to ~15 minutes after it (the cause precedes the failure; what
    happened afterwards is mostly symptoms and noise).
-   - `journalctl --since '<failure minus 60min>' --until '<failure plus 15min>'`
-   - grep plain log files by the timestamp prefixes of that window
-   - `tail -n` alone is NOT sufficient — after collecting, CHECK the first
-     and last timestamps of each extract actually cover the failure window,
-     and re-collect with a wider window or timestamp grep if they don't.
+{collect_block}
    This is the primary evidence — finish it before touching other layers.
    Prefer targeted extracts over whole multi-GB files.
    Then enrich from the selected evidence layers via the collectors CLI /
@@ -633,24 +751,28 @@ def _agent_definitions():
     return {
         "log-collector": AgentDefinition(
             description=(
-                "Collects evidence: server logs and diagnostics over SSH, plus "
+                "Collects evidence: server logs and diagnostics from the target "
+                "host (SSH for Linux, WinRM/PowerShell for Windows), plus "
                 "monitoring/virtualization/ITSM/network data via the collectors "
                 "CLI (python3 -m collectors ...). Use for pulling everything "
                 "into the local ./logs/ directory."
             ),
             prompt=(
-                "You collect evidence from a remote Linux server over SSH using the "
-                "exact ssh command prefix given in the task. You are strictly "
-                "read-only on the remote host: only run commands that read logs or "
-                "system state. Save every output into the local ./logs/ directory "
-                "with descriptive filenames (e.g. logs/nginx_error_last2h.log, "
-                "logs/journal_gunicorn.log, logs/df_h.txt). Pull targeted extracts, "
-                "not entire huge files. CRITICAL: anchor extracts to the incident/"
-                "failure timestamp given in the task, never to the current time — "
-                "use `journalctl --since/--until` bracketing that timestamp and "
-                "grep files by its timestamp prefix; then verify each extract's "
-                "first/last lines actually cover the failure window and re-collect "
-                "wider if not (`tail -n` alone often misses old incidents). When "
+                "You collect evidence from a remote host using the EXACT connection "
+                "command given in the task — an ssh prefix for a Linux host, or "
+                "`python3 -m app.winps <server> '<powershell>'` for a Windows host. "
+                "You are strictly read-only on the remote host: only run commands "
+                "that read logs or system state. Save every output into the local "
+                "./logs/ directory with descriptive filenames (e.g. "
+                "logs/nginx_error_last2h.log, logs/system_events.log, logs/df_h.txt). "
+                "Pull targeted extracts, not entire huge files. CRITICAL: anchor "
+                "extracts to the incident/failure timestamp given in the task, never "
+                "to the current time. On Linux use `journalctl --since/--until` "
+                "bracketing that timestamp and grep files by its timestamp prefix; "
+                "on Windows use `Get-WinEvent -FilterHashtable @{LogName=...;"
+                "StartTime=...;EndTime=...}`. Then verify each extract's first/last "
+                "timestamps actually cover the failure window and re-collect wider "
+                "if not (a bare tail/-MaxEvents often misses old incidents). When "
                 "done, list what you collected and any commands that failed."
             ),
             tools=["Bash", "Write", "Read"],
