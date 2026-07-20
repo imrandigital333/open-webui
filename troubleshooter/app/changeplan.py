@@ -76,7 +76,8 @@ def check_command(plan: dict | None, command: str) -> dict:
             return {"allowed": False, "kind": "out-of-sequence", "step_order": order,
                     "reason": f"this is step {order} but step {done + 1} must run first"
                               " — the approved sequence is enforced"}
-    verdict, why = classify(cmd)
+    platform = (plan or {}).get("platform") or "linux"
+    verdict, why = classify(cmd, platform)
     if verdict == "readonly":
         return {"allowed": True, "kind": "readonly",
                 "reason": "not in the plan, but read-only diagnostics are permitted"}
@@ -165,6 +166,31 @@ def mark_manual_done(change_id: str, order: int) -> dict | None:
 
 
 # ---------- AI plan refinement ----------
+
+# Prepended to the Linux-worded prompts below when the target is a Windows
+# host, so the model emits PowerShell (run over WinRM) instead of bash.
+_WINDOWS_DIRECTIVE = """IMPORTANT — THE TARGET OS IS WINDOWS SERVER (PowerShell over WinRM).
+Every "command" MUST be a PowerShell command that runs DIRECTLY on the target
+host via an existing WinRM session — never bash, never ssh, never Linux tools.
+Wherever the guidance below refers to Linux, a shell, sudo, yum/dnf/apt,
+systemctl, journalctl or POSIX paths, substitute the correct Windows/PowerShell
+equivalent:
+- services: Get-Service / Restart-Service / Set-Service   (not systemctl/service)
+- roles, features & packages: Install-WindowsFeature, winget/choco, Install-Module
+- OS patching: Windows Update (Install-WindowsUpdate, or wusa.exe for a .msu);
+  a reboot (Restart-Computer) is ALWAYS downtime, exactly like a Linux kernel patch
+- backups: Copy-Item to a dated path, `reg export` for registry keys,
+  Checkpoint-VM/snapshot where relevant   (not tar/cp)
+- verification: Get-Service, Get-WinEvent/Get-EventLog, Test-NetConnection,
+  Get-Counter, Get-Hotfix
+- use Windows paths (C:\\...) and PowerShell syntax; do NOT emit any bash.
+
+"""
+
+
+def _os_directive(platform: str) -> str:
+    return _WINDOWS_DIRECTIVE if str(platform).lower() == "windows" else ""
+
 
 _REFINE_PROMPT = """You are a senior change-management reviewer for production Linux servers at an
 enterprise (an airport IT operation, 24x7 safety-critical). An operator gave you
@@ -292,9 +318,10 @@ Reply with ONLY this JSON (identical schema to a refined plan; no fences):
 """
 
 
-async def generate_plan(context: str) -> dict:
+async def generate_plan(context: str, platform: str = "linux") -> dict:
     """Build an executable plan from a change goal/description (no document)."""
-    data, err = await _one_shot_json(_GENERATE_PROMPT % context[:6000], timeout_s=150)
+    data, err = await _one_shot_json(
+        _os_directive(platform) + _GENERATE_PROMPT % context[:6000], timeout_s=150)
     shaped = _shape_refined(data) if data else None
     if shaped:
         return shaped
@@ -346,8 +373,17 @@ _FORCED_DOWNTIME = [
      "restarting/stopping a service interrupts it"),
     (r"\b(ifdown|nmcli\s+con(nection)?\s+down|ip\s+link\s+set\s+\S+\s+down)\b",
      "taking a network interface down interrupts connectivity"),
+    # Windows / PowerShell equivalents
+    (r"(?i)\brestart-computer\b|\bshutdown(\.exe)?\b\s+/r",
+     "a Windows reboot always requires downtime"),
+    (r"(?i)\b(restart|stop)-service\b|\biisreset\b|\b(restart|stop)-webapppool\b",
+     "restarting/stopping a Windows service interrupts it"),
+    (r"(?i)install-windowsupdate|\bwusa(\.exe)?\b|\bhotpatch\b.*reboot",
+     "installing Windows updates typically requires a reboot — downtime is required"),
+    (r"(?i)\bdisable-netadapter\b",
+     "disabling a network adapter interrupts connectivity"),
 ]
-_LIVEPATCH = re.compile(r"kpatch|ksplice|livepatch", re.I)
+_LIVEPATCH = re.compile(r"kpatch|ksplice|livepatch|hotpatch", re.I)
 
 
 def _enforce_downtime(result: dict) -> dict:
@@ -359,8 +395,11 @@ def _enforce_downtime(result: dict) -> dict:
         if _LIVEPATCH.search(text):
             continue   # explicit live patching is the one legitimate exception
         cmd = s.get("command") or ""
-        if cmd and classify(cmd)[0] == "readonly":
-            continue   # a read-only command can't cause downtime (e.g. uname -r)
+        # a read-only command can't cause downtime (e.g. uname -r / Get-Service);
+        # judge against BOTH dialects since the plan platform isn't threaded here
+        if cmd and classify(cmd, "linux")[0] == "readonly" \
+                and classify(cmd, "windows")[0] == "readonly":
+            continue
         for pattern, why in _FORCED_DOWNTIME:
             if re.search(pattern, text, re.I):
                 if not s.get("downtime_required"):
@@ -385,8 +424,9 @@ def _enforce_downtime(result: dict) -> dict:
     return result
 
 
-async def refine_plan(plan_text: str) -> dict:
-    data, err = await _one_shot_json(_REFINE_PROMPT % plan_text[:12000], timeout_s=150)
+async def refine_plan(plan_text: str, platform: str = "linux") -> dict:
+    data, err = await _one_shot_json(
+        _os_directive(platform) + _REFINE_PROMPT % plan_text[:12000], timeout_s=150)
     if data:
         shaped = _shape_refined(data)
         if shaped:
@@ -489,10 +529,10 @@ async def _one_shot_json(prompt: str, timeout_s: int = 90):
         return None, f"AI response JSON was invalid ({exc})"
 
 
-async def recommend_change(context: str) -> dict:
+async def recommend_change(context: str, platform: str = "linux") -> dict:
     """Suggest CR attributes + an outline plan from a description (no attachment
     flow). Degrades to neutral defaults if the AI is unavailable."""
-    data, err = await _one_shot_json(_RECOMMEND_PROMPT % context[:6000])
+    data, err = await _one_shot_json(_os_directive(platform) + _RECOMMEND_PROMPT % context[:6000])
     if not data:
         return {"available": False, "ai_error": err,
                 "category": "Minor", "type": "Normal", "risk": "Medium",
@@ -516,7 +556,7 @@ async def recommend_change(context: str) -> dict:
 
 
 _VERIFY_PROMPT = """You are a change implementer verifying a step you just ran on a production
-Linux server. Read the ACTUAL command output — do not trust the exit code alone
+%s server. Read the ACTUAL command output — do not trust the exit code alone
 (a command can exit 0 yet clearly fail, or exit non-zero yet be benign).
 
 Change: %s
@@ -537,12 +577,14 @@ attention; failed = did not achieve its intent or broke something. proceed =
 false only when continuing would be unsafe."""
 
 
-async def verify_step(step: dict, result: dict, change_title: str = "") -> dict:
+async def verify_step(step: dict, result: dict, change_title: str = "",
+                      platform: str = "linux") -> dict:
     """AI reads a step's real output and judges success/summary/concern.
     Falls back to an exit-code verdict if the AI is unavailable."""
     out = (result.get("output") or "")[:4000]
+    os_label = "Windows" if str(platform).lower() == "windows" else "Linux"
     data, err = await _one_shot_json(_VERIFY_PROMPT % (
-        change_title or "(change)", step.get("order"), step.get("phase", "step"),
+        os_label, change_title or "(change)", step.get("order"), step.get("phase", "step"),
         step.get("description", ""), step.get("command") or "(manual step)",
         result.get("exit_code"), out or "(no output)"), timeout_s=60)
     if not data:

@@ -10,11 +10,11 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import changeplan, cmdreview, db, discovery, healthprobe, itsm, orchestrator
+from . import changeplan, cmdreview, db, discovery, healthprobe, itsm, orchestrator, winexec
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.54.0"
+APP_VERSION = "2.55.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -444,6 +444,7 @@ async def changes_batch(req: ChangeBatchRequest):
 
 class RefinePlanRequest(BaseModel):
     plan_text: str = Field(..., min_length=20, max_length=20000)
+    platform: str = Field("linux", pattern=r"^(linux|windows)$")
 
 
 @app.post("/api/changes/refine-plan")
@@ -451,7 +452,7 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
     """AI pass over a pasted implementation-plan document: structured steps,
     validation/corrections, downtime verification, risk + success-rate,
     inferred CR fields, and still-missing mandatory fields."""
-    result = await changeplan.refine_plan(req.plan_text)
+    result = await changeplan.refine_plan(req.plan_text, req.platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
@@ -461,6 +462,7 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
 class ReRefineRequest(BaseModel):
     plan: dict = Field(...)                       # the current refined plan
     answers: str = Field(..., min_length=1, max_length=6000)
+    platform: str = Field("linux", pattern=r"^(linux|windows)$")
 
 
 @app.post("/api/changes/re-refine")
@@ -480,14 +482,15 @@ async def re_refine_plan(req: ReRefineRequest, request: Request):
                  "Incorporate these facts and re-issue the FULL validated plan, updating "
                  "commands, downtime, risk and the success-rate accordingly:")
     lines.append(req.answers)
-    result = await changeplan.refine_plan("\n".join(lines))
+    result = await changeplan.refine_plan("\n".join(lines), req.platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_rerefined",
                             {"chars": len(req.answers), "steps": len(result.get("steps", []))})
     return result
 
 
 @app.post("/api/changes/upload-plan")
-async def upload_change_plan(request: Request, file: UploadFile = File(...)):
+async def upload_change_plan(request: Request, file: UploadFile = File(...),
+                             platform: str = Form("linux")):
     """Read an uploaded implementation-plan file (.txt/.md/.docx/.pdf) and run
     the same refinement/validation the pasted-text path uses."""
     raw = await file.read()
@@ -500,7 +503,8 @@ async def upload_change_plan(request: Request, file: UploadFile = File(...)):
     if len(text.strip()) < 20:
         raise HTTPException(status_code=422,
                             detail="Could not read enough text from that file — paste the plan instead.")
-    result = await changeplan.refine_plan(text)
+    result = await changeplan.refine_plan(
+        text, "windows" if str(platform).lower() == "windows" else "linux")
     result["source_file"] = file.filename
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_uploaded",
                             {"file": file.filename, "chars": len(text),
@@ -511,12 +515,13 @@ async def upload_change_plan(request: Request, file: UploadFile = File(...)):
 
 class ChangeRecommendRequest(BaseModel):
     context: str = Field(..., min_length=5, max_length=6000)
+    platform: str = Field("linux", pattern=r"^(linux|windows)$")
 
 
 @app.post("/api/changes/recommend")
 async def recommend_change_fields(req: ChangeRecommendRequest):
     """Suggest CR attributes + an outline plan from a description (manual flow)."""
-    return await changeplan.recommend_change(req.context)
+    return await changeplan.recommend_change(req.context, req.platform)
 
 
 class ChangeCreateRequest(BaseModel):
@@ -600,7 +605,8 @@ async def generate_change_plan(change_id: str, request: Request,
                + (f"\nDiscovered facts about the target server (use these — do not guess):\n{disco}\n"
                   if disco else "")
                + (f"\nOperator-supplied specifics: {req.details}\n" if req.details else ""))
-    plan = await changeplan.generate_plan(context)
+    platform = "windows" if (srv is not None and srv.is_windows) else "linux"
+    plan = await changeplan.generate_plan(context, platform)
     if not plan.get("steps"):
         # AI unavailable / produced nothing — don't store an empty plan
         raise HTTPException(status_code=503,
@@ -615,6 +621,8 @@ async def generate_change_plan(change_id: str, request: Request,
         "suggestions": plan.get("suggestions", []),
         "risk_assessment": plan.get("risk_assessment", {}),
         "success_rate": plan.get("success_rate", {}),
+        "platform": platform,   # governs the read-only gate's command dialect
+        "server": req.server or existing.get("server", ""),
         # preserve any execution progress if a plan already existed
         "current_step": existing.get("current_step", 0),
         "results": existing.get("results", {}),
@@ -664,7 +672,8 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
     server = load_inventory().get(req.server)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
-    result = await _ssh_exec(server, step["command"])
+    platform = "windows" if server.is_windows else "linux"
+    result = await _remote_exec(server, step["command"])
     if not req.verify:
         # execute only — the UI shows the CLI animation now and asks for the
         # AI verdict via /verify-step next (robot animation)
@@ -675,7 +684,7 @@ async def change_run_step(change_id: str, req: ChangeRunStepRequest, request: Re
                                  "exit_code": result["exit_code"]})
         return {**result, "verified": False,
                 "current_step": (updated or plan).get("current_step")}
-    verification = await changeplan.verify_step(step, result, plan.get("title", ""))
+    verification = await changeplan.verify_step(step, result, plan.get("title", ""), platform)
     updated = changeplan.record_result(change_id, req.order, result, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_step_executed",
                             {"change_id": change_id, "order": req.order,
@@ -700,7 +709,8 @@ async def change_verify_step(change_id: str, req: ChangeVerifyRequest, request: 
     entry = (plan.get("results") or {}).get(str(req.order))
     if step is None or entry is None:
         raise HTTPException(status_code=404, detail="No executed step to verify")
-    verification = await changeplan.verify_step(step, entry, plan.get("title", ""))
+    verification = await changeplan.verify_step(
+        step, entry, plan.get("title", ""), plan.get("platform", "linux"))
     updated = changeplan.apply_verification(change_id, req.order, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_step_verified",
                             {"change_id": change_id, "order": req.order,
@@ -736,22 +746,27 @@ async def change_run_cmd(change_id: str, req: ChangeRunCmdRequest, request: Requ
     """Ad-hoc command during implementation. The gate allows ONLY commands
     from the approved plan (in sequence) or read-only diagnostics."""
     plan = changeplan.load_plan(change_id)
+    server = load_inventory().get(req.server)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
+    # the read-only gate must judge with the target's own command dialect
+    if plan is not None:
+        plan["platform"] = "windows" if server.is_windows else "linux"
     gate = changeplan.check_command(plan, req.command)
     if not gate["allowed"]:
         await asyncio.to_thread(db.audit, _actor(request), "change_cmd_blocked",
                                 {"change_id": change_id, "command": req.command[:200],
                                  "kind": gate["kind"], "reason": gate["reason"]})
         raise HTTPException(status_code=403, detail=gate["reason"])
-    server = load_inventory().get(req.server)
-    if server is None:
-        raise HTTPException(status_code=404, detail=f"Server '{req.server}' not in inventory")
-    result = await _ssh_exec(server, req.command)
+    result = await _remote_exec(server, req.command)
     verification = None
     if gate.get("step_order"):
         step = next((s for s in plan.get("steps", [])
                      if int(s.get("order", 0)) == gate["step_order"]), None)
         if step:
-            verification = await changeplan.verify_step(step, result, plan.get("title", ""))
+            verification = await changeplan.verify_step(
+                step, result, plan.get("title", ""),
+                "windows" if server.is_windows else "linux")
         changeplan.record_result(change_id, gate["step_order"], result, verification)
     await asyncio.to_thread(db.audit, _actor(request), "change_cmd_executed",
                             {"change_id": change_id, "command": req.command[:200],
@@ -917,8 +932,11 @@ class RunCmdRequest(BaseModel):
     command: str = Field(..., min_length=1, max_length=2000)
 
 
-async def _ssh_exec(server, command: str) -> dict:
-    """Run one command on the target over SSH, no agent involved."""
+async def _remote_exec(server, command: str) -> dict:
+    """Run one command on the target, no agent involved. Windows hosts use
+    PowerShell over WinRM; everything else uses SSH."""
+    if server.is_windows:
+        return await winexec.run_ps(server, command, timeout=90)
     cmd = server.ssh_command().split() + [command]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -931,6 +949,10 @@ async def _ssh_exec(server, command: str) -> dict:
         return {"ok": False, "exit_code": -1, "output": str(exc)}
     return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
             "output": out.decode(errors="replace")[-4000:]}
+
+
+# Backwards-compatible alias (older call sites).
+_ssh_exec = _remote_exec
 
 
 @app.post("/api/sessions/{session_id}/run-step")
@@ -983,7 +1005,8 @@ async def run_cmd(session_id: str, req: RunCmdRequest, request: Request):
     server = load_inventory().get(parent["server"])
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{parent['server']}' no longer in inventory")
-    verdict, why = cmdreview.classify(req.command)
+    verdict, why = cmdreview.classify(
+        req.command, "windows" if server.is_windows else "linux")
     actor = _actor(request)
     if verdict == "blocked":
         await asyncio.to_thread(db.audit, actor, "adhoc_command_blocked",
@@ -992,7 +1015,7 @@ async def run_cmd(session_id: str, req: RunCmdRequest, request: Request):
     await asyncio.to_thread(db.audit, actor, "adhoc_command_run",
                             {"session": session_id, "command": req.command[:500],
                              "verdict": verdict})
-    return await _ssh_exec(server, req.command)
+    return await _remote_exec(server, req.command)
 
 
 async def _load_any_session(session_id: str) -> dict:
@@ -1092,6 +1115,11 @@ async def download_report(session_id: str):
     )
 
 
+# sentinel the UI sends back when the WinRM password is set but unchanged, so
+# the stored secret is never round-tripped through the browser.
+_SECRET_KEPT = "__stored__"
+
+
 class ServerEntry(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[\w.\-]+$")
     host: str = Field(..., min_length=1, max_length=255)
@@ -1100,9 +1128,16 @@ class ServerEntry(BaseModel):
     ssh_key: str | None = Field(None, max_length=512)
     description: str = Field("", max_length=500)
     os: str = Field("", max_length=100)
+    platform: str = Field("linux", pattern=r"^(linux|windows)$")
     tags: list[str] = Field(default_factory=list)
     services: list[str] = Field(default_factory=list)
     log_hints: list[str] = Field(default_factory=list)
+    # Windows / WinRM (only meaningful when platform == windows)
+    winrm_password: str = Field("", max_length=512)
+    winrm_transport: str = Field("ntlm", max_length=16)
+    winrm_port: int = Field(5985, ge=1, le=65535)
+    winrm_scheme: str = Field("http", pattern=r"^(http|https)$")
+    winrm_cert_validation: str = Field("ignore", pattern=r"^(ignore|validate)$")
 
     def to_yaml_dict(self) -> dict:
         out = {"name": self.name, "host": self.host, "port": self.port, "user": self.user}
@@ -1111,31 +1146,58 @@ class ServerEntry(BaseModel):
         for key in ("description", "os"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
+        if self.platform == "windows":
+            out["platform"] = "windows"
+            out["winrm_transport"] = self.winrm_transport
+            out["winrm_port"] = self.winrm_port
+            out["winrm_scheme"] = self.winrm_scheme
+            out["winrm_cert_validation"] = self.winrm_cert_validation
         for key in ("tags", "services", "log_hints"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
         return out
 
 
+def _redact_inventory(servers: list[dict]) -> list[dict]:
+    """Never send the stored WinRM password to the browser — replace it with a
+    sentinel so the editor can show 'set' without revealing the secret."""
+    out = []
+    for s in servers:
+        s = dict(s)
+        if s.get("winrm_password"):
+            s["winrm_password"] = _SECRET_KEPT
+        out.append(s)
+    return out
+
+
 @app.get("/api/admin/inventory")
 async def admin_inventory():
-    return {"servers": load_raw_inventory(), "path": str(writable_inventory_path())}
+    return {"servers": _redact_inventory(load_raw_inventory()),
+            "path": str(writable_inventory_path())}
 
 
 @app.put("/api/admin/inventory/{name}")
 async def upsert_server(name: str, entry: ServerEntry, request: Request):
     servers = load_raw_inventory()
+    prior = next((s for s in servers if s.get("name") == name), None)
+    yaml_dict = entry.to_yaml_dict()
+    if entry.platform == "windows":
+        # preserve the stored password when the UI echoes the sentinel back
+        if entry.winrm_password and entry.winrm_password != _SECRET_KEPT:
+            yaml_dict["winrm_password"] = entry.winrm_password
+        elif prior and prior.get("winrm_password"):
+            yaml_dict["winrm_password"] = prior["winrm_password"]
     # remove the entry being edited (by its original name) and any entry that
     # collides with the (possibly renamed) new name
     servers = [s for s in servers if s.get("name") not in (name, entry.name)]
-    servers.append(entry.to_yaml_dict())
+    servers.append(yaml_dict)
     save_inventory(servers)
     await asyncio.to_thread(
         db.audit, _actor(request), "inventory_upsert",
         {"name": entry.name, "renamed_from": name if name != entry.name else None,
          "host": entry.host},
     )
-    return {"ok": True, "servers": servers}
+    return {"ok": True, "servers": _redact_inventory(servers)}
 
 
 @app.delete("/api/admin/inventory/{name}")
@@ -1151,13 +1213,22 @@ async def delete_server(name: str, request: Request):
 
 @app.post("/api/admin/inventory/{name}/test")
 async def test_server(name: str):
-    """SSH reachability test for one inventory server (10s timeout)."""
+    """Reachability test for one inventory server (SSH for Linux, WinRM for
+    Windows), 15s timeout."""
     import asyncio
 
     servers = load_inventory()
     server = servers.get(name)
     if server is None:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    if server.is_windows:
+        res = await winexec.run_ps(
+            server,
+            "\"CONNECTION_OK $(hostname) $((Get-CimInstance Win32_OperatingSystem).Caption)\"",
+            timeout=15)
+        if res.get("ok") and "CONNECTION_OK" in (res.get("output") or ""):
+            return {"ok": True, "detail": res["output"].strip()}
+        return {"ok": False, "detail": (res.get("output") or "WinRM test failed").strip()[:500]}
     cmd = server.ssh_command().split() + ["echo CONNECTION_OK && uname -a"]
     try:
         proc = await asyncio.create_subprocess_exec(

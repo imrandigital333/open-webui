@@ -77,15 +77,80 @@ MODIFIES = [
 ]
 
 
-def classify(cmd: str) -> tuple[str, str]:
+# ---- Windows / PowerShell policy (case-insensitive: PowerShell is) ----
+
+# catastrophic — never executed, no override
+WIN_BLOCKED = [
+    (r"(?i)\bformat(-volume|\.com)?\b", "formats a volume, destroying all data on it"),
+    (r"(?i)\bclear-disk\b", "wipes a disk, destroying all data on it"),
+    (r"(?i)\b(remove-partition|remove-item)\b[^\n]*\b[a-z]:\\?\s*(-recurse|/s)", "recursively deletes a whole drive"),
+    (r"(?i)\brd\s+/s\s+/q\s+[a-z]:\\?\s*$", "recursively deletes a whole drive"),
+    (r"(?i)\bdiskpart\b[^\n]*\bclean\b", "wipes a disk via diskpart"),
+    (r"(?i)\bcipher\s+/w:", "securely wipes free space"),
+]
+
+# destructive or availability-impacting — double confirmation
+WIN_DANGEROUS = [
+    (r"(?i)\b(stop-computer|restart-computer)\b", "powers off / reboots the server"),
+    (r"(?i)\bshutdown(\.exe)?\b\s+/(s|r|p)", "powers off / reboots the server"),
+    (r"(?i)\bremove-item\b[^\n]*-recurse", "deletes recursively"),
+    (r"(?i)\b(rd|rmdir)\b[^\n]*/s", "deletes a directory tree"),
+    (r"(?i)\b(stop-service|suspend-service)\b", "stops a service"),
+    (r"(?i)\bset-service\b[^\n]*-startuptype\s+disabled", "disables a service"),
+    (r"(?i)\bremove-service\b", "deletes a service"),
+    (r"(?i)\bdisable-netadapter\b", "takes a network adapter down"),
+    (r"(?i)\bset-netfirewallprofile\b[^\n]*-enabled\s+(false|\$false)", "disables the firewall"),
+    (r"(?i)\bnetsh\s+advfirewall\s+set\b[^\n]*\bstate\s+off", "disables the firewall"),
+    (r"(?i)\b(remove-localuser|remove-aduser)\b", "deletes an account"),
+    (r"(?i)\bnet\s+user\b[^\n]*/del", "deletes an account"),
+    (r"(?i)\b(uninstall|remove)-windowsfeature\b", "removes a server role/feature"),
+    (r"(?i)\b(clear-eventlog|wevtutil\s+cl)\b", "clears an event log (audit trail)"),
+    (r"(?i)\bremove-item\b[^\n]*\bhk(lm|cu|cr|u):", "deletes registry keys"),
+    (r"(?i)\bstop-process\b[^\n]*-force", "force-kills a process"),
+]
+
+# changes state — backup-first flow
+WIN_MODIFIES = [
+    (r"(?i)\b(restart|start)-service\b", "starts/restarts a service"),
+    (r"(?i)\b(restart|start|stop)-webapppool\b", "cycles an IIS app pool"),
+    (r"(?i)\biisreset\b", "restarts IIS"),
+    (r"(?i)\bset-service\b", "reconfigures a service"),
+    (r"(?i)\b(install|add)-windowsfeature\b", "installs a server role/feature"),
+    (r"(?i)\b(set|new|remove)-itemproperty\b", "changes the registry"),
+    (r"(?i)\breg\s+(add|delete|import)\b", "changes the registry"),
+    (r"(?i)\b(new|copy|move|rename)-item\b", "creates/moves/renames files"),
+    (r"(?i)\b(set|add)-content\b", "writes to a file"),
+    (r"(?i)\bout-file\b", "writes to a file"),
+    (r"(?i)(?<![|&>])>{1,2}\s*\S", "writes/appends to a file"),
+    (r"(?i)\b(set|new)-netipaddress\b", "changes an IP address"),
+    (r"(?i)\bset-dnsclientserveraddress\b", "changes DNS settings"),
+    (r"(?i)\bnetsh\s+interface\b[^\n]*\bset\b", "changes network configuration"),
+    (r"(?i)\b(new|set)-netfirewallrule\b", "changes firewall rules"),
+    (r"(?i)\b(new|set)-localuser\b", "modifies an account"),
+    (r"(?i)\badd-localgroupmember\b", "grants group membership"),
+    (r"(?i)\bnet\s+user\b", "modifies an account"),
+    (r"(?i)\bset-executionpolicy\b", "changes the PowerShell execution policy"),
+    (r"(?i)\b(set-timezone|set-date)\b", "changes the clock"),
+    (r"(?i)\brename-computer\b", "renames the server"),
+    (r"(?i)\benable-netadapter\b", "brings a network adapter up"),
+    (r"(?i)\b(winget|choco|chocolatey)\b\s+(install|upgrade|uninstall|remove)", "installs/removes packages"),
+    (r"(?i)\bset-mppreference\b", "changes Windows Defender settings"),
+]
+
+
+def classify(cmd: str, platform: str = "linux") -> tuple[str, str]:
     """Deterministic policy verdict — the floor the AI can only raise."""
-    for pattern, why in BLOCKED:
+    if str(platform).lower() == "windows":
+        blocked, dangerous, modifies = WIN_BLOCKED, WIN_DANGEROUS, WIN_MODIFIES
+    else:
+        blocked, dangerous, modifies = BLOCKED, DANGEROUS, MODIFIES
+    for pattern, why in blocked:
         if re.search(pattern, cmd):
             return "blocked", why
-    for pattern, why in DANGEROUS:
+    for pattern, why in dangerous:
         if re.search(pattern, cmd):
             return "dangerous", why
-    for pattern, why in MODIFIES:
+    for pattern, why in modifies:
         if re.search(pattern, cmd):
             return "modifies", why
     return "readonly", "no state-changing pattern detected"
@@ -98,16 +163,23 @@ async def _ai_assess(cmd: str, server: Server) -> dict | None:
     except ImportError:
         return None
     services = ", ".join(server.services) or "unknown"
-    prompt = f"""You are a Linux change-review gate for production servers. An operator wants to
-run this shell command on server "{server.name}" (OS: {server.os or "linux"},
-key services: {services}):
+    win = server.is_windows
+    shell = "PowerShell (via WinRM)" if win else "shell"
+    os_label = server.os or ("Windows" if win else "linux")
+    backup_hint = ("ONE PowerShell command that backs up whatever this changes "
+                   "(e.g. Copy-Item to a dated path, Export registry key), or "
+                   if win else
+                   "ONE shell command that backs up whatever this changes (dated copy), or ")
+    prompt = f"""You are a {"Windows" if win else "Linux"} change-review gate for production servers.
+An operator wants to run this {shell} command on server "{server.name}"
+(OS: {os_label}, key services: {services}):
 
 {cmd}
 
 Reply with ONLY this JSON (no fences, no other text):
 {{"risk": "readonly | modifies | dangerous",
  "impact": "2-3 plain sentences: exactly what the command does and its operational impact on this server",
- "backup_command": "ONE shell command that backs up whatever this changes (dated copy), or "" if it changes nothing",
+ "backup_command": "{backup_hint}"" if it changes nothing",
  "damage": "worst case if it goes wrong, one line, or "" if none"}}
 
 risk rules: readonly = inspects only; modifies = changes files/services/config;
@@ -134,7 +206,7 @@ dangerous = can destroy data, break access, or take the server down."""
 
 
 async def review(cmd: str, server: Server) -> dict:
-    verdict, reason = classify(cmd)
+    verdict, reason = classify(cmd, "windows" if server.is_windows else "linux")
     if verdict == "blocked":
         return {"verdict": "blocked", "reason": reason,
                 "impact": f"This command {reason}. It is hard-blocked by policy and will not be executed.",

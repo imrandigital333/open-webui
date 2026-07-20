@@ -18,9 +18,24 @@ class Server:
     ssh_key: str | None = None
     description: str = ""
     os: str = ""
+    # linux (SSH/bash) or windows (WinRM/PowerShell). Defaults to linux for
+    # backward compatibility with existing inventories.
+    platform: str = "linux"
     tags: list[str] = field(default_factory=list)
     services: list[str] = field(default_factory=list)
     log_hints: list[str] = field(default_factory=list)
+    # Windows / WinRM connection details (used only when platform == windows).
+    # The account is `user`; the password is a secret kept server-side.
+    winrm_password: str = ""
+    winrm_transport: str = "ntlm"      # ntlm | kerberos | basic | credssp | ssl
+    winrm_port: int = 5985             # 5985 http, 5986 https by convention
+    winrm_scheme: str = "http"         # http | https
+    winrm_cert_validation: str = "ignore"   # ignore | validate
+
+    @property
+    def is_windows(self) -> bool:
+        return (self.platform or "").strip().lower() == "windows" \
+            or "windows" in (self.os or "").lower()
 
     def ssh_command(self) -> str:
         """The base ssh command the agent should use to reach this server."""
@@ -37,13 +52,17 @@ class Server:
         parts.append(f"{self.user}@{self.host}")
         return " ".join(parts)
 
+    def winrm_endpoint(self) -> str:
+        return f"{self.winrm_scheme}://{self.host}:{self.winrm_port}/wsman"
+
     def to_public_dict(self) -> dict:
-        """Representation safe to send to the UI (no key paths)."""
+        """Representation safe to send to the UI (no key paths, no secrets)."""
         return {
             "name": self.name,
             "host": self.host,
             "description": self.description,
             "os": self.os,
+            "platform": "windows" if self.is_windows else "linux",
             "tags": self.tags,
             "services": self.services,
         }
@@ -102,9 +121,15 @@ def load_inventory() -> dict[str, Server]:
             ssh_key=entry.get("ssh_key"),
             description=entry.get("description", ""),
             os=entry.get("os", ""),
+            platform=str(entry.get("platform", "linux") or "linux"),
             tags=list(entry.get("tags", [])),
             services=list(entry.get("services", [])),
             log_hints=list(entry.get("log_hints", [])),
+            winrm_password=str(entry.get("winrm_password", "") or ""),
+            winrm_transport=str(entry.get("winrm_transport", "ntlm") or "ntlm"),
+            winrm_port=int(entry.get("winrm_port", 5985)),
+            winrm_scheme=str(entry.get("winrm_scheme", "http") or "http"),
+            winrm_cert_validation=str(entry.get("winrm_cert_validation", "ignore") or "ignore"),
         )
         servers[server.name] = server
     return servers

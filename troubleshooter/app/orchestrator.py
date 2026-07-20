@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,6 +21,26 @@ from typing import Any
 from . import db
 from .inventory import BASE_DIR, Server
 from .scriptlib import SCRIPTLIB_DIR, ensure_scriptlib
+
+
+def connection_section(server: Server) -> str:
+    """How the agent reaches this host — SSH+bash for Linux, PowerShell over
+    WinRM (via the winps shim) for Windows."""
+    if server.is_windows:
+        py = sys.executable or "python3"
+        return (
+            "- This is a WINDOWS SERVER, reached over WinRM (NOT SSH). Run a\n"
+            "  read-only PowerShell command on it with EXACTLY this form:\n"
+            f"  `{py} -m app.winps {server.name} '<powershell command>'`\n"
+            f"  (run from {BASE_DIR}). Use PowerShell cmdlets — Get-Service,\n"
+            "  Get-WinEvent / Get-EventLog, Get-Process, Get-Counter,\n"
+            "  Test-NetConnection, Get-Hotfix, Get-Volume, Get-CimInstance — and\n"
+            "  NOT bash, systemctl, journalctl or other Linux tools."
+        )
+    return (
+        "- Connect with EXACTLY this command prefix for every remote command:\n"
+        f"  `{server.ssh_command()} '<remote command>'`"
+    )
 
 SESSIONS_DIR = Path(os.environ.get("TROUBLESHOOTER_DATA", BASE_DIR / "data" / "sessions"))
 
@@ -115,8 +136,7 @@ operator reviewed this exact plan and authorized its execution.
 {workdir_section(workdir)}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
-- Connect with EXACTLY this command prefix for every remote command:
-  `{server.ssh_command()} '<remote command>'`
+{connection_section(server)}
 
 ## Incident context
 - Original problem: {remediation.get("problem", "(unknown)")}
@@ -260,8 +280,7 @@ reported incident. Assess its health quickly and thoroughly.
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
 - Key services: {services}
-- Connect with EXACTLY this command prefix for every remote command:
-  `{server.ssh_command()} '<remote command>'`
+{connection_section(server)}
 - Log locations / hints:
 {hints}
 
@@ -535,8 +554,7 @@ def build_prompt(
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
 - Key services: {services}
-- Connect with EXACTLY this command prefix for every remote command:
-  `{server.ssh_command()} '<remote command>'`
+{connection_section(server)}
 - Known log locations / hints:
 {hints}
 {layers_section}

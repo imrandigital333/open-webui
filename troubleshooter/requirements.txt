@@ -7,4 +7,8 @@ SQLAlchemy>=2.0
 # plans. Without them, plain-text/markdown uploads and pasting still work.
 python-docx>=1.1.0
 pypdf>=4.0.0
+# Optional: Windows Server troubleshooting over WinRM / PowerShell Remoting.
+# Only needed if the inventory contains platform: windows servers; Linux-only
+# deployments can skip it (the WinRM paths degrade with a clear message).
+pywinrm>=0.4.3
 # For PostgreSQL in production, additionally: pip install "psycopg[binary]"

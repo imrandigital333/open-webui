@@ -850,10 +850,37 @@
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
           <div><label>Name *</label><input id="f_name" maxlength="100"></div>
           <div><label>Host / IP *</label><input id="f_host" maxlength="255"></div>
-          <div><label>SSH user *</label><input id="f_user" maxlength="64" placeholder="claude-ro"></div>
-          <div><label>SSH port</label><input id="f_port" type="number" value="22" min="1" max="65535"></div>
-          <div style="grid-column:1/-1"><label>SSH key path <span style="font-weight:normal">(optional — empty uses the service account's default keys)</span></label>
+          <div style="grid-column:1/-1"><label>Platform</label>
+            <select id="f_platform">
+              <option value="linux">Linux / Unix — SSH (bash)</option>
+              <option value="windows">Windows Server — WinRM (PowerShell)</option>
+            </select></div>
+          <div><label>User *</label><input id="f_user" maxlength="64" placeholder="claude-ro"></div>
+          <div id="wrap_port"><label>SSH port</label><input id="f_port" type="number" value="22" min="1" max="65535"></div>
+          <!-- Linux / SSH -->
+          <div style="grid-column:1/-1" id="wrap_ssh_key"><label>SSH key path <span style="font-weight:normal">(optional — empty uses the service account's default keys)</span></label>
             <input id="f_ssh_key" maxlength="512" placeholder="/home/aitrouble/.ssh/claude-ro"></div>
+          <!-- Windows / WinRM -->
+          <div style="grid-column:1/-1;display:none" id="winrmFields">
+            <div class="hint" style="margin:2px 0 8px">WinRM / PowerShell Remoting. The password is stored on the server, never shown back.</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0 14px;">
+              <div style="grid-column:1/-1"><label>WinRM password <span style="font-weight:normal">(for the account above)</span></label>
+                <input id="f_winrm_password" type="password" maxlength="512" autocomplete="new-password" placeholder="•••••• (leave as-is to keep the stored one)"></div>
+              <div><label>Auth</label>
+                <select id="f_winrm_transport">
+                  <option value="ntlm">NTLM</option>
+                  <option value="kerberos">Kerberos</option>
+                  <option value="basic">Basic</option>
+                  <option value="credssp">CredSSP</option>
+                  <option value="ssl">SSL/cert</option>
+                </select></div>
+              <div><label>WinRM port</label><input id="f_winrm_port" type="number" value="5985" min="1" max="65535"></div>
+              <div><label>Scheme</label>
+                <select id="f_winrm_scheme"><option value="http">http</option><option value="https">https</option></select></div>
+              <div><label>Cert validation</label>
+                <select id="f_winrm_cert"><option value="ignore">ignore (self-signed)</option><option value="validate">validate</option></select></div>
+            </div>
+          </div>
           <div><label>Description</label><input id="f_description" maxlength="500"></div>
           <div><label>OS</label><input id="f_os" maxlength="100" placeholder="ubuntu-22.04"></div>
           <div><label>Tags <span style="font-weight:normal">(comma separated)</span></label>
@@ -3909,8 +3936,18 @@ async function loadAdminInventory() {
     <div class="item" style="padding:9px 11px;border:1px solid var(--border);border-radius:8px;
          margin-bottom:8px;cursor:pointer" onclick="editServer('${escapeHtml(s.name)}')">
       <strong>${escapeHtml(s.name)}</strong>
-      <div class="hint">${escapeHtml(s.user || '')}@${escapeHtml(s.host || '')}:${s.port || 22}</div>
+      ${(s.platform === 'windows') ? '<span class="ci-dt" style="border-color:var(--accent2);color:var(--accent2);margin-left:6px">Windows</span>' : ''}
+      <div class="hint">${escapeHtml(s.user || '')}@${escapeHtml(s.host || '')}:${s.platform === 'windows' ? (s.winrm_port || 5985) : (s.port || 22)}${s.platform === 'windows' ? ' · WinRM' : ''}</div>
     </div>`).join('') : '<div class="empty">No servers yet — add one.</div>';
+}
+
+function applyPlatformFields() {
+  const win = $('f_platform').value === 'windows';
+  $('winrmFields').style.display = win ? '' : 'none';
+  $('wrap_ssh_key').style.display = win ? 'none' : '';
+  // relabel the shared port field and the user hint
+  $('wrap_port').querySelector('label').textContent = win ? 'SSH port (unused for WinRM)' : 'SSH port';
+  $('wrap_port').style.display = win ? 'none' : '';
 }
 
 function editServer(name) {
@@ -3925,34 +3962,51 @@ function editServer(name) {
   if (name) loadDiscovery(name);
   $('f_name').value = s.name || '';
   $('f_host').value = s.host || '';
+  $('f_platform').value = s.platform === 'windows' ? 'windows' : 'linux';
   $('f_user').value = s.user || '';
   $('f_port').value = s.port || 22;
   $('f_ssh_key').value = s.ssh_key || '';
+  $('f_winrm_password').value = s.winrm_password || '';   // sentinel "__stored__" if set
+  $('f_winrm_transport').value = s.winrm_transport || 'ntlm';
+  $('f_winrm_port').value = s.winrm_port || 5985;
+  $('f_winrm_scheme').value = s.winrm_scheme || 'http';
+  $('f_winrm_cert').value = s.winrm_cert_validation || 'ignore';
   $('f_description').value = s.description || '';
   $('f_os').value = s.os || '';
   $('f_tags').value = (s.tags || []).join(', ');
   $('f_services').value = (s.services || []).join(', ');
   $('f_log_hints').value = (s.log_hints || []).join('\n');
   $('invMsg').textContent = '';
+  applyPlatformFields();
 }
 
 $('addServerBtn').onclick = (e) => { e.preventDefault(); editServer(null); };
+$('f_platform').onchange = applyPlatformFields;
 
 $('saveServerBtn').onclick = async () => {
   const csv = (v) => v.split(',').map(x => x.trim()).filter(Boolean);
+  const win = $('f_platform').value === 'windows';
   const body = {
     name: $('f_name').value.trim(),
     host: $('f_host').value.trim(),
     user: $('f_user').value.trim(),
     port: parseInt($('f_port').value, 10) || 22,
-    ssh_key: $('f_ssh_key').value.trim() || null,
+    ssh_key: win ? null : ($('f_ssh_key').value.trim() || null),
+    platform: win ? 'windows' : 'linux',
     description: $('f_description').value.trim(),
     os: $('f_os').value.trim(),
     tags: csv($('f_tags').value),
     services: csv($('f_services').value),
     log_hints: $('f_log_hints').value.split('\n').map(x => x.trim()).filter(Boolean),
   };
-  if (!body.name || !body.host || !body.user) { $('invMsg').textContent = 'Name, host and SSH user are required.'; return; }
+  if (win) {
+    body.winrm_password = $('f_winrm_password').value;   // '' or '__stored__' preserves stored
+    body.winrm_transport = $('f_winrm_transport').value;
+    body.winrm_port = parseInt($('f_winrm_port').value, 10) || 5985;
+    body.winrm_scheme = $('f_winrm_scheme').value;
+    body.winrm_cert_validation = $('f_winrm_cert').value;
+  }
+  if (!body.name || !body.host || !body.user) { $('invMsg').textContent = 'Name, host and user are required.'; return; }
   const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName || body.name)}`, {
     method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });

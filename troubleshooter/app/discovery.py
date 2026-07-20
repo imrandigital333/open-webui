@@ -155,8 +155,142 @@ def _os_family(os_id: str) -> str:
     return i or "linux"
 
 
+# Windows discovery: one PowerShell pass emitting a compact JSON object over
+# WinRM. Read-only CIM/Get-* queries only.
+_WIN_SCRIPT = r"""
+$ErrorActionPreference='SilentlyContinue'
+$os=Get-CimInstance Win32_OperatingSystem
+$cs=Get-CimInstance Win32_ComputerSystem
+$cpu=@(Get-CimInstance Win32_Processor)
+$cores=($cpu|Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+$net=@(Get-NetIPAddress -AddressFamily IPv4|Where-Object{$_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown'})
+$gw=(Get-NetRoute -DestinationPrefix '0.0.0.0/0'|Sort-Object RouteMetric|Select-Object -First 1).NextHop
+$vol=@(Get-Volume|Where-Object{$_.DriveLetter -and $_.Size -gt 0})
+$svc=@(Get-Service|Where-Object{$_.Status -eq 'Running'})
+$ports=@(Get-NetTCPConnection -State Listen|Select-Object -ExpandProperty LocalPort -Unique)
+$hf=@(Get-HotFix|Sort-Object InstalledOn -Descending|Select-Object -First 8)
+$pm=if(Get-Command winget -ErrorAction SilentlyContinue){'winget'}elseif(Get-Command choco -ErrorAction SilentlyContinue){'choco'}else{'windows'}
+$o=[ordered]@{
+ hostname=($cs.DNSHostName,$cs.Name -ne $null|Select-Object -First 1)+$(if($cs.Domain){'.'+$cs.Domain}else{''})
+ os=$os.Caption; os_version=$os.Version; build=$os.BuildNumber
+ arch=$os.OSArchitecture
+ manufacturer=$cs.Manufacturer; model=$cs.Model
+ cpu_model=($cpu|Select-Object -First 1).Name
+ cpu_cores=$cores
+ total_mb=[math]::Round($os.TotalVisibleMemorySize/1024)
+ free_mb=[math]::Round($os.FreePhysicalMemory/1024)
+ last_boot=$os.LastBootUpTime.ToString('s')
+ gateway=$gw
+ ips=@($net|ForEach-Object{@{iface=$_.InterfaceAlias;ip=$_.IPAddress;prefix=$_.PrefixLength}})
+ disks=@($vol|ForEach-Object{@{mount="$($_.DriveLetter):";label=$_.FileSystemLabel;size_gb=[math]::Round($_.Size/1GB,1);free_gb=[math]::Round($_.SizeRemaining/1GB,1)}})
+ services=@($svc|ForEach-Object{$_.Name})
+ ports=@($ports)
+ hotfixes=@($hf|ForEach-Object{$_.HotFixID})
+ pkgmgr=$pm
+}
+$o|ConvertTo-Json -Depth 4 -Compress
+""".strip()
+
+
+def _parse_windows(raw: dict) -> dict:
+    total_mb = raw.get("total_mb")
+    free_mb = raw.get("free_mb")
+    used_mb = (total_mb - free_mb) if isinstance(total_mb, (int, float)) \
+        and isinstance(free_mb, (int, float)) else None
+    mem = {}
+    if isinstance(total_mb, (int, float)):
+        mem["total_mb"] = int(total_mb)
+    if used_mb is not None:
+        mem["used_mb"] = int(used_mb)
+    if isinstance(free_mb, (int, float)):
+        mem["free_mb"] = int(free_mb)
+
+    ips = []
+    for e in raw.get("ips") or []:
+        if isinstance(e, dict) and e.get("ip"):
+            ips.append({"iface": e.get("iface", ""),
+                        "cidr": f"{e['ip']}/{e.get('prefix', '')}".rstrip("/")})
+    disks = []
+    for d in raw.get("disks") or []:
+        if not isinstance(d, dict):
+            continue
+        size = d.get("size_gb") or 0
+        free = d.get("free_gb") or 0
+        pct = f"{round((size - free) / size * 100)}%" if size else "?"
+        disks.append({"fs": d.get("label") or d.get("mount", ""), "type": "ntfs",
+                      "size": f"{size}G", "used": f"{round(size - free, 1)}G",
+                      "avail": f"{free}G", "use%": pct, "mount": d.get("mount", "")})
+    model = " ".join(x for x in (raw.get("manufacturer"), raw.get("model")) if x).strip()
+    virt = _win_virt(raw.get("manufacturer", ""), raw.get("model", ""))
+    ports = [str(p) for p in (raw.get("ports") or []) if str(p).isdigit()]
+    return {
+        "hostname": raw.get("hostname") or "",
+        "os": raw.get("os") or "Windows",
+        "os_id": "windows",
+        "os_version": str(raw.get("os_version") or ""),
+        "os_family": "windows",
+        "kernel": f"build {raw.get('build')}" if raw.get("build") else str(raw.get("os_version") or ""),
+        "arch": raw.get("arch") or "",
+        "virtualization": virt,
+        "machine_type": "virtual" if virt != "none" else "physical",
+        "product": model,
+        "cpu_model": (raw.get("cpu_model") or "").strip(),
+        "cpu_cores": raw.get("cpu_cores"),
+        "memory_mb": mem,
+        "disks": disks,
+        "ip_addresses": ips,
+        "gateway": raw.get("gateway") or "",
+        "listening_ports": ports,
+        "running_services": raw.get("services") or [],
+        "package_manager": raw.get("pkgmgr") or "windows",
+        "installed_kernels": raw.get("hotfixes") or [],   # latest hotfixes ~ patch level
+        "selinux": "n/a",
+        "uptime": f"since {raw.get('last_boot')}" if raw.get("last_boot") else "",
+    }
+
+
+def _win_virt(manufacturer: str, model: str) -> str:
+    blob = f"{manufacturer} {model}".lower()
+    if "vmware" in blob:
+        return "vmware"
+    if "microsoft" in blob and "virtual" in blob:
+        return "hyperv"
+    if "kvm" in blob or "qemu" in blob:
+        return "kvm"
+    if "xen" in blob:
+        return "xen"
+    if "virtualbox" in blob or "innotek" in blob:
+        return "virtualbox"
+    return "none"
+
+
+async def _discover_windows(server: Server) -> dict:
+    from . import winexec
+    res = await winexec.run_ps(server, _WIN_SCRIPT, timeout=TIMEOUT)
+    if not res.get("ok"):
+        return _save(server.name, {"ok": False, "ts": time.time(),
+                                   "error": (res.get("output") or "WinRM discovery failed")[:300]})
+    text = (res.get("output") or "").strip()
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return _save(server.name, {"ok": False, "ts": time.time(),
+                                   "error": f"unexpected discovery output: {text[:200]}"})
+    try:
+        raw = json.loads(m.group())
+    except json.JSONDecodeError as exc:
+        return _save(server.name, {"ok": False, "ts": time.time(),
+                                   "error": f"could not parse discovery JSON: {exc}"})
+    return _save(server.name, {"ok": True, "ts": time.time(), "facts": _parse_windows(raw)})
+
+
 async def discover(server: Server) -> dict:
-    """SSH in, gather facts, cache and return them (read-only commands)."""
+    """Gather facts over the server's transport, cache and return them.
+
+    Windows hosts (platform: windows) are probed with PowerShell over WinRM;
+    everything else over SSH. Both use read-only commands only.
+    """
+    if server.is_windows:
+        return await _discover_windows(server)
     try:
         proc = await asyncio.create_subprocess_exec(
             *server.ssh_command().split(), _SCRIPT,
