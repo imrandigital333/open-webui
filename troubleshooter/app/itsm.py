@@ -200,30 +200,43 @@ def _first(d: dict, *keys, default=""):
     return default
 
 
-# A ticket/change number looks like optional letters + 3+ digits (318417,
-# INC318417, CR1842). Used to recognise the id field whatever it is named.
+# A ticket/change number looks like optional letters + 3+ digits (318543,
+# INC318417, CR1842). Used to tell the human-facing number apart from opaque
+# record handles (e.g. Ticket_ID = "36RUGsujKPUeZJh%2b...%3d%3d").
 _ID_VAL_RE = re.compile(r"^[A-Za-z]{0,6}[-_]?\d{3,}$")
-_ID_ENTITY = ("ticket", "incident", "change", "request", "problem", "sr", "call", "service")
+_ID_ENTITY = ("ticket", "incident", "change", "request", "problem", "sr", "call")
+
+# preferred known id fields, per entity — space/underscore variants included
+_INCIDENT_ID_KEYS = ("Incident ID", "IncidentID", "Incident_ID", "IncidentNo",
+                     "Incident_No", "IncidentNumber", "TicketNo", "Ticket_No",
+                     "TicketNumber", "RequestID", "Request_Id", "SR_ID", "SRID",
+                     "CallID", "id", "number", "Number", "Ticket_ID", "TicketID")
+_CHANGE_ID_KEYS = ("ChangeNo", "Change_No", "ChangeID", "Change_Request_Id",
+                   "ChangeRequestID", "CR_ID", "CRID", "CR_No", "ChangeNumber",
+                   "id", "number", "Number")
 
 
-def _fuzzy_id(raw: dict) -> str:
-    """Find the ticket/CR number field regardless of its exact name in this
-    SummitAI instance: a key that names an entity + id/no/number/code, whose
-    value looks like a ticket number."""
-    fallback = ""
+def _pick_id(raw: dict, known: tuple) -> str:
+    """Choose the human-facing ticket/CR number. Collect candidates from the
+    known fields plus any entity-id-shaped key, then PREFER one whose value
+    looks like a real number (digits, optional short prefix) over opaque
+    handles/tokens; fall back to the first non-empty candidate."""
+    cands = []
+    for k in known:
+        v = raw.get(k)
+        if v not in (None, "", 0):
+            cands.append(str(v).strip())
     for k, v in raw.items():
         if not isinstance(v, (str, int)) or v in (None, "", 0):
             continue
         nk = re.sub(r"[^a-z0-9]", "", str(k).lower())
-        if not (nk.startswith(_ID_ENTITY)
-                and ("no" in nk or "number" in nk or "id" in nk or "code" in nk)):
-            continue
-        sv = str(v).strip()
-        if _ID_VAL_RE.match(sv):
-            return sv                     # strong match — take it
-        if not fallback:
-            fallback = sv
-    return fallback
+        if nk.startswith(_ID_ENTITY) and ("no" in nk or "number" in nk
+                                          or "id" in nk or "code" in nk):
+            cands.append(str(v).strip())
+    for c in cands:                       # prefer a value shaped like a number
+        if _ID_VAL_RE.match(c):
+            return c
+    return cands[0] if cands else ""
 
 
 def _norm_priority(v) -> str:
@@ -237,11 +250,7 @@ def _norm_priority(v) -> str:
 
 def _norm_incident(raw: dict) -> dict:
     return {
-        "id": str(_first(raw, "TicketNo", "Ticket_No", "TicketNumber", "IncidentID",
-                         "IncidentId", "IncidentNo", "Incident_Id", "Incident_No",
-                         "id", "number", "Number", "RequestID", "Request_Id", "ticket",
-                         "SR_ID", "SRID", "CallID", "Ticket_ID", "TicketId")
-                  or _fuzzy_id(raw)),
+        "id": str(_pick_id(raw, _INCIDENT_ID_KEYS)),
         "priority": _norm_priority(_first(raw, "Priority", "Priority_Name", "priority",
                                           "PriorityName")),
         "status": _first(raw, "Status", "status", "StatusName", default="Open"),
@@ -251,28 +260,26 @@ def _norm_incident(raw: dict) -> dict:
                               "TicketInformation", "detail", default=""),
         "ci": _first(raw, "CI_Value", "CI", "CIName", "AffectedCI", "Asset",
                      "ConfigurationItem", "Server", "Hostname", "host", default=""),
-        "reported_at": _first(raw, "LoggedTime", "Log_Time", "CreatedDateTime",
-                              "CreatedTime", "ReportedOn", "createdAt", "OpenedTime",
-                              default=""),
+        "reported_at": _first(raw, "LoggedTime", "Logged Time", "Log_Time",
+                              "CreatedDateTime", "CreatedTime", "ReportedOn",
+                              "createdAt", "OpenedTime", default=""),
         "raised_by": _first(raw, "Caller", "Caller_EmailID", "CallerName", "RaisedBy",
                             "Requester", "ReportedBy", "AffectedUser", default=""),
-        "assignee": _first(raw, "AssignedTo", "Assigned_Analyst", "AssignedEngineer",
-                           "Analyst", "Owner", "assignee", "Assigned_WorkGroup_Name",
+        "assignee": _first(raw, "AssignedTo", "Assigned_Analyst", "Assigned_Engineer",
+                           "AssignedEngineer", "Analyst", "Owner", "assignee",
                            default="Unassigned"),
-        "workgroup": _first(raw, "Assigned_WorkGroup_Name", "WorkgroupName",
-                            "Workgroup_Name", "Workgroup", "AssignedWorkgroup",
-                            default=""),
-        "category": _first(raw, "Category", "Category_Name", "category",
-                           "Classification_Name", "ClassName", default=""),
+        "workgroup": _first(raw, "Workgroup Name", "Assigned_WorkGroup_Name",
+                            "WorkgroupName", "Workgroup_Name", "Workgroup",
+                            "AssignedWorkgroup", default=""),
+        "category": _first(raw, "Category", "FullCategory", "Category_Name", "category",
+                           "Classification", "Classification_Name", "ClassName", default=""),
         "url": _first(raw, "URL", "url", "Link", default=""),
     }
 
 
 def _norm_change(raw: dict) -> dict:
     return {
-        "id": str(_first(raw, "ChangeNo", "Change_No", "ChangeID", "Change_Request_Id",
-                         "ChangeRequestID", "CR_ID", "CRID", "CR_No", "id", "number",
-                         "Number", default="") or _fuzzy_id(raw)),
+        "id": str(_pick_id(raw, _CHANGE_ID_KEYS)),
         "title": _first(raw, "Symptom", "Subject", "Title", "Information", "title",
                         default="(no subject)"),
         "status": _first(raw, "Status", "status", default="Approved"),
