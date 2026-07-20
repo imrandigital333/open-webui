@@ -217,8 +217,15 @@ Maintain a machine-readable health snapshot of the target server in
   checked, so running everything as one big sweep (or batching the writes)
   is a FAILURE even if the values are correct. The groups, in this exact order:
   G1 basics   (connectivity, uptime): date; uptime; who -b
-  G2 compute  (cpu, load, memory, swap): nproc; cat /proc/loadavg;
-     top -b -n1 | head -12; free -m
+  G2 compute  (cpu, load, memory, swap): nproc; cat /proc/loadavg; free -m;
+     top procs by CPU: ps -eo comm,pcpu,pmem --sort=-pcpu --no-headers | head -10
+     top procs by MEM: ps -eo comm,pcpu,pmem --sort=-pmem --no-headers | head -10
+     (only if swap is in use) top swap users: smem -c 'name swap' -rs swap 2>/dev/null | tail -n +2 | head -10
+       — if smem is absent, best-effort from /proc (awk over /proc/*/status VmSwap) or set swap.top to []
+     For cpu, memory AND swap, populate a "top" array (up to 10) in health.json —
+     each entry {"name": "<process>", "value": "<metric>"}: value = "NN%" %CPU for
+     cpu, "NN%" %MEM (or RSS in MB) for memory, and the swap size (e.g. "312 MB")
+     for swap. Sort highest first.
   G3 storage  (storage, inodes, disk_io): df -h; df -i; vmstat 1 2 | tail -2
   G4 runtime  (services, processes, network, dns, time_sync):
      systemctl list-units --state=failed; ps -eo stat,pid,comm | awk '$1~/^Z|^D/';
@@ -245,10 +252,10 @@ Maintain a machine-readable health snapshot of the target server in
   "checks": {
     "connectivity": {"status": "...", "value": "reachable, ssh ok", "note": "one line"},
     "uptime":       {"status": "...", "value": "up 41 days", "note": "no unexpected reboot"},
-    "cpu":          {"status": "...", "value": "23%", "note": "top consumer: java 18%"},
+    "cpu":          {"status": "...", "value": "23%", "note": "top consumer: java 18%", "top": [{"name": "java", "value": "18%"}, {"name": "mysqld", "value": "4%"}]},
     "load":         {"status": "...", "value": "0.8 / 4 cores", "note": "load1 well under core count"},
-    "memory":       {"status": "...", "value": "78%", "note": "no OOM events"},
-    "swap":         {"status": "...", "value": "12%", "note": "no active swapping (si/so 0)"},
+    "memory":       {"status": "...", "value": "78%", "note": "no OOM events", "top": [{"name": "mysqld", "value": "31%"}, {"name": "java", "value": "12%"}]},
+    "swap":         {"status": "...", "value": "12%", "note": "no active swapping (si/so 0)", "top": [{"name": "java", "value": "312 MB"}]},
     "storage":      {"status": "...", "value": "91% /var", "note": "worst filesystem"},
     "inodes":       {"status": "...", "value": "34% /", "note": "worst filesystem inode usage"},
     "disk_io":      {"status": "...", "value": "3% iowait", "note": "no device saturation"},
@@ -290,7 +297,16 @@ Maintain a machine-readable health snapshot of this WINDOWS server in
      (Get-Counter '\System\Processor Queue Length').CounterSamples.CookedValue;
      $o=Get-CimInstance Win32_OperatingSystem;
      "mem_used_pct=$([math]::Round(100-($o.FreePhysicalMemory/$o.TotalVisibleMemorySize*100)))";
-     (Get-Counter '\Paging File(_Total)\% Usage').CounterSamples.CookedValue
+     (Get-Counter '\Paging File(_Total)\% Usage').CounterSamples.CookedValue;
+     # top processes by CPU time and by working-set memory:
+     Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name,@{N='cpu_s';E={[math]::Round($_.CPU)}},@{N='mb';E={[math]::Round($_.WorkingSet64/1MB)}};
+     Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10 Name,@{N='mb';E={[math]::Round($_.WorkingSet64/1MB)}};
+     # pagefile is NOT per-process on Windows; for 'swap' top use top committed memory:
+     Get-Process | Sort-Object PagedMemorySize64 -Descending | Select-Object -First 10 Name,@{N='mb';E={[math]::Round($_.PagedMemorySize64/1MB)}}
+     For cpu, memory AND swap, populate a "top" array (up to 10) in health.json —
+     each entry {"name": "<process>", "value": "<metric>"}: for cpu use the CPU
+     seconds (e.g. "142 s") or %CPU if you sample it, for memory the working-set
+     MB (e.g. "820 MB"), for swap the paged/committed MB. Sort highest first.
   G3 storage  (storage, inodes, disk_io):
      Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {"$($_.DeviceID) used=$([math]::Round(($_.Size-$_.FreeSpace)/$_.Size*100))%"};
      # inodes: report value "n/a", status ok (NTFS has no inode concept)
@@ -329,10 +345,10 @@ Maintain a machine-readable health snapshot of this WINDOWS server in
   "checks": {
     "connectivity": {"status": "...", "value": "reachable, winrm ok", "note": "one line"},
     "uptime":       {"status": "...", "value": "up 12 days", "note": "no unexpected reboot"},
-    "cpu":          {"status": "...", "value": "18%", "note": "top consumer: sqlservr"},
+    "cpu":          {"status": "...", "value": "18%", "note": "top consumer: sqlservr", "top": [{"name": "sqlservr", "value": "142 s"}, {"name": "w3wp", "value": "38 s"}]},
     "load":         {"status": "...", "value": "0 queue / 8 cores", "note": "processor queue length"},
-    "memory":       {"status": "...", "value": "62%", "note": "physical memory in use"},
-    "swap":         {"status": "...", "value": "8%", "note": "pagefile usage"},
+    "memory":       {"status": "...", "value": "62%", "note": "physical memory in use", "top": [{"name": "sqlservr", "value": "3200 MB"}, {"name": "w3wp", "value": "640 MB"}]},
+    "swap":         {"status": "...", "value": "8%", "note": "pagefile usage", "top": [{"name": "sqlservr", "value": "2100 MB"}]},
     "storage":      {"status": "...", "value": "72% C:", "note": "worst drive"},
     "inodes":       {"status": "ok", "value": "n/a", "note": "not applicable on NTFS"},
     "disk_io":      {"status": "...", "value": "0.3 queue", "note": "avg disk queue length"},

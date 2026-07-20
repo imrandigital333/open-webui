@@ -415,6 +415,15 @@
   .hs-note { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; max-width: 190px;
              text-align: right; line-height: 1.5; }
   #hsDetail { margin: -6px 0 12px 4px; }
+  .hs-top { margin-top: 7px; max-width: 460px; }
+  .hs-top-h { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+              color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+  .hs-top-row { display: flex; align-items: center; gap: 8px; padding: 2px 0;
+                font-size: 11.5px; border-bottom: 1px solid var(--border); }
+  .hs-top-row:last-child { border-bottom: none; }
+  .hs-top-r { flex: 0 0 16px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .hs-top-n { flex: 1; font-family: var(--mono); word-break: break-all; }
+  .hs-top-v { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--accent2); }
   /* live/snapshot/scanning status chips */
   .hchip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px;
            padding: 1px 8px; font-size: 9px; font-weight: 800; letter-spacing: .07em;
@@ -4373,13 +4382,28 @@ function renderHealth(health, running) {
   document.querySelectorAll('#hsNodes .hs-node').forEach(n => {
     const nowSt = n.className.match(/st-\w+/)?.[0];
     if (prev[n.dataset.k] && prev[n.dataset.k] !== nowSt) n.classList.add('hp-flash');
-    n.onclick = () => {                      // click a node -> one-line detail
+    n.onclick = () => {                      // click a node -> detail (+ top procs)
       const d = $('hsDetail');
       if (d.style.display !== 'none' && d.dataset.k === n.dataset.k) {
         d.style.display = 'none'; return;
       }
-      d.textContent = n.dataset.tip;
-      d.dataset.k = n.dataset.k;
+      const k = n.dataset.k;
+      const chk = checks[k] || {};
+      let html = escapeHtml(n.dataset.tip);
+      const top = Array.isArray(chk.top) ? chk.top.slice(0, 10) : null;
+      if (top && top.length) {
+        const label = { cpu: 'CPU', memory: 'memory', swap: 'swap' }[k] || 'usage';
+        html += `<div class="hs-top"><div class="hs-top-h">Top ${top.length} processes by ${label}</div>`
+          + top.map((p, i) => `<div class="hs-top-row">
+               <span class="hs-top-r">${i + 1}</span>
+               <span class="hs-top-n">${escapeHtml(String(p.name || p.proc || '?'))}</span>
+               <span class="hs-top-v">${escapeHtml(String(p.value ?? p.val ?? ''))}</span></div>`).join('')
+          + `</div>`;
+      } else if (['cpu', 'memory', 'swap'].includes(k)) {
+        html += `<div class="hs-top"><div class="hs-top-h" style="color:var(--muted)">No per-process breakdown captured for this aspect.</div></div>`;
+      }
+      d.innerHTML = html;
+      d.dataset.k = k;
       d.style.display = '';
     };
   });
