@@ -540,6 +540,60 @@ def _fetch_change_rows(cfg: dict) -> list[dict]:
 
 # ---------- public API ----------
 
+# Tickets raised through the app are tracked here and merged into the
+# dashboard by their detail — this instance's IM_GetIncidentList only surfaces
+# queued/routed tickets, so a brand-new unassigned incident won't appear in the
+# list for a while even though it exists.
+_CREATED_PATH = BASE_DIR / "data" / "created_incidents.json"
+_CREATED_TTL = 7 * 86400   # keep showing an app-created ticket for 7 days
+
+
+def _load_created() -> list[dict]:
+    try:
+        return json.loads(_CREATED_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def record_created_incident(ticket_no) -> None:
+    tid = str(ticket_no or "").strip()
+    if not tid:
+        return
+    now = time.time()
+    items = [x for x in _load_created()
+             if str(x.get("id")) != tid and now - float(x.get("ts", 0)) < _CREATED_TTL]
+    items.append({"id": tid, "ts": now})
+    try:
+        _CREATED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CREATED_PATH.write_text(json.dumps(items[-50:]))
+    except OSError:
+        pass
+
+
+def _recent_created_ids() -> list[str]:
+    now = time.time()
+    return [str(x["id"]) for x in _load_created()
+            if now - float(x.get("ts", 0)) < _CREATED_TTL]
+
+
+def _incident_detail_only(cfg: dict, tid: str) -> dict | None:
+    """Fetch one ticket via the detail service only (no list dependency)."""
+    try:
+        rows = _wcf_call(cfg["incident_detail_service"],
+                         {"TicketNo": _ticket_no(tid), "TicketID": _ticket_no(tid),
+                          "RequestType": "RemoteCall"}, cfg)
+    except RuntimeError:
+        return None
+    for r in rows:
+        n = _norm_incident(r)
+        if n["id"] == str(tid) or n["title"] != "(no subject)" or n["description"]:
+            if not n["id"]:
+                n["id"] = str(tid)
+            n["recent"] = True
+            return n
+    return None
+
+
 def list_incidents(priorities: tuple[str, ...] | None = ("P1", "P2"),
                    include_closed: bool = False) -> list[dict]:
     """Incidents from the configured window. priorities=None means all
@@ -560,6 +614,20 @@ def list_incidents(priorities: tuple[str, ...] | None = ("P1", "P2"),
         return -int(s) if s.isdigit() else 0
 
     kept.sort(key=lambda i: (order.get(i["priority"], 9), newest_first(i), i["id"]))
+
+    # merge in app-created tickets the list view hasn't surfaced yet
+    if configured(cfg):
+        present = {i["id"] for i in kept}
+        for tid in _recent_created_ids():
+            if tid in present:
+                continue
+            det = _incident_detail_only(cfg, tid)
+            if not det:
+                continue
+            closed = str(det["status"]).lower() in ("closed", "resolved", "cancelled")
+            if (include_closed or not closed) and (not priorities or det["priority"] in priorities):
+                kept.insert(0, det)          # freshly created → show at the top
+                present.add(tid)
     return kept
 
 
@@ -704,7 +772,10 @@ def create_incident(f: dict) -> dict:
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)[:400]}
     reply = data if isinstance(data, str) else json.dumps(data, default=str)
-    return {"ok": True, "ticket": _find_ticket_no(data), "response": reply[:400]}
+    tno = _find_ticket_no(data)
+    if tno:
+        record_created_incident(tno)   # so the dashboard shows it before it routes
+    return {"ok": True, "ticket": tno, "response": reply[:400]}
 
 
 def update_incident(incident_id: str, information: str,

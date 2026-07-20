@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.60.1"
+APP_VERSION = "2.61.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -342,6 +342,19 @@ async def incident_fields(n: int = 1):
         return await asyncio.to_thread(itsm.incident_field_sample, n)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+
+
+class IncidentTrackRequest(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+
+
+@app.post("/api/incidents/track")
+async def track_incident(req: IncidentTrackRequest, request: Request):
+    """Pin an incident number to the dashboard (merged in via its detail) —
+    used to surface app-created or otherwise-unlisted tickets."""
+    await asyncio.to_thread(itsm.record_created_incident, req.id)
+    await asyncio.to_thread(db.audit, _actor(request), "incident_tracked", {"id": req.id})
+    return {"ok": True}
 
 
 @app.get("/api/incidents/{incident_id}")
