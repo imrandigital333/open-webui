@@ -466,6 +466,36 @@
   .kpi .l svg { vertical-align: -2px; margin-right: 2px; }
   .ovgrid { display: grid; grid-template-columns: 1fr 330px; gap: 16px; align-items: start; }
   @media (max-width: 1100px) { .ovgrid { grid-template-columns: 1fr; } }
+  /* operations summary cards */
+  .ops-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 18px; }
+  @media (max-width: 1100px) { .ops-grid { grid-template-columns: 1fr; } }
+  .ops-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+              padding: 14px 16px; min-height: 150px; }
+  .ops-h { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .ops-h b { font-size: 13px; }
+  .ops-h .ops-link { margin-left: auto; font-size: 11px; color: var(--accent2); cursor: pointer;
+                     background: none; border: none; padding: 0; }
+  .ops-h .ops-link:hover { text-decoration: underline; }
+  .ops-stats { display: flex; gap: 16px; margin-bottom: 12px; }
+  .ops-stat .n { font-size: 23px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .ops-stat .l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+  .ops-bars { display: flex; flex-direction: column; gap: 6px; }
+  .ops-bar { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+  .ops-bar .bk { flex: 0 0 34px; font-weight: 700; }
+  .ops-bar .tr { flex: 1; height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+  .ops-bar .fl { height: 100%; border-radius: 4px; }
+  .ops-bar .ct { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--muted); min-width: 16px; text-align: right; }
+  .ops-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px;
+             border-bottom: 1px solid var(--border); cursor: pointer; }
+  .ops-row:last-child { border-bottom: none; }
+  .ops-row:hover { background: var(--panel2); }
+  .ops-row .rd { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; }
+  .ops-row .rt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ops-row .rg { flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+                 color: var(--muted); font-weight: 700; }
+  .ops-empty { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px;
+               height: 80px; justify-content: center; }
+  .ops-plat { display: inline-flex; gap: 8px; font-size: 11px; color: var(--muted); }
   .ov-item { display: flex; gap: 9px; padding: 9px 6px; border-bottom: 1px solid var(--border);
              cursor: pointer; border-radius: 6px; align-items: flex-start; }
   .ov-item:hover { background: var(--panel2); }
@@ -743,6 +773,11 @@
 
 <div id="viewOverview">
   <div class="kpis" id="kpis"></div>
+  <div class="ops-grid" id="ovOps">
+    <div class="ops-card" id="ovAttn"></div>
+    <div class="ops-card" id="ovInc"></div>
+    <div class="ops-card" id="ovChg"></div>
+  </div>
   <div class="ovgrid">
     <div>
       <div class="sec-label" style="margin-top:4px">Fleet</div>
@@ -2365,7 +2400,7 @@ function switchView(view) {
                 changes: 'navChanges', settings: 'navSettings' };
   Object.entries(views).forEach(([v, id]) => $(id).style.display = v === view ? '' : 'none');
   Object.entries(nav).forEach(([v, id]) => $(id).classList.toggle('active', v === view));
-  if (view === 'overview') loadFleet();
+  if (view === 'overview') { loadFleet(); loadOvSummary(); }
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
   if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); }
@@ -4144,23 +4179,49 @@ function timeAgo(ts) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-async function loadFleet() {
-  const { servers, stats } = await (await fetch('/api/fleet')).json();
+let ovFleet = [], ovStats = {};
+let ovIncOk = false, ovChgOk = false;   // whether the last inc/chg fetch succeeded
+
+function renderKpis() {
+  const servers = ovFleet, stats = ovStats;
   const fh = { ok: 0, warning: 0, critical: 0 };
   servers.forEach(s => { if (fh[s.overall] !== undefined) fh[s.overall]++; });
+  const win = servers.filter(s => s.platform === 'windows').length;
+  const lin = servers.length - win;
+  const inc = (typeof incidentsCache !== 'undefined' && incidentsCache) || [];
+  const activeInc = inc.filter(i => !incClosed(i.status));
+  const p1 = activeInc.filter(i => i.priority === 'P1').length;
+  const p2 = activeInc.filter(i => i.priority === 'P2').length;
+  const chg = (typeof changesCache !== 'undefined' && changesCache) || [];
+  const apprChg = chg.filter(c => chgApproved(c.status));
+  const incVal = ovIncOk ? `${activeInc.length}` : '—';
+  const incSub = ovIncOk
+    ? `<span class="u"> ${p1} P1 · ${p2} P2</span>` : '<span class="u"> not loaded</span>';
   $('kpis').innerHTML = [
-    [stats.servers, `${ic('layers', 12)} Servers`],
+    [`${stats.servers ?? servers.length}`,
+     `${ic('layers', 12)} Servers`,
+     `<span class="ops-plat"><span>🐧 ${lin}</span><span>🪟 ${win}</span></span>`],
     [`<span style="font-size:19px;display:inline-flex;gap:10px;align-items:baseline">
         <span style="color:var(--ok)">✓ ${fh.ok}</span>
         <span style="color:var(--warn)">! ${fh.warning}</span>
         <span style="color:var(--err)">✕ ${fh.critical}</span></span>`,
-     `${ic('shield', 12)} Fleet health`],
-    [`<span>${stats.running}</span>`, `${ic('refresh', 12)} Running now`],
-    [stats.total, `${ic('clock', 12)} Total runs`],
-    [stats.high_confidence, `${ic('check-circle', 12)} High-confidence RCAs`],
-    [`${fmtTok(stats.tokens_in)}<span class="u"> in</span> ${fmtTok(stats.tokens_out)}<span class="u"> out</span>`,
-     `${ic('zap', 12)} AI tokens used`],
-  ].map(([n, l]) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+     `${ic('shield', 12)} Fleet health`, ''],
+    [`<span style="${p1 ? 'color:var(--err)' : ''}">${incVal}</span>`,
+     `${ic('alert-triangle', 12)} Open incidents`, incSub],
+    [`${ovChgOk ? apprChg.length : '—'}`, `${ic('tool', 12)} Approved changes`,
+     ovChgOk ? `<span class="u"> ${chg.length} tracked</span>` : '<span class="u"> not loaded</span>'],
+    [`<span>${stats.running || 0}</span>`, `${ic('refresh', 12)} Running now`, ''],
+    [stats.high_confidence || 0, `${ic('check-circle', 12)} High-confidence RCAs`, ''],
+    [`${fmtTok(stats.tokens_in || 0)}<span class="u"> in</span> ${fmtTok(stats.tokens_out || 0)}<span class="u"> out</span>`,
+     `${ic('zap', 12)} AI tokens used`, ''],
+  ].map(([n, l, sub]) =>
+    `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div>${sub ? `<div style="margin-top:3px">${sub}</div>` : ''}</div>`).join('');
+}
+
+async function loadFleet() {
+  const { servers, stats } = await (await fetch('/api/fleet')).json();
+  ovFleet = servers; ovStats = stats;
+  renderKpis();
 
   $('fleet').innerHTML = servers.map(s => {
     const running = s.last?.status === 'running';
@@ -4210,6 +4271,117 @@ async function loadFleet() {
   clearTimeout(window._fleetFast);
   if (stats.running && $('viewOverview').style.display !== 'none')
     window._fleetFast = setTimeout(loadFleet, 4000);
+}
+
+/* pull incidents + changes together so the overview is a single pane of glass */
+async function loadOvSummary() {
+  const [inc, chg] = await Promise.allSettled([
+    fetch('/api/incidents').then(r => r.ok ? r.json() : Promise.reject()),
+    fetch('/api/changes').then(r => r.ok ? r.json() : Promise.reject()),
+  ]);
+  ovIncOk = inc.status === 'fulfilled';
+  if (ovIncOk) incidentsCache = inc.value.incidents || [];
+  // changes: use the list service if it works, but ALSO fold in board-pinned
+  // CRs (fetched by number) so approved work shows even without a list service
+  let live = chg.status === 'fulfilled' ? (chg.value.changes || []) : [];
+  ovChgOk = chg.status === 'fulfilled';
+  const ids = (typeof chgPinnedIds === 'function' ? chgPinnedIds() : [])
+    .filter(id => !live.some(c => String(c.id) === String(id)));
+  if (ids.length) {
+    try {
+      const pd = await (await fetch('/api/changes/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })).json();
+      live = [...live, ...(pd.changes || [])];
+      if ((pd.changes || []).length) ovChgOk = true;
+    } catch { /* keep whatever we have */ }
+  }
+  changesCache = live;
+  renderKpis();
+  renderOvAttn();
+  renderOvInc();
+  renderOvChg();
+}
+
+const PRI_COLOR = { P1: 'var(--err)', P2: 'var(--warn)', P3: 'var(--accent2)', P4: 'var(--muted)' };
+
+function renderOvAttn() {
+  const rows = [];
+  ovFleet.forEach(s => {
+    if (s.overall === 'critical' || s.overall === 'warning') {
+      const c = s.counts || {};
+      const act = s.last ? `viewLast('${escapeHtml(s.last.session)}')` : `investigate('${escapeHtml(s.name)}')`;
+      rows.push({ sev: s.overall === 'critical' ? 0 : 2, color: s.overall === 'critical' ? 'var(--err)' : 'var(--warn)',
+        text: `${s.name} — ${c.critical ? c.critical + ' critical' : ''}${c.critical && c.warning ? ', ' : ''}${c.warning ? c.warning + ' warning' : ''}`.trim(),
+        tag: 'server', act });
+    }
+  });
+  if (ovIncOk) (incidentsCache || []).filter(i => !incClosed(i.status) && (i.priority === 'P1' || i.priority === 'P2'))
+    .forEach(i => rows.push({ sev: i.priority === 'P1' ? 0 : 1, color: PRI_COLOR[i.priority],
+      text: `${i.id} · ${i.title}`, tag: i.priority, act: `openIncident('${escapeHtml(i.id)}')` }));
+  if (ovChgOk) (changesCache || []).filter(c => chgApproved(c.status))
+    .forEach(c => rows.push({ sev: 3, color: 'var(--accent2)', text: `${c.id} · ${c.title}`,
+      tag: 'change', act: `openImplementer('${escapeHtml(c.id)}')` }));
+  rows.sort((a, b) => a.sev - b.sev);
+  const body = rows.length
+    ? rows.slice(0, 8).map(r => `<div class="ops-row" onclick="${r.act}">
+        <span class="rd" style="background:${r.color}"></span>
+        <span class="rt">${escapeHtml(r.text)}</span><span class="rg">${r.tag}</span></div>`).join('')
+    : `<div class="ops-empty">${ic('check-circle', 14)} Nothing needs attention right now.</div>`;
+  $('ovAttn').innerHTML = `<div class="ops-h">${ic('alert-triangle', 14)}<b>Needs attention</b>
+      ${rows.length ? `<span class="rg">${rows.length}</span>` : ''}</div>${body}`;
+}
+
+function renderOvInc() {
+  if (!ovIncOk) {
+    $('ovInc').innerHTML = `<div class="ops-h">${ic('alert-triangle', 14)}<b>Incidents</b></div>
+      <div class="ops-empty">SummitAI incidents unavailable.</div>`;
+    return;
+  }
+  const all = incidentsCache || [];
+  const active = all.filter(i => !incClosed(i.status));
+  const unassigned = active.filter(i => !String(i.assignee || '').trim() || /^unassigned$/i.test(String(i.assignee).trim()));
+  const byP = p => active.filter(i => i.priority === p).length;
+  const max = Math.max(1, byP('P1'), byP('P2'), byP('P3'), byP('P4'));
+  const bars = ['P1', 'P2', 'P3', 'P4'].map(p => {
+    const n = byP(p);
+    return `<div class="ops-bar"><span class="bk" style="color:${PRI_COLOR[p]}">${p}</span>
+      <span class="tr"><span class="fl" style="width:${n / max * 100}%;background:${PRI_COLOR[p]}"></span></span>
+      <span class="ct">${n}</span></div>`;
+  }).join('');
+  $('ovInc').innerHTML = `<div class="ops-h">${ic('alert-triangle', 14)}<b>Incidents</b>
+      <button class="ops-link" onclick="switchView('incidents')">View all →</button></div>
+    <div class="ops-stats">
+      <div class="ops-stat"><div class="n">${active.length}</div><div class="l">Active</div></div>
+      <div class="ops-stat"><div class="n">${unassigned.length}</div><div class="l">Unassigned</div></div>
+      <div class="ops-stat"><div class="n" style="color:var(--ok)">${all.length - active.length}</div><div class="l">Resolved</div></div>
+    </div>
+    <div class="ops-bars">${bars}</div>`;
+}
+
+function renderOvChg() {
+  if (!ovChgOk) {
+    $('ovChg').innerHTML = `<div class="ops-h">${ic('tool', 14)}<b>Changes</b>
+      <button class="ops-link" onclick="switchView('changes')">Open →</button></div>
+      <div class="ops-empty">Add changes from the Changes tab.</div>`;
+    return;
+  }
+  const all = changesCache || [];
+  const appr = all.filter(c => chgApproved(c.status));
+  const canImpl = appr.filter(c => c.has_plan || (c.plan || []).length);
+  const list = appr.slice(0, 4).map(c => `<div class="ops-row" onclick="openImplementer('${escapeHtml(c.id)}')">
+      <span class="rd" style="background:var(--accent2)"></span>
+      <span class="rt">${escapeHtml(c.id)} · ${escapeHtml(c.title)}</span>
+      <span class="rg">${(c.has_plan || (c.plan || []).length) ? 'ready' : 'plan?'}</span></div>`).join('')
+    || `<div class="ops-empty" style="height:52px">${all.length ? 'No approved changes.' : 'No changes tracked yet.'}</div>`;
+  $('ovChg').innerHTML = `<div class="ops-h">${ic('tool', 14)}<b>Changes</b>
+      <button class="ops-link" onclick="switchView('changes')">Open →</button></div>
+    <div class="ops-stats">
+      <div class="ops-stat"><div class="n">${appr.length}</div><div class="l">Approved</div></div>
+      <div class="ops-stat"><div class="n" style="color:var(--accent2)">${canImpl.length}</div><div class="l">Ready to run</div></div>
+      <div class="ops-stat"><div class="n">${all.length}</div><div class="l">Tracked</div></div>
+    </div>${list}`;
 }
 
 function investigate(name) {
@@ -4626,11 +4798,15 @@ async function onLiveEnd(ev, session, id) {
 $('startBtn').onclick = startSession;
 fetch('/api/version').then(r => r.json()).then(v =>
   $('version').textContent = ` · v${v.version} (${v.commit})`);
-loadInventory(); loadDatasources(); refreshSessions(); loadFleet();
+loadInventory(); loadDatasources(); refreshSessions(); loadFleet(); loadOvSummary();
 setInterval(() => {
   refreshSessions();
   if ($('viewOverview').style.display !== 'none') loadFleet();
 }, 15000);
+// incidents/changes come from SummitAI — refresh them on a slower cadence
+setInterval(() => {
+  if ($('viewOverview').style.display !== 'none') loadOvSummary();
+}, 60000);
 </script>
 </body>
 </html>
