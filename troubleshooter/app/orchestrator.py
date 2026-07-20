@@ -694,8 +694,10 @@ def build_prompt(
             "   - `tail -n` alone is NOT sufficient — after collecting, CHECK the first\n"
             "     and last timestamps of each extract actually cover the failure window,\n"
             "     and re-collect with a wider window or timestamp grep if they don't.")
+    wd_section = workdir_section(workdir) if workdir else ""
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
+{wd_section}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
@@ -1129,16 +1131,33 @@ def _summarize_input(tool: str, tool_input: dict) -> str:
     return json.dumps(tool_input, default=str)[:300]
 
 
+def _find_report_file(workdir: Path, name: str) -> Path | None:
+    """The report belongs at workdir/<name>, but if the agent cd'd into a
+    subdirectory (e.g. ./logs) and wrote it there, recover it — the shallowest,
+    newest match wins."""
+    top = workdir / name
+    if top.exists():
+        return top
+    try:
+        matches = [p for p in workdir.glob(f"**/{name}") if p.is_file()]
+    except OSError:
+        matches = []
+    if not matches:
+        return None
+    matches.sort(key=lambda p: (len(p.relative_to(workdir).parts), -p.stat().st_mtime))
+    return matches[0]
+
+
 def _load_report(workdir: Path, allow_empty: bool = False, fallback_text: str = "") -> dict:
     report: dict = {}
-    json_path = workdir / "report.json"
-    md_path = workdir / "report.md"
-    if json_path.exists():
+    json_path = _find_report_file(workdir, "report.json")
+    md_path = _find_report_file(workdir, "report.md")
+    if json_path and json_path.exists():
         try:
             report = json.loads(json_path.read_text())
         except (json.JSONDecodeError, OSError):
             report = {}
-    if md_path.exists():
+    if md_path and md_path.exists():
         try:
             report["markdown"] = md_path.read_text()
         except OSError:
