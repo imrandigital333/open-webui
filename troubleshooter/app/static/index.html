@@ -893,7 +893,7 @@
         <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
           <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
           <button class="ghost" id="testServerBtn">Test connection</button>
-          <button class="ghost" id="discoverServerBtn" title="SSH in and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
+          <button class="ghost" id="discoverServerBtn" title="Connect (SSH for Linux, WinRM for Windows) and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
           <button class="ghost danger" id="deleteServerBtn">Delete</button>
         </div>
         <div class="hint" id="invMsg" style="margin-top:8px"></div>
@@ -4052,6 +4052,7 @@ function renderDiscovery(d) {
     return;
   }
   const f = d.facts, when = new Date(d.ts * 1000).toLocaleString();
+  const win = f.os_family === 'windows';
   const row = (k, v) => v ? `<div style="display:flex;gap:8px;margin:2px 0"><b style="min-width:120px;color:var(--muted);font-weight:600">${k}</b><span style="word-break:break-word">${escapeHtml(String(v))}</span></div>` : '';
   const mem = f.memory_mb || {};
   panel.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -4059,19 +4060,19 @@ function renderDiscovery(d) {
       <button class="link" style="margin-left:auto" onclick="runDiscovery()">re-discover</button></div>
     ${row('Hostname', f.hostname)}
     ${row('OS', f.os + (f.os_version ? ' ' + f.os_version : '') + ` (${f.os_family})`)}
-    ${row('Kernel', f.kernel + ' · ' + f.arch)}
+    ${row(win ? 'Build' : 'Kernel', f.kernel + ' · ' + f.arch)}
     ${row('Type', f.machine_type + ' (' + f.virtualization + ')' + (f.product && f.product.trim() ? ' · ' + f.product.trim() : ''))}
-    ${row('CPU', (f.cpu_model || '') + (f.cpu_cores ? ` · ${f.cpu_cores} vCPU` : ''))}
+    ${row('CPU', (f.cpu_model || '') + (f.cpu_cores ? ` · ${f.cpu_cores} ${win ? 'logical CPU' : 'vCPU'}` : ''))}
     ${row('Memory', mem.total_mb ? `${mem.total_mb} MB total, ${mem.free_mb} MB free` : '')}
     ${row('IPs', (f.ip_addresses || []).map(x => x.cidr).join(', '))}
     ${row('Gateway', f.gateway)}
-    ${row('Package mgr', f.package_manager)}
-    ${row('SELinux', f.selinux)}
+    ${row(win ? 'Package tool' : 'Package mgr', f.package_manager)}
+    ${!win ? row('SELinux', f.selinux) : ''}
     ${row('Uptime', f.uptime)}
-    ${(f.disks || []).length ? `<div style="margin-top:6px"><b style="color:var(--muted)">Filesystems</b><ul style="margin:2px 0 0 16px">${f.disks.map(x => `<li>${escapeHtml(x.mount)} — ${escapeHtml(x.used)}/${escapeHtml(x.size)} (${escapeHtml(x['use%'])})</li>`).join('')}</ul></div>` : ''}
+    ${(f.disks || []).length ? `<div style="margin-top:6px"><b style="color:var(--muted)">${win ? 'Drives' : 'Filesystems'}</b><ul style="margin:2px 0 0 16px">${f.disks.map(x => `<li>${escapeHtml(x.mount)} — ${escapeHtml(x.used)}/${escapeHtml(x.size)} (${escapeHtml(x['use%'])})</li>`).join('')}</ul></div>` : ''}
     ${(f.running_services || []).length ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--muted)">${f.running_services.length} running services</summary><div style="margin-top:4px;font-family:var(--mono);font-size:11.5px;word-break:break-word">${f.running_services.map(s => escapeHtml(s.replace('.service', ''))).join(', ')}</div></details>` : ''}
     ${(f.listening_ports || []).length ? row('Listening ports', f.listening_ports.join(', ')) : ''}
-    ${(f.installed_kernels || []).length ? row('Kernels', f.installed_kernels.join(', ')) : ''}`;
+    ${(f.installed_kernels || []).length ? row(win ? 'Recent hotfixes' : 'Kernels', f.installed_kernels.join(', ')) : ''}`;
 }
 async function loadDiscovery(name) {
   try { renderDiscovery(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discovery`)).json()); }
@@ -4080,7 +4081,8 @@ async function loadDiscovery(name) {
 async function runDiscovery() {
   const name = editingName; if (!name) return;
   const panel = $('discoveryPanel'); panel.style.display = '';
-  panel.innerHTML = '<span class="spinner"></span> discovering — SSHing in and gathering facts (a few seconds)…';
+  const via = $('f_platform') && $('f_platform').value === 'windows' ? 'over WinRM' : 'over SSH';
+  panel.innerHTML = `<span class="spinner"></span> discovering — connecting ${via} and gathering facts…`;
   try {
     renderDiscovery(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discover`, { method: 'POST' })).json());
   } catch (e) { panel.innerHTML = '✕ ' + escapeHtml(e.message); }

@@ -158,37 +158,44 @@ def _os_family(os_id: str) -> str:
 # Windows discovery: one PowerShell pass emitting a compact JSON object over
 # WinRM. Read-only CIM/Get-* queries only.
 _WIN_SCRIPT = r"""
+$ProgressPreference='SilentlyContinue'
 $ErrorActionPreference='SilentlyContinue'
-$os=Get-CimInstance Win32_OperatingSystem
-$cs=Get-CimInstance Win32_ComputerSystem
-$cpu=@(Get-CimInstance Win32_Processor)
-$cores=($cpu|Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-$net=@(Get-NetIPAddress -AddressFamily IPv4|Where-Object{$_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown'})
-$gw=(Get-NetRoute -DestinationPrefix '0.0.0.0/0'|Sort-Object RouteMetric|Select-Object -First 1).NextHop
-$vol=@(Get-Volume|Where-Object{$_.DriveLetter -and $_.Size -gt 0})
-$svc=@(Get-Service|Where-Object{$_.Status -eq 'Running'})
-$ports=@(Get-NetTCPConnection -State Listen|Select-Object -ExpandProperty LocalPort -Unique)
-$hf=@(Get-HotFix|Sort-Object InstalledOn -Descending|Select-Object -First 8)
-$pm=if(Get-Command winget -ErrorAction SilentlyContinue){'winget'}elseif(Get-Command choco -ErrorAction SilentlyContinue){'choco'}else{'windows'}
-$o=[ordered]@{
- hostname=($cs.DNSHostName,$cs.Name -ne $null|Select-Object -First 1)+$(if($cs.Domain){'.'+$cs.Domain}else{''})
- os=$os.Caption; os_version=$os.Version; build=$os.BuildNumber
- arch=$os.OSArchitecture
- manufacturer=$cs.Manufacturer; model=$cs.Model
- cpu_model=($cpu|Select-Object -First 1).Name
- cpu_cores=$cores
- total_mb=[math]::Round($os.TotalVisibleMemorySize/1024)
- free_mb=[math]::Round($os.FreePhysicalMemory/1024)
- last_boot=$os.LastBootUpTime.ToString('s')
- gateway=$gw
- ips=@($net|ForEach-Object{@{iface=$_.InterfaceAlias;ip=$_.IPAddress;prefix=$_.PrefixLength}})
- disks=@($vol|ForEach-Object{@{mount="$($_.DriveLetter):";label=$_.FileSystemLabel;size_gb=[math]::Round($_.Size/1GB,1);free_gb=[math]::Round($_.SizeRemaining/1GB,1)}})
- services=@($svc|ForEach-Object{$_.Name})
- ports=@($ports)
- hotfixes=@($hf|ForEach-Object{$_.HotFixID})
- pkgmgr=$pm
+try {
+ $os=Get-CimInstance Win32_OperatingSystem
+ $cs=Get-CimInstance Win32_ComputerSystem
+ $cpu=@(Get-CimInstance Win32_Processor)
+ $cores=($cpu|Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+ # Win32_* CIM classes work on every supported Windows Server (no dependency
+ # on the NetTCPIP/Storage modules, which older/Core installs may lack).
+ $nics=@(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True")
+ $ld=@(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")
+ $svc=@(Get-Service|Where-Object{$_.Status -eq 'Running'})
+ $ports=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue|Select-Object -ExpandProperty LocalPort -Unique)
+ if(-not $ports){ $ports=@(netstat -an|Select-String 'LISTENING'|ForEach-Object{($_ -split '\s+')[2] -replace '.*:',''}|Where-Object{$_ -match '^\d+$'}|Sort-Object -Unique) }
+ $hf=@(Get-HotFix -ErrorAction SilentlyContinue|Sort-Object InstalledOn -Descending|Select-Object -First 8)
+ $pm=if(Get-Command winget -ErrorAction SilentlyContinue){'winget'}elseif(Get-Command choco -ErrorAction SilentlyContinue){'choco'}else{'windows'}
+ $ips=@()
+ foreach($n in $nics){ foreach($a in @($n.IPAddress)){ if($a -and $a -match '^\d+\.'){ $ips+=@{iface=$n.Description;ip=$a} } } }
+ $gw=@($nics|ForEach-Object{$_.DefaultIPGateway}|Where-Object{$_ -and $_ -match '^\d+\.'})|Select-Object -First 1
+ $o=[ordered]@{
+  hostname=$(if($cs.Domain -and $cs.Domain -ne 'WORKGROUP'){"$($cs.DNSHostName).$($cs.Domain)"}else{$cs.Name})
+  os=$os.Caption; os_version=$os.Version; build=$os.BuildNumber; arch=$os.OSArchitecture
+  manufacturer=$cs.Manufacturer; model=$cs.Model
+  cpu_model=($cpu|Select-Object -First 1 -ExpandProperty Name); cpu_cores=$cores
+  total_mb=[int]($os.TotalVisibleMemorySize/1024); free_mb=[int]($os.FreePhysicalMemory/1024)
+  last_boot=$(if($os.LastBootUpTime){$os.LastBootUpTime.ToString('s')}else{''})
+  gateway=$gw
+  ips=@($ips)
+  disks=@($ld|ForEach-Object{@{mount=$_.DeviceID;label=$_.VolumeName;size_gb=[math]::Round($_.Size/1GB,1);free_gb=[math]::Round($_.FreeSpace/1GB,1)}})
+  services=@($svc|ForEach-Object{$_.Name})
+  ports=@($ports|ForEach-Object{[int]$_})
+  hotfixes=@($hf|ForEach-Object{$_.HotFixID})
+  pkgmgr=$pm
+ }
+ $o|ConvertTo-Json -Depth 5 -Compress
+} catch {
+ [ordered]@{discovery_error=$_.Exception.Message}|ConvertTo-Json -Compress
 }
-$o|ConvertTo-Json -Depth 4 -Compress
 """.strip()
 
 
@@ -266,20 +273,24 @@ def _win_virt(manufacturer: str, model: str) -> str:
 
 async def _discover_windows(server: Server) -> dict:
     from . import winexec
-    res = await winexec.run_ps(server, _WIN_SCRIPT, timeout=TIMEOUT)
-    if not res.get("ok"):
+    # Get-HotFix + several CIM queries can take a while; give it room.
+    res = await winexec.run_ps(server, _WIN_SCRIPT, timeout=120)
+    text = (res.get("output") or "").lstrip("﻿").strip()
+    if not res.get("ok") and not text:
         return _save(server.name, {"ok": False, "ts": time.time(),
                                    "error": (res.get("output") or "WinRM discovery failed")[:300]})
-    text = (res.get("output") or "").strip()
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return _save(server.name, {"ok": False, "ts": time.time(),
-                                   "error": f"unexpected discovery output: {text[:200]}"})
+                                   "error": f"unexpected discovery output: {text[:200] or '(empty)'}"})
     try:
         raw = json.loads(m.group())
     except json.JSONDecodeError as exc:
         return _save(server.name, {"ok": False, "ts": time.time(),
-                                   "error": f"could not parse discovery JSON: {exc}"})
+                                   "error": f"could not parse discovery JSON: {exc}: {text[:200]}"})
+    if raw.get("discovery_error"):
+        return _save(server.name, {"ok": False, "ts": time.time(),
+                                   "error": f"PowerShell: {raw['discovery_error']}"[:300]})
     return _save(server.name, {"ok": True, "ts": time.time(), "facts": _parse_windows(raw)})
 
 
