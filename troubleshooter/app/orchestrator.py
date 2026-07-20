@@ -30,9 +30,10 @@ def connection_section(server: Server) -> str:
         py = sys.executable or "python3"
         return (
             "- This is a WINDOWS SERVER, reached over WinRM (NOT SSH). Run a\n"
-            "  read-only PowerShell command on it with EXACTLY this form:\n"
-            f"  `{py} -m app.winps {server.name} '<powershell command>'`\n"
-            f"  (run from {BASE_DIR}). Use PowerShell cmdlets — Get-Service,\n"
+            "  read-only PowerShell command on it with EXACTLY this form\n"
+            "  (the `cd` is required so the helper module is importable):\n"
+            f"  `cd {BASE_DIR} && {py} -m app.winps {server.name} '<powershell command>'`\n"
+            "  Use PowerShell cmdlets — Get-Service,\n"
             "  Get-WinEvent / Get-EventLog, Get-Process, Get-Counter,\n"
             "  Test-NetConnection, Get-Hotfix, Get-Volume, Get-CimInstance — and\n"
             "  NOT bash, systemctl, journalctl or other Linux tools."
@@ -1012,6 +1013,8 @@ async def run_session(
         }, indent=2))
         deadline = time.monotonic() + timeout_s
         phase_re = re.compile(r"^\s*PHASE:\s*([A-Za-z]+)\s*$", re.MULTILINE)
+        agent_texts: list[str] = []   # keep the agent's own words to salvage a
+                                      # summary if it never writes the report files
         async for message in query(prompt=prompt, options=options):
             got_first_message.set()
             if time.monotonic() > deadline:
@@ -1032,6 +1035,7 @@ async def run_session(
                                 pass
                             text = phase_re.sub("", text).strip()
                         if text:
+                            agent_texts.append(text)
                             await state.emit("agent_text", {"text": text})
                     elif isinstance(block, ToolUseBlock):
                         await state.emit(
@@ -1107,7 +1111,7 @@ async def run_session(
                 pass
         _write_outcome(state)
 
-    state.report = _load_report(workdir)
+    state.report = _load_report(workdir, fallback_text="\n\n".join(agent_texts[-4:]))
     state.status = "completed"
     _write_outcome(state)
     await state.emit("completed", {"report": state.report})
@@ -1125,7 +1129,7 @@ def _summarize_input(tool: str, tool_input: dict) -> str:
     return json.dumps(tool_input, default=str)[:300]
 
 
-def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
+def _load_report(workdir: Path, allow_empty: bool = False, fallback_text: str = "") -> dict:
     report: dict = {}
     json_path = workdir / "report.json"
     md_path = workdir / "report.md"
@@ -1140,7 +1144,19 @@ def _load_report(workdir: Path, allow_empty: bool = False) -> dict:
         except OSError:
             pass
     if not report and not allow_empty:
-        report = {"summary": "The agent finished but did not produce report files.", "confidence": "low"}
+        # The agent never wrote the structured report — salvage its own final
+        # notes so the operator sees what happened (often a connection error or
+        # a partial finding) instead of an empty result.
+        ft = (fallback_text or "").strip()
+        if ft:
+            report = {"summary": "The agent did not write a structured report; "
+                                 "its final notes are below.",
+                      "markdown": ft[:6000], "confidence": "low", "incomplete": True}
+        else:
+            report = {"summary": "The agent finished but did not produce report files. "
+                                 "It may not have been able to reach the server — check "
+                                 "the connection (SSH key / WinRM credentials) and retry.",
+                      "confidence": "low", "incomplete": True}
     return report
 
 
