@@ -3389,10 +3389,13 @@ async function openIncident(id) {
     return;
   }
   const p = String(inc.priority || 'P3').toLowerCase();
-  const matched = inventory.find(s => s.name === inc.ci
-    || (inc.ci && s.name.toLowerCase() === inc.ci.toLowerCase()));
-  const opts = inventory.map(s =>
-    `<option value="${escapeHtml(s.name)}" ${s.name === matched?.name ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
+  const ciMatch = matchServerToCi(inc.ci);
+  const textMatch = ciMatch ? '' : matchServerFromText(
+    `${inc.title || ''} ${inc.description || ''} ${inc.ci || ''}`);
+  const selName = ciMatch || textMatch;   // '' if nothing matched
+  const opts = (selName ? '' : '<option value="" selected>— pick the affected server —</option>')
+    + inventory.map(s =>
+      `<option value="${escapeHtml(s.name)}" ${s.name === selName ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
   const prob = `[${inc.id}] ${inc.title}${inc.description ? '\n\n' + inc.description : ''}`;
   d.innerHTML = `<div class="incd-panel">
     <div class="incd-head">
@@ -3414,7 +3417,9 @@ async function openIncident(id) {
       <div class="incd-field">
         <label for="incdServer">Affected server</label>
         <select id="incdServer">${opts || '<option value="">(no servers in inventory)</option>'}</select>
-        ${matched ? '' : `<div class="hint" style="color:var(--warn)">Incident CI "${escapeHtml(inc.ci || '—')}" not matched to inventory — pick the server.</div>`}
+        ${selName
+          ? (textMatch ? `<div class="hint" style="color:var(--ok)">Auto-selected <b>${escapeHtml(selName)}</b> from the incident details (IP / hostname in the description).</div>` : '')
+          : `<div class="hint" style="color:var(--warn)">Couldn't match a server from the incident (CI "${escapeHtml(inc.ci || '—')}") — pick it below.</div>`}
       </div>
       <div class="incd-field">
         <label for="incdProblem">Problem statement</label>
@@ -3592,6 +3597,25 @@ function matchServerToCi(ci) {
     const hn = h.split('.')[0];   // short hostname
     if (wanted.some(w => w === n || w === h || w === hn
         || (w && (n.includes(w) || w.includes(n))))) return s.name;
+  }
+  return '';
+}
+// Fallback when there's no CI match: find a server whose IP/hostname appears
+// in free text (e.g. an incident description mentioning "10.70.5.44").
+function matchServerFromText(text) {
+  if (!text) return '';
+  const hay = String(text), low = hay.toLowerCase();
+  const ips = hay.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+  for (const ip of ips) {                       // exact IP → server host
+    const s = (inventory || []).find(x => (x.host || '') === ip);
+    if (s) return s.name;
+  }
+  for (const s of (inventory || [])) {          // server name/host mentioned in text
+    const n = (s.name || '').toLowerCase(), h = (s.host || '').toLowerCase();
+    const hn = h.split('.')[0];
+    if (n.length > 2 && low.includes(n)) return s.name;
+    if (h.length > 2 && low.includes(h)) return s.name;
+    if (hn.length > 2 && low.includes(hn)) return s.name;
   }
   return '';
 }
