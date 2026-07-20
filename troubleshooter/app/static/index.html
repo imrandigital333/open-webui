@@ -496,6 +496,23 @@
   .ops-empty { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px;
                height: 80px; justify-content: center; }
   .ops-plat { display: inline-flex; gap: 8px; font-size: 11px; color: var(--muted); }
+  /* settings: left category nav + content */
+  .set-layout { display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .set-layout { grid-template-columns: 1fr; } }
+  .set-nav { display: flex; flex-direction: column; gap: 3px; position: sticky; top: 16px; }
+  .set-navb { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
+              background: none; border: 1px solid transparent; border-radius: 9px;
+              padding: 10px 12px; color: var(--muted); font-size: 13px; font-weight: 600;
+              cursor: pointer; }
+  .set-navb:hover { background: var(--panel2); color: var(--text); }
+  .set-navb.active { background: var(--panel); border-color: var(--border); color: var(--text); }
+  .set-navb .sn-ic { font-size: 15px; flex: 0 0 auto; }
+  .set-navb .sn-sub { display: block; font-size: 10.5px; font-weight: 500; color: var(--muted);
+                      margin-top: 1px; }
+  .set-navb.active .sn-sub { color: var(--accent2); }
+  .set-cat[hidden] { display: none; }
+  .set-cat > .panel { margin-top: 0; }
+  .set-cat h2 { margin-top: 0; }
   .ov-item { display: flex; gap: 9px; padding: 9px 6px; border-bottom: 1px solid var(--border);
              cursor: pointer; border-radius: 6px; align-items: flex-start; }
   .ov-item:hover { background: var(--panel2); }
@@ -881,7 +898,20 @@
 <div id="chgImpl" style="display:none"></div>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
-  <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
+  <div class="set-layout">
+    <nav class="set-nav" id="setNav">
+      <button class="set-navb active" data-cat="servers" onclick="setCategory('servers')">
+        <span class="sn-ic">🖥️</span><span>Servers<span class="sn-sub">inventory & connections</span></span></button>
+      <button class="set-navb" data-cat="itsm" onclick="setCategory('itsm')">
+        <span class="sn-ic">🎫</span><span>SummitAI (ITSM)<span class="sn-sub">incidents API</span></span></button>
+      <button class="set-navb" data-cat="change" onclick="setCategory('change')">
+        <span class="sn-ic">🛠️</span><span>Change management<span class="sn-sub">change API & defaults</span></span></button>
+      <button class="set-navb" data-cat="scripts" onclick="setCategory('scripts')">
+        <span class="sn-ic">📜</span><span>Script library<span class="sn-sub">agent diagnostics</span></span></button>
+    </nav>
+    <div class="set-body">
+      <section class="set-cat" data-cat="servers">
+        <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
     <div class="panel">
       <h2>Server inventory
         <button class="link" id="addServerBtn" style="float:right">+ add server</button></h2>
@@ -946,7 +976,11 @@
         <div class="hint" id="invMsg" style="margin-top:8px"></div>
         <div id="discoveryPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
       </div>
-      <div class="panel" style="margin-top:16px">
+        </div><!-- right column -->
+        </div><!-- inventory grid -->
+      </section>
+      <section class="set-cat" data-cat="scripts" hidden>
+      <div class="panel">
         <h2>Agent script library <span class="count" id="scriptCount" style="float:right"></span></h2>
         <div class="hint" id="libPath" style="margin-bottom:10px"></div>
         <div class="hint" style="margin-bottom:10px">Reusable diagnostic scripts the agents
@@ -958,8 +992,9 @@
           border:1px solid var(--border); border-radius:8px; padding:10px 12px;
           max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
       </div>
-
-      <div class="panel" style="margin-top:16px">
+      </section>
+      <section class="set-cat" data-cat="itsm" hidden>
+      <div class="panel">
         <h2>SummitAI (ITSM) integration <span class="tag" id="itsmState" style="float:right"></span></h2>
         <div class="hint" style="margin-bottom:12px">Connect the Incidents and Changes dashboards to
           your SummitAI API. Until a Base URL is saved, those tabs show demo data. The token is
@@ -1027,10 +1062,14 @@
         <div class="hint" id="itsmMsg" style="margin-top:8px"></div>
         <div id="itsmProbeOut" style="display:none; margin-top:8px; padding:10px 12px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--line, #2a3140); border-radius:8px; font-size:12.5px; line-height:1.9"></div>
 
-        <div id="itsmChangeSection" style="margin-top:22px; padding-top:16px; border-top:1px solid var(--border)">
-          <h3 style="margin:0 0 4px">Change management API</h3>
+      </div>
+      </section>
+      <section class="set-cat" data-cat="change" hidden>
+      <div class="panel" id="itsmChangeSection">
+          <h2 style="margin:0 0 4px">Change management API</h2>
           <div class="hint" style="margin-bottom:12px">Changes use a <b>different API key</b> than
-            incidents, on the same service URL. Leave the change key blank to reuse the incident key.</div>
+            incidents, on the same service URL. Leave the change key blank to reuse the incident key.
+            Saving here saves the whole SummitAI configuration.</div>
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
             <div style="grid-column:1/-1"><label>Change API key
               <span style="font-weight:normal" id="it_change_token_hint"></span></label>
@@ -1070,13 +1109,14 @@
               <input id="it_change_test_cr" maxlength="64" placeholder="e.g. 1842"></div>
           </div>
           <div style="display:flex; gap:10px; margin-top:12px;">
+            <button class="primary" id="saveChangeBtn" style="flex:1; margin-top:0">Save</button>
             <button class="ghost" id="testChangeBtn">Test change API</button>
             <button class="ghost" id="probeChangeBtn" title="Try the common SummitAI change-list ServiceNames and show which one this endpoint + change key answers">Probe change ServiceNames</button>
           </div>
           <div class="hint" id="itsmChangeMsg" style="margin-top:8px"></div>
           <div id="itsmChangeProbeOut" style="display:none; margin-top:8px; padding:10px 12px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:8px; font-size:12.5px; line-height:1.9"></div>
-        </div>
       </div>
+      </section>
     </div>
   </div>
 </div>
@@ -2392,6 +2432,16 @@ async function loadFiles(id) {
   });
 }
 
+/* ---------- settings categories ---------- */
+let setCat = 'servers';
+function setCategory(cat) {
+  setCat = cat;
+  document.querySelectorAll('#viewSettings .set-cat').forEach(s =>
+    s.hidden = s.dataset.cat !== cat);
+  document.querySelectorAll('#setNav .set-navb').forEach(b =>
+    b.classList.toggle('active', b.dataset.cat === cat));
+}
+
 /* ---------- views ---------- */
 function switchView(view) {
   const views = { overview: 'viewOverview', incidents: 'viewIncidents', work: 'viewWork',
@@ -2403,7 +2453,7 @@ function switchView(view) {
   if (view === 'overview') { loadFleet(); loadOvSummary(); }
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
-  if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); }
+  if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); setCategory(setCat); }
 }
 
 /* ---------- settings: SummitAI config ---------- */
@@ -2599,8 +2649,8 @@ $('probeItsmBtn').onclick = async () => {
           : 'No candidate answered — the list/detail ServiceNames for this deployment must be whitelisted for your API key by the Summit admin.'}</div>`;
   } catch (e) { out.textContent = '✕ ' + e.message; }
 };
-$('saveItsmBtn').onclick = async () => {
-  const msg = $('itsmMsg');
+async function saveItsm(msgId) {
+  const msg = $(msgId);
   try {
     await fetch('/api/admin/itsm', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -2609,7 +2659,9 @@ $('saveItsmBtn').onclick = async () => {
     msg.style.color = 'var(--ok)'; msg.textContent = '✓ Saved.';
     loadItsmConfig();
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
-};
+}
+$('saveItsmBtn').onclick = () => saveItsm('itsmMsg');
+$('saveChangeBtn').onclick = () => saveItsm('itsmChangeMsg');
 $('navOverview').onclick = () => switchView('overview');
 $('navIncidents').onclick = () => switchView('incidents');
 $('navWork').onclick = () => switchView('work');
