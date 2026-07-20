@@ -200,6 +200,32 @@ def _first(d: dict, *keys, default=""):
     return default
 
 
+# A ticket/change number looks like optional letters + 3+ digits (318417,
+# INC318417, CR1842). Used to recognise the id field whatever it is named.
+_ID_VAL_RE = re.compile(r"^[A-Za-z]{0,6}[-_]?\d{3,}$")
+_ID_ENTITY = ("ticket", "incident", "change", "request", "problem", "sr", "call", "service")
+
+
+def _fuzzy_id(raw: dict) -> str:
+    """Find the ticket/CR number field regardless of its exact name in this
+    SummitAI instance: a key that names an entity + id/no/number/code, whose
+    value looks like a ticket number."""
+    fallback = ""
+    for k, v in raw.items():
+        if not isinstance(v, (str, int)) or v in (None, "", 0):
+            continue
+        nk = re.sub(r"[^a-z0-9]", "", str(k).lower())
+        if not (nk.startswith(_ID_ENTITY)
+                and ("no" in nk or "number" in nk or "id" in nk or "code" in nk)):
+            continue
+        sv = str(v).strip()
+        if _ID_VAL_RE.match(sv):
+            return sv                     # strong match — take it
+        if not fallback:
+            fallback = sv
+    return fallback
+
+
 def _norm_priority(v) -> str:
     s = str(v or "").upper().replace("PRIORITY", "").strip()
     for p in ("P1", "P2", "P3", "P4", "P5"):
@@ -212,8 +238,10 @@ def _norm_priority(v) -> str:
 def _norm_incident(raw: dict) -> dict:
     return {
         "id": str(_first(raw, "TicketNo", "Ticket_No", "TicketNumber", "IncidentID",
-                         "IncidentId", "IncidentNo", "id", "number", "Number",
-                         "RequestID", "ticket")),
+                         "IncidentId", "IncidentNo", "Incident_Id", "Incident_No",
+                         "id", "number", "Number", "RequestID", "Request_Id", "ticket",
+                         "SR_ID", "SRID", "CallID", "Ticket_ID", "TicketId")
+                  or _fuzzy_id(raw)),
         "priority": _norm_priority(_first(raw, "Priority", "Priority_Name", "priority",
                                           "PriorityName")),
         "status": _first(raw, "Status", "status", "StatusName", default="Open"),
@@ -243,7 +271,8 @@ def _norm_incident(raw: dict) -> dict:
 def _norm_change(raw: dict) -> dict:
     return {
         "id": str(_first(raw, "ChangeNo", "Change_No", "ChangeID", "Change_Request_Id",
-                         "ChangeRequestID", "CR_ID", "id", "number", "Number", default="")),
+                         "ChangeRequestID", "CR_ID", "CRID", "CR_No", "id", "number",
+                         "Number", default="") or _fuzzy_id(raw)),
         "title": _first(raw, "Symptom", "Subject", "Title", "Information", "title",
                         default="(no subject)"),
         "status": _first(raw, "Status", "status", default="Approved"),
@@ -527,6 +556,31 @@ def list_incidents(priorities: tuple[str, ...] | None = ("P1", "P2"),
     return kept
 
 
+def incident_field_sample(n: int = 1) -> dict:
+    """Diagnostic: expose the raw field names the list service returns and what
+    the normaliser mapped, so id/title mapping can be verified for this
+    instance. Values are truncated; use to confirm the ticket-number field."""
+    cfg = load_config()
+    if not configured(cfg):
+        return {"configured": False}
+    rows = _fetch_incident_rows(cfg)
+    out = {"configured": True, "row_count": len(rows), "samples": []}
+    for r in rows[:max(1, n)]:
+        if not isinstance(r, dict):
+            continue
+        keys = sorted(r.keys())
+        norm = _norm_incident(r)
+        trimmed = {k: (str(v)[:60] if v not in (None, "") else "") for k, v in r.items()}
+        out["samples"].append({
+            "raw_keys": keys,
+            "detected_id": norm["id"],
+            "detected_title": norm["title"],
+            "detected_status": norm["status"],
+            "raw_values": trimmed,
+        })
+    return out
+
+
 def get_incident(incident_id: str) -> dict | None:
     cfg = load_config()
     if not configured(cfg):
@@ -543,6 +597,7 @@ def get_incident(incident_id: str) -> dict | None:
         try:
             rows = _wcf_call(cfg["incident_detail_service"],
                              {"TicketNo": _ticket_no(incident_id),
+                              "TicketID": _ticket_no(incident_id),
                               "RequestType": "RemoteCall"}, cfg)
             for r in rows:
                 n = _norm_incident(r)

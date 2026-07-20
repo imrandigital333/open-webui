@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.59.0"
+APP_VERSION = "2.60.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -330,6 +330,16 @@ async def incidents():
     try:
         rows = await asyncio.to_thread(itsm.list_incidents, None, True)
         return {"incidents": rows, **itsm.status()}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
+
+
+@app.get("/api/admin/itsm/incident-fields")
+async def incident_fields(n: int = 1):
+    """Diagnostic: the raw field names the incident list returns and what the
+    normaliser mapped (id/title/status) — to verify field mapping per instance."""
+    try:
+        return await asyncio.to_thread(itsm.incident_field_sample, n)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"SummitAI unavailable: {exc}")
 
