@@ -866,6 +866,33 @@ def _fmt_dt(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
 
 
+def _format_plan_text(steps: list, backout: str = "") -> str:
+    """Render the structured implementation plan as a human-readable block so
+    it can be written into Summit's CR text fields (the plan the change
+    assistant builds otherwise lives only in this platform)."""
+    lines: list[str] = []
+    ordered = sorted(
+        [s for s in (steps or []) if isinstance(s, dict)],
+        key=lambda s: s.get("order") or 0,
+    )
+    for i, s in enumerate(ordered, 1):
+        phase = str(s.get("phase") or "step").upper()
+        risk = str(s.get("risk") or "").strip()
+        head = f"{i}. [{phase}]" + (f" ({risk} risk)" if risk else "")
+        desc = str(s.get("description") or "").strip()
+        if desc:
+            head += f" {desc}"
+        lines.append(head)
+        cmd = str(s.get("command") or "").strip()
+        if cmd:
+            lines.append(f"    $ {cmd}")
+    plan = "\n".join(lines)
+    backout = str(backout or "").strip()
+    if backout:
+        plan += ("\n\n" if plan else "") + "Back-out plan:\n" + backout
+    return plan
+
+
 def create_change(f: dict) -> dict:
     """Raise a change request via CM_LogOrUpdateCR. The envelope mirrors the
     vendor's working sample as closely as possible — all CR fields and the
@@ -888,6 +915,10 @@ def create_change(f: dict) -> dict:
     start = str(f.get("start") or "").strip() or _fmt_dt(now + 86400)
     end = str(f.get("end") or "").strip() or _fmt_dt(now + 2 * 86400)
     pir_planned = _fmt_dt(now + 3 * 86400)
+
+    # the change assistant's implementation plan, rendered for Summit's text
+    # fields so it is visible inside the CR (not just in this platform)
+    plan_text = _format_plan_text(f.get("steps") or [], f.get("backout") or "")
 
     # full CR container mirroring the working sample (order/keys preserved).
     # Change_Request_Id 0 = create a new CR — the sample's 1844 is an update,
@@ -937,10 +968,10 @@ def create_change(f: dict) -> dict:
         "Information_Log": "", "Configuration_Team_Log": "",
         "Change_Manager_Log": "", "Change_Advisory_Board_Member_Log": "",
         "Justification": None, "ProposedTemplateName": None, "ProposalJustification": None,
-        "PreImplementationSteps": None, "PostImplementationSteps": None, "RescheduleReason": None,
+        "PreImplementationSteps": plan_text or None, "PostImplementationSteps": None, "RescheduleReason": None,
         "Is_Change_Implemented_Or_Rolledback": "",
         "Is_ChangeSucessful": "No",
-        "Solution": "", "ChangeScope": "", "ChangeOutOfScope": "",
+        "Solution": plan_text, "ChangeScope": "", "ChangeOutOfScope": "",
         "BusinessBenefits": "", "FinancialBenefits": "",
         "Assigned_Executive_Id": str(cfg.get("change_executive_id") or "2"),
         "Actual_Start_Time": start,
@@ -957,7 +988,7 @@ def create_change(f: dict) -> dict:
             "CRReleaseDetails": {
                 "RleasePlanned_StartTime": start, "RleasePlanned_EndTime": end,
                 "ReleaseActual_StartTime": start, "ReleaseActual_EndTime": end,
-                "ReleasePlan": "As per implementation plan", "ReleaseAttachments": "",
+                "ReleasePlan": plan_text or "As per implementation plan", "ReleaseAttachments": "",
                 "ReleaseDocs": "", "ReleaseNotes": "", "Release_Workgroup": "",
                 "Owner_Workgroup_Id": wg_id, "ReleaseAnalyst": "", "UserID": "0",
             },
