@@ -960,8 +960,10 @@ async def run_session(
     health_path = workdir / "health.json"
 
     def _read_health() -> dict | None:
+        # find health.json wherever the agent wrote it (it may cd into ./logs)
+        p = _find_output_file(workdir, "health.json") or health_path
         try:
-            return json.loads(health_path.read_text())
+            return json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -969,8 +971,11 @@ async def run_session(
         last: str | None = None
         while True:
             await asyncio.sleep(2)
+            p = _find_output_file(workdir, "health.json")
+            if p is None:
+                continue
             try:
-                text = health_path.read_text()
+                text = p.read_text()
             except OSError:
                 continue
             if text != last:
@@ -1131,10 +1136,10 @@ def _summarize_input(tool: str, tool_input: dict) -> str:
     return json.dumps(tool_input, default=str)[:300]
 
 
-def _find_report_file(workdir: Path, name: str) -> Path | None:
-    """The report belongs at workdir/<name>, but if the agent cd'd into a
+def _find_output_file(workdir: Path, name: str) -> Path | None:
+    """A deliverable belongs at workdir/<name>, but if the agent cd'd into a
     subdirectory (e.g. ./logs) and wrote it there, recover it — the shallowest,
-    newest match wins."""
+    newest match wins. Used for report.json/report.md and health.json."""
     top = workdir / name
     if top.exists():
         return top
@@ -1144,14 +1149,20 @@ def _find_report_file(workdir: Path, name: str) -> Path | None:
         matches = []
     if not matches:
         return None
-    matches.sort(key=lambda p: (len(p.relative_to(workdir).parts), -p.stat().st_mtime))
+    def _key(p):
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            mtime = 0
+        return (len(p.relative_to(workdir).parts), -mtime)
+    matches.sort(key=_key)
     return matches[0]
 
 
 def _load_report(workdir: Path, allow_empty: bool = False, fallback_text: str = "") -> dict:
     report: dict = {}
-    json_path = _find_report_file(workdir, "report.json")
-    md_path = _find_report_file(workdir, "report.md")
+    json_path = _find_output_file(workdir, "report.json")
+    md_path = _find_output_file(workdir, "report.md")
     if json_path and json_path.exists():
         try:
             report = json.loads(json_path.read_text())
