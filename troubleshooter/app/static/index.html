@@ -662,6 +662,15 @@
   #chgImpl.max .incd-panel { width: min(1360px, calc(100vw - 40px)); }
   #chgImpl .incd-head .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
   #chgImpl .incd-head .rc-ava svg { width: 16px; height: 16px; }
+  /* minimised implementer — floating restore chip */
+  #implMini { position: fixed; right: 22px; bottom: 22px; height: 46px; padding: 0 16px 0 14px;
+              border-radius: 12px; background: var(--panel2); border: 1px solid #2b4a7a;
+              color: var(--accent2); font-weight: 700; font-size: 12.5px; display: none;
+              align-items: center; gap: 9px; cursor: pointer; z-index: 72;
+              box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #implMini.show { display: inline-flex; }
+  #implMini:hover { border-color: var(--accent); }
+  #implMini::before { content: '🛠️'; font-size: 15px; }
   /* implementer split: plan pane (left) + execution pane (right) */
   .impl-split { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
   .impl-plan-pane { flex: 0 0 320px; align-self: stretch; border: 1px solid var(--border);
@@ -972,6 +981,7 @@
 
 <!-- change implementer slide-over -->
 <div id="chgImpl" style="display:none"></div>
+<button id="implMini" title="Change Implementer — click to restore" onclick="implRestore()"></button>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div class="set-layout">
@@ -3813,6 +3823,19 @@ async function openImplementer(id) {
 }
 function closeImplementer() {
   $('chgImpl').className = ''; $('chgImpl').style.display = 'none'; $('chgImpl').innerHTML = '';
+  $('implMini').classList.remove('show');
+  implState = { id: null, change: null, plan: null, server: '' };
+}
+// minimise to a floating chip (keeps the panel + state so it restores exactly)
+function implMinimize() {
+  $('chgImpl').style.display = 'none';
+  const chip = $('implMini');
+  chip.innerHTML = `<span>${escapeHtml(implState.id || 'Change Implementer')}</span>`;
+  chip.classList.add('show');
+}
+function implRestore() {
+  $('implMini').classList.remove('show');
+  $('chgImpl').style.display = 'block';
 }
 
 function implAssessmentHtml(plan) {
@@ -4014,10 +4037,13 @@ function renderImplementer() {
   d.innerHTML = `<div class="incd-panel">
     <div class="incd-head">
       <span class="rc-ava" id="implAva">${AI_ROBOT}</span>
-      <span class="inc-id">${escapeHtml(implState.id)}</span>
-      <span style="font-weight:650">${escapeHtml(c.status || '')}</span>
-      <button style="margin-left:auto" id="implMax" title="Maximise" onclick="implToggleMax()">⤢</button>
-      <button onclick="closeImplementer()">✕</button>
+      <div style="display:flex;flex-direction:column;line-height:1.2;min-width:0">
+        <span style="font-weight:700;font-size:13.5px">Change Implementer Assistant</span>
+        <span style="font-size:11px;color:var(--muted)"><span class="inc-id">${escapeHtml(implState.id)}</span> · ${escapeHtml(c.status || '')}</span>
+      </div>
+      <button style="margin-left:auto" id="implMin" title="Minimise" onclick="implMinimize()">—</button>
+      <button id="implMax" title="Maximise" onclick="implToggleMax()">⤢</button>
+      <button onclick="closeImplementer()" title="Close">✕</button>
     </div>
     <div class="incd-body">
       <div style="font-size:15px;font-weight:700;line-height:1.4">${escapeHtml(c.title || implState.id)}</div>
