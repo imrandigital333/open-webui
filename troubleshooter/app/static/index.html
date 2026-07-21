@@ -658,10 +658,48 @@
   /* incident detail slide-over */
   #incDetail.open, #chgImpl.open { display: block; position: fixed; inset: 0; z-index: 70;
                     background: rgba(0,0,0,.5); }
-  #chgImpl .incd-panel { width: 680px; }
-  #chgImpl.max .incd-panel { width: min(1150px, calc(100vw - 40px)); }
+  #chgImpl .incd-panel { width: min(1040px, calc(100vw - 32px)); }
+  #chgImpl.max .incd-panel { width: min(1360px, calc(100vw - 40px)); }
   #chgImpl .incd-head .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
   #chgImpl .incd-head .rc-ava svg { width: 16px; height: 16px; }
+  /* implementer split: plan pane (left) + execution pane (right) */
+  .impl-split { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
+  .impl-plan-pane { flex: 0 0 320px; align-self: stretch; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--panel2); display: flex; flex-direction: column;
+    max-height: calc(100vh - 250px); position: sticky; top: 0; }
+  .impl-exec-pane { flex: 1 1 0; min-width: 0; }
+  .impl-pane-h { padding: 10px 12px; font-weight: 700; font-size: 12.5px; color: var(--accent2);
+    border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 7px;
+    border-radius: 10px 10px 0 0; flex: 0 0 auto; }
+  .ipp-body { padding: 8px 12px 12px; overflow-y: auto; }
+  .ipp-steps { list-style: none; margin: 0; padding: 0; counter-reset: ipp; }
+  .ipp-step { position: relative; padding: 9px 0 10px 26px; border-bottom: 1px dashed var(--border);
+    counter-increment: ipp; }
+  .ipp-step:last-child { border-bottom: 0; }
+  .ipp-step::before { content: counter(ipp); position: absolute; left: 0; top: 9px; width: 18px;
+    height: 18px; border-radius: 50%; border: 1px solid var(--border); font-size: 10px; font-weight: 700;
+    display: grid; place-items: center; color: var(--muted); }
+  .ipp-step.done::before { content: '\2713'; border-color: var(--ok); color: var(--ok); }
+  .ipp-step.cur::before { border-color: var(--accent); color: var(--accent2);
+    box-shadow: 0 0 0 3px rgba(76,141,255,.15); }
+  .ipp-step-h { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .ipp-ph { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; color: var(--muted); }
+  .ipp-risk { font-size: 9px; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; border: 1px solid; }
+  .ipp-risk.r-low { color: var(--ok); border-color: #2b5a37; }
+  .ipp-risk.r-medium { color: var(--warn); border-color: #7a5a1a; }
+  .ipp-risk.r-high { color: var(--err); border-color: #6e2c2c; }
+  .ipp-desc { font-size: 12.5px; font-weight: 600; margin: 3px 0; line-height: 1.35; }
+  .ipp-cmd { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; white-space: pre-wrap; word-break: break-word; }
+  .ipp-manual { font-size: 11px; color: var(--muted); font-style: italic; }
+  .ipp-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+    color: var(--muted); margin: 13px 0 5px; }
+  .ipp-backout { font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; }
+  @media (max-width: 920px) {
+    .impl-split { flex-direction: column; }
+    .impl-plan-pane { flex: none; width: 100%; max-height: 360px; position: static; }
+  }
   /* change implementer */
   .ci-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
              overflow: hidden; }
@@ -3939,6 +3977,30 @@ function renderImplementer() {
     ${narrative}
   </div>`;
 
+  // read-only "implementation plan" pane shown beside the execution pane
+  const backoutTxt = (plan && (plan.backout || plan.backout_plan)) || '';
+  const planPaneHtml = `<aside class="impl-plan-pane">
+    <div class="impl-pane-h">${ic('file-text', 13)} Implementation plan</div>
+    <div class="ipp-body">
+      ${implAssessmentHtml(plan) || ''}
+      ${steps.length ? `<ol class="ipp-steps">${steps.map(s => {
+        const cls = s.order <= done ? 'done' : s.order === curOrder ? 'cur' : '';
+        const rk = String(s.risk || '').toLowerCase();
+        return `<li class="ipp-step ${cls}">
+          <div class="ipp-step-h">
+            <span class="ipp-ph">${escapeHtml(s.phase || 'step')}</span>
+            ${s.downtime_required ? '<span class="ci-dt">downtime</span>' : ''}
+            ${s.risk ? `<span class="ipp-risk r-${escapeHtml(rk)}">${escapeHtml(s.risk)}</span>` : ''}
+          </div>
+          <div class="ipp-desc">${escapeHtml(s.description || '')}</div>
+          ${s.command ? `<div class="ipp-cmd">${escapeHtml(s.command)}</div>` : '<div class="ipp-manual">manual step — no command</div>'}
+        </li>`;
+      }).join('')}</ol>` : '<div class="empty">No plan steps yet.</div>'}
+      ${backoutTxt ? `<div class="ipp-sec">${ic('rotate-ccw', 12)} Back-out plan</div>
+        <div class="ipp-backout">${escapeHtml(backoutTxt)}</div>` : ''}
+    </div>
+  </aside>`;
+
   const d = $('chgImpl');
   d.querySelector('.incd-panel') && (d.innerHTML = '');
   d.innerHTML = `<div class="incd-panel">
@@ -3974,13 +4036,15 @@ function renderImplementer() {
           <span id="genMsg" class="hint" style="margin-left:8px"></span>
           <div class="hint" style="margin-top:8px">Or raise the change through the Change Assistant with your own plan document.</div>
         </div>` : `
-        <div class="incd-field" style="margin:12px 0">
+      <div class="impl-split">
+        ${planPaneHtml}
+        <div class="impl-exec-pane">
+        <div class="incd-field" style="margin:0 0 12px">
           <label>Target server
             ${implState.server && matchServerToCi(c.ci) ? '<span style="font-weight:normal;color:var(--ok)">· auto-selected from the change CI</span>' : (c.ci && !matchServerToCi(c.ci) ? `<span style="font-weight:normal;color:var(--warn)">· CI "${escapeHtml(c.ci)}" not matched — pick it</span>` : '')}</label>
           <select id="implServer">${serverOpts}</select>
         </div>
         ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
-        ${implAssessmentHtml(plan)}
         ${progressHtml}
         <div class="hint" style="margin:0 0 10px">${ic('shield', 12)} Runs only these commands, in order. Completed steps are collapsed — click one to review its output. Read-only checks are allowed off-plan; anything else is blocked.</div>
         ${stepHtml}
@@ -3992,6 +4056,8 @@ function renderImplementer() {
         <div class="ci-out" id="implAdhocOut"></div>
         ${sug.length ? `<div class="sec-label" style="margin:16px 0 8px">AI suggestions</div>
           ${sug.map(s => `<div class="ci-sug">${ic('help-circle', 12)} ${escapeHtml(s)}</div>`).join('')}` : ''}
+        </div>
+      </div>
       `}
     </div>
     ${steps.length ? `<div class="incd-foot" style="display:flex;gap:8px">
