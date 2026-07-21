@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import cmdreview, db
 from .inventory import BASE_DIR, Server
 from .scriptlib import SCRIPTLIB_DIR, ensure_scriptlib
 
@@ -1045,10 +1045,13 @@ async def run_session(
                             agent_texts.append(text)
                             await state.emit("agent_text", {"text": text})
                     elif isinstance(block, ToolUseBlock):
-                        await state.emit(
-                            "tool_use",
-                            {"tool": block.name, "input": _summarize_input(block.name, block.input)},
-                        )
+                        payload = {"tool": block.name,
+                                   "input": _summarize_input(block.name, block.input)}
+                        if block.name == "Bash":
+                            risk, impact = _command_risk(str(block.input.get("command", "")), server)
+                            payload["risk"] = risk
+                            payload["impact"] = impact
+                        await state.emit("tool_use", payload)
             elif isinstance(message, ResultMessage):
                 state.duration_ms = message.duration_ms
                 state.cost_usd = message.total_cost_usd
@@ -1122,6 +1125,28 @@ async def run_session(
     state.status = "completed"
     _write_outcome(state)
     await state.emit("completed", {"report": state.report})
+
+
+def _command_risk(cmd: str, server: Server) -> tuple[str, str]:
+    """Classify what a Bash command actually does ON THE TARGET, for the live
+    risk tag. Pull the remote command out of an ssh/winps wrapper and ignore
+    local output redirection (saving collected output to ./logs is benign), so
+    the tag reflects server impact, not the plumbing."""
+    c = (cmd or "").strip()
+    if "app.winps" in c:
+        plat = "windows"
+    elif c.startswith("ssh ") or " ssh " in c:
+        plat = "linux"
+    else:
+        plat = "windows" if server.is_windows else "linux"
+    inner = c
+    if "app.winps" in c or "ssh " in c:
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", c)
+        if quoted:
+            inner = quoted[-1][0] or quoted[-1][1]   # the remote command
+    else:
+        inner = re.split(r"\s>{1,2}\s", inner)[0]     # drop local redirection
+    return cmdreview.classify(inner, plat)
 
 
 def _summarize_input(tool: str, tool_input: dict) -> str:

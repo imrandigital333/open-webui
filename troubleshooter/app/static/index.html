@@ -101,6 +101,14 @@
   .ev.tool .badge { color: var(--accent2); border-color: #2b4a7a; }
   .ev.text .badge { color: var(--ok); border-color: #2b5a37; }
   .ev.fail .badge { color: var(--err); border-color: #6e2c2c; }
+  .ev .badges { flex: 0 0 92px; display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
+  .risk-pill { text-align: center; font: 700 9px/1.3 var(--mono); letter-spacing: .04em;
+               text-transform: uppercase; padding: 3px 4px; border-radius: 5px; border: 1px solid;
+               cursor: help; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .risk-readonly  { color: var(--ok);   border-color: #2b5a37; background: rgba(45,164,78,.10); }
+  .risk-modifies  { color: var(--warn); border-color: #7a5a1a; background: rgba(214,158,46,.12); }
+  .risk-dangerous,
+  .risk-blocked   { color: var(--err);  border-color: #6e2c2c; background: rgba(224,73,73,.12); }
   .ev .body { white-space: pre-wrap; word-break: break-word; min-width: 0; }
   .ev.tool .body { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
   .ev .body.clamp { max-height: 66px; overflow: hidden; }
@@ -1444,7 +1452,15 @@ function addEvent(ev) {
   const div = document.createElement('div');
   div.className = cls;
   const long = body && body.length > 400;
-  div.innerHTML = `<span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>
+  let head = `<span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>`;
+  if (ev.type === 'tool_use' && ev.risk) {
+    const RISK = { readonly: 'read-only', modifies: 'change', dangerous: 'danger', blocked: 'blocked' };
+    const label = RISK[ev.risk] || ev.risk;
+    const impact = ev.impact ? `${label.toUpperCase()} — ${ev.impact}` : label;
+    head = `<div class="badges"><span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>
+      <span class="risk-pill risk-${escapeHtml(ev.risk)}" title="${escapeHtml(impact)}">${escapeHtml(label)}</span></div>`;
+  }
+  div.innerHTML = `${head}
     <div style="min-width:0"><div class="body ${long ? 'clamp' : ''}">${escapeHtml(body)}</div>
     ${long ? '<span class="more">show more</span>' : ''}</div>`;
   if (long) div.querySelector('.more').onclick = (e) => {
