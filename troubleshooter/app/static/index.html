@@ -3799,9 +3799,16 @@ async function openImplementer(id) {
   try { data = await (await fetch(`/api/changes/${encodeURIComponent(id)}`)).json(); }
   catch { d.querySelector('.incd-body').textContent = 'Failed to load change.'; return; }
   const change = data.change || {};
+  // resolve the target strictly from THIS change: its CI, then any host/IP
+  // named in its description or in the plan's commands. Never carry over the
+  // last change's server, and never silently default to inventory[0] —
+  // if nothing matches, leave it blank so the operator must pick.
+  const planText = (((data.plan || {}).steps) || [])
+    .map(s => `${s.command || ''} ${s.description || ''}`).join(' ');
   implState = { id, change, plan: data.plan,
-                server: matchServerToCi(change.ci) || implState.server
-                        || (inventory[0] && inventory[0].name) || '' };
+                server: matchServerToCi(change.ci)
+                        || matchServerFromText(change.description)
+                        || matchServerFromText(planText) || '' };
   renderImplementer();
 }
 function closeImplementer() {
@@ -3834,6 +3841,7 @@ function renderImplementer() {
   const approved = chgApproved(c.status);
   const serverOpts = (inventory || []).map(s =>
     `<option value="${escapeHtml(s.name)}" ${s.name === implState.server ? 'selected' : ''}>${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
+  const serverPlaceholder = `<option value="" ${!implState.server ? 'selected' : ''}>— select the server this runs on —</option>`;
   const sug = (plan && plan.suggestions) || [];
 
   const total = steps.length;
@@ -4041,8 +4049,8 @@ function renderImplementer() {
         <div class="impl-exec-pane">
         <div class="incd-field" style="margin:0 0 12px">
           <label>Target server
-            ${implState.server && matchServerToCi(c.ci) ? '<span style="font-weight:normal;color:var(--ok)">· auto-selected from the change CI</span>' : (c.ci && !matchServerToCi(c.ci) ? `<span style="font-weight:normal;color:var(--warn)">· CI "${escapeHtml(c.ci)}" not matched — pick it</span>` : '')}</label>
-          <select id="implServer">${serverOpts}</select>
+            ${implState.server ? '<span style="font-weight:normal;color:var(--ok)">· auto-selected from this change</span>' : `<span style="font-weight:normal;color:var(--warn)">· ${c.ci ? `CI "${escapeHtml(c.ci)}" not matched — ` : ''}select the server before running</span>`}</label>
+          <select id="implServer">${serverPlaceholder}${serverOpts}</select>
         </div>
         ${!approved ? `<div class="ci-sug" style="border-left-color:var(--warn)">This change is <b>${escapeHtml(c.status || 'not approved')}</b>. Steps can be executed only once it is approved.</div>` : ''}
         ${progressHtml}
@@ -4113,10 +4121,22 @@ async function genImplPlan(btn) {
     renderImplementer();
   } catch (e) { $('implAva')?.classList.remove('think'); btn.disabled = false; btn.innerHTML = '⚡ Generate plan'; if (msg) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } }
 }
+// require a target server before anything runs on the box
+function implRequireServer() {
+  if (implState.server) return true;
+  const sel = $('implServer');
+  if (sel) { sel.focus(); sel.style.outline = '2px solid var(--warn)'; setTimeout(() => sel.style.outline = '', 1600); }
+  return false;
+}
 async function runImplStep(order, btn) {
   const step = (implState.plan.steps || []).find(s => s.order === order) || {};
   const host = $('impl-run-' + order);
   const manual = !step.command;
+  if (!manual && !implRequireServer()) {
+    const m = $('impl-msg-' + order);
+    if (m) { m.style.color = 'var(--warn)'; m.textContent = 'Select the target server first.'; }
+    return;
+  }
   // Phase 1 — CLI/terminal animation while the command executes on the server
   if (host) host.innerHTML = manual
     ? `<div class="run-stage"><span class="rc-ava think" style="width:24px;height:24px">${AI_ROBOT}</span> marking manual step done…</div>`
@@ -4184,6 +4204,7 @@ async function implStepAdhoc(order, btn) {
   const out = $('stepadhoc-out-' + order);
   const cmd = (inp && inp.value.trim()) || '';
   if (!cmd || !out) return;
+  if (!implRequireServer()) { out.style.display = 'block'; out.className = 'ci-out err'; out.textContent = 'Select the target server first.'; return; }
   btn.disabled = true;
   out.style.display = 'block'; out.className = 'ci-out'; out.textContent = 'running (read-only)…';
   try {
