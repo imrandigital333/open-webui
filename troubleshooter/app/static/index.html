@@ -3609,7 +3609,7 @@ async function startFromIncident(id) {
 
 /* ---------- changes (SummitAI) ---------- */
 let changesCache = [];
-const chgApproved = (s) => /approv|scheduled|ready|authoriz|implement/i.test(String(s || ''));
+const chgApproved = (s) => /approv|scheduled|ready|authoriz|implement|progress/i.test(String(s || ''));
 const chgPinnedIds = () => { try { return JSON.parse(localStorage.getItem('chgPinned') || '[]'); } catch { return []; } };
 const chgSavePinned = (ids) => localStorage.setItem('chgPinned', JSON.stringify([...new Set(ids.map(String))]));
 
