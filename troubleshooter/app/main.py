@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.67.0"
+APP_VERSION = "2.68.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 

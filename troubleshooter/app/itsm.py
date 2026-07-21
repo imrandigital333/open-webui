@@ -918,7 +918,42 @@ def create_change(f: dict) -> dict:
 
     # the change assistant's implementation plan, rendered for Summit's text
     # fields so it is visible inside the CR (not just in this platform)
-    plan_text = _format_plan_text(f.get("steps") or [], f.get("backout") or "")
+    steps = [s for s in (f.get("steps") or []) if isinstance(s, dict)]
+    backout = str(f.get("backout") or "").strip()
+    plan_text = _format_plan_text(steps, backout)
+
+    # Fill the CR's descriptive sections from the operator input + the AI risk
+    # assessment, so the change isn't filed with empty Reason / Justification /
+    # Impact / Scope fields. All of these are free text (no master-data
+    # validation), so populating them can't cause a create rejection.
+    desc = str(f.get("description") or "").strip()
+    assess = f.get("assessment") if isinstance(f.get("assessment"), dict) else {}
+    ra = assess.get("risk_assessment") or {}
+    sr = assess.get("success_rate") or {}
+    rationale = str(ra.get("rationale") or "").strip()
+    factors = [str(x).strip() for x in (sr.get("factors") or []) if str(x).strip()]
+    neg = [x for x in factors if x.lstrip().startswith("-")]
+    pos = [x for x in factors if x.lstrip().startswith("+")]
+    pct = sr.get("percent")
+    justification = rationale or desc or title
+    trigger = desc or title
+    risk_of_failure = "; ".join(neg) or rationale or f"{f.get('risk') or 'Medium'} risk change"
+    if pct is not None:
+        risk_of_failure = f"Estimated success {pct}%. {risk_of_failure}"
+    biz_impact = desc or f"{f.get('impact') or 'Medium'} business impact"
+    not_impl = (f"If not implemented, the issue remains unaddressed: {desc}"
+                if desc else "The underlying issue remains unaddressed.")
+    scope_bits = []
+    if steps:
+        scope_bits.append(f"{len(steps)}-step implementation plan")
+    if backout:
+        scope_bits.append("back-out plan prepared")
+    if pos:
+        scope_bits.append("safeguards — " + "; ".join(pos))
+    change_scope = ". ".join(scope_bits)
+    downtime_remark = ("Downtime required during the change window."
+                       if f.get("downtime") else "No downtime expected.")
+    business_benefits = "; ".join(pos)
 
     # full CR container mirroring the working sample (order/keys preserved).
     # Change_Request_Id 0 = create a new CR — the sample's 1844 is an update,
@@ -939,7 +974,7 @@ def create_change(f: dict) -> dict:
         "Assigned_Workgroup": workgroup,
         "Classification": str(cfg.get("change_classification") or "Normal"),
         "Change_CategoryID": int(cfg.get("change_category_id") or 132),
-        "TriggerForChange": "",
+        "TriggerForChange": trigger,
         "Risk": str(f.get("risk") or "Medium"),
         "Impact": str(f.get("impact") or "Medium"),
         "Priority_Name": str(f.get("priority") or "P3"),
@@ -957,22 +992,22 @@ def create_change(f: dict) -> dict:
         "Communication_Plan_Details": "",
         "BusinessRisk": None, "OperationalRisk": None, "OverallRisk": None,
         "Closure_Code": "", "ClosureCategoryName": None, "CancelReason": None,
-        "Risk_Of_Change_Failure": "",
-        "Business_Impact_As_Per_User": "",
-        "Business_Impact_Of_Change_Failure": "",
-        "Back_Out_Plan": str(f.get("backout") or ""),
+        "Risk_Of_Change_Failure": risk_of_failure,
+        "Business_Impact_As_Per_User": biz_impact,
+        "Business_Impact_Of_Change_Failure": risk_of_failure,
+        "Back_Out_Plan": backout,
         "BackoutPlanTested": False,
         "BackOutPlanNotTestedReason": "Not yet tested",
-        "SystemImpactRemarks": "",
-        "Impact_Of_Not_Implementing_Change": "",
+        "SystemImpactRemarks": downtime_remark,
+        "Impact_Of_Not_Implementing_Change": not_impl,
         "Information_Log": "", "Configuration_Team_Log": "",
         "Change_Manager_Log": "", "Change_Advisory_Board_Member_Log": "",
-        "Justification": None, "ProposedTemplateName": None, "ProposalJustification": None,
+        "Justification": justification, "ProposedTemplateName": None, "ProposalJustification": None,
         "PreImplementationSteps": plan_text or None, "PostImplementationSteps": None, "RescheduleReason": None,
         "Is_Change_Implemented_Or_Rolledback": "",
         "Is_ChangeSucessful": "No",
-        "Solution": plan_text, "ChangeScope": "", "ChangeOutOfScope": "",
-        "BusinessBenefits": "", "FinancialBenefits": "",
+        "Solution": plan_text, "ChangeScope": change_scope, "ChangeOutOfScope": "",
+        "BusinessBenefits": business_benefits, "FinancialBenefits": "",
         "Assigned_Executive_Id": str(cfg.get("change_executive_id") or "2"),
         "Actual_Start_Time": start,
         "Actual_End_Time": end,
