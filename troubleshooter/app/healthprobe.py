@@ -88,11 +88,27 @@ async def _g_basics(server: Server) -> dict:
     return checks
 
 
+def _top_rows(body: str, unit: str) -> list:
+    """Parse `ps -eo comm,<metric>` lines into [{name, value}] for the dashboard
+    drill-down, highest first (ps is already sorted)."""
+    rows = []
+    for line in (body or "").strip().splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        rows.append({"name": parts[0], "value": f"{parts[-1]}{unit}"})
+        if len(rows) >= 10:
+            break
+    return rows
+
+
 async def _g_compute(server: Server) -> dict:
     rc, out = await _ssh(server,
         "echo @@nproc; nproc 2>/dev/null; echo @@load; cat /proc/loadavg 2>/dev/null; "
         "echo @@mem; free -m 2>/dev/null; "
-        "echo @@cpu; top -b -n1 2>/dev/null | grep -i '%cpu' | head -1")
+        "echo @@cpu; top -b -n1 2>/dev/null | grep -i '%cpu' | head -1; "
+        "echo @@topcpu; ps -eo comm,pcpu --sort=-pcpu --no-headers 2>/dev/null | head -10; "
+        "echo @@topmem; ps -eo comm,pmem --sort=-pmem --no-headers 2>/dev/null | head -10")
     s = _sections(out)
     checks = {}
     cores = max(_num(s.get("nproc", "1")), 1)
@@ -124,6 +140,9 @@ async def _g_compute(server: Server) -> dict:
         checks["swap"] = _c(_pct(pct, 40, 80), f"{pct:.0f}%")
     else:
         checks["swap"] = _c("ok", "0%", "no swap configured")
+    # per-process breakdown for the cpu/memory drill-down
+    checks["cpu"]["top"] = _top_rows(s.get("topcpu", ""), "%")
+    checks["memory"]["top"] = _top_rows(s.get("topmem", ""), "%")
     return checks
 
 

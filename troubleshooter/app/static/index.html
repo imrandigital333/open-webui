@@ -4873,11 +4873,21 @@ function healthNodeHtml(key, icon, check, state) {
       ${dot}<div class="lbl">${aspectLabel(key)}</div></div>`;
 }
 
+const lastHealthByServer = {};   // keep the last good status so it stays stable
 function renderHealth(health, running, serverName) {
   const strip = $('healthStrip');
   const srv = (inventory || []).find(s => s.name === serverName);
   hcWin = /windows/i.test((srv && srv.platform) || '');
-  const checks = health?.checks || {};
+  let checks = health?.checks || {};
+  const hasData = Object.values(checks).some(c => (c?.status || 'unknown') !== 'unknown');
+  // Don't let a status that was showing revert to blank/unknown. If new data is
+  // empty and we're not mid-scan, keep the last known good snapshot for this
+  // server — it stays stable until a real re-run (probe/health check) replaces it.
+  if (!hasData && !running && serverName && lastHealthByServer[serverName]) {
+    checks = lastHealthByServer[serverName];
+  } else if (hasData && serverName) {
+    lastHealthByServer[serverName] = checks;
+  }
   const statuses = ASPECTS.map(([k]) => (checks[k]?.status || 'unknown').toLowerCase());
   const assessed = statuses.filter(s => s !== 'unknown');
   const allDone = assessed.length === ASPECTS.length;

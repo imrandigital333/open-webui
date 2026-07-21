@@ -394,7 +394,10 @@ def build_healthcheck_prompt(server: Server, workdir: Path | None = None) -> str
         "Library tip: reuse per-group scripts (health_g1.sh … health_g6.sh) from the\n"
         "library when they exist, and save parameterized ones back after a successful\n"
         "run. Do NOT use the all-in-one health_sweep.sh for an interactive check — it\n"
-        "returns everything at once, which defeats the live group-by-group progress.\n")
+        "returns everything at once, which defeats the live group-by-group progress.\n"
+        "For G2, ALWAYS run the two `ps ... --sort=-pcpu/-pmem | head -10` commands\n"
+        "inline this run (never assume a reused script already emitted them) and fill\n"
+        "the cpu and memory `top` arrays from their output — the drill-down needs it.\n")
     call_word = "winps PowerShell" if win else "SSH"
     return f"""You are an SRE running a PROACTIVE HEALTH CHECK on a server — there is no
 reported incident. Assess its health quickly and thoroughly.
