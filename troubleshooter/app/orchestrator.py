@@ -275,6 +275,12 @@ Maintain a machine-readable health snapshot of the target server in
 }
 - Start each value with "NN%" when a percentage applies (cpu, memory, swap,
   storage, inodes, disk_io) so the dashboard can draw a gauge.
+- MANDATORY top-process capture: the cpu, memory AND swap aspects MUST each
+  carry a non-empty "top" array (highest first, up to 10 processes) whenever
+  the server has running processes — the dashboard drills into these three on
+  click. Leaving cpu/memory "top" empty is a FAILURE. For swap, if nothing is
+  swapped, "top": [] is acceptable — but you must still have RUN the swap-users
+  command to prove it. Populate them in the G2 write, not later.
 """
 
 
@@ -368,6 +374,11 @@ Maintain a machine-readable health snapshot of this WINDOWS server in
 }
 - Start each value with "NN%" when a percentage applies (cpu, memory, swap,
   storage, disk_io) so the dashboard can draw a gauge.
+- MANDATORY top-process capture: the cpu, memory AND swap aspects MUST each
+  carry a non-empty "top" array (highest first, up to 10 processes) — the
+  dashboard drills into these three on click. cpu = top by CPU seconds,
+  memory = top by working-set MB, swap = top by paged/committed MB. Leaving any
+  of these three empty is a FAILURE. Populate them in the G2 write, not later.
 """
 
 

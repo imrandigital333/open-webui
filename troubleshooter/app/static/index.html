@@ -4787,6 +4787,17 @@ const ASPECT_LABEL = {
   connectivity: 'conn', disk_io: 'disk i/o', time_sync: 'time sync',
   certificates: 'certs', processes: 'procs',
 };
+// Windows uses different OS concepts for several aspects — relabel so the
+// dashboard reads correctly for a Windows target (same underlying keys).
+const ASPECT_LABEL_WIN = {
+  connectivity: 'conn', swap: 'pagefile', load: 'cpu queue', inodes: 'n/a',
+  disk_io: 'disk queue', kernel: 'system log', patching: 'updates',
+  time_sync: 'time sync', certificates: 'certs', processes: 'procs',
+};
+let hcWin = false;   // is the health strip currently showing a Windows server?
+function aspectLabel(k) {
+  return (hcWin && ASPECT_LABEL_WIN[k]) || ASPECT_LABEL[k] || k;
+}
 // collection groups — the agent checks them in this order, so during a live
 // scan the strip can animate the group being checked and dim the queued ones
 const HC_GROUPS = [
@@ -4835,11 +4846,13 @@ function healthNodeHtml(key, icon, check, state) {
   const tip = `${key}: ${checking ? 'checking…' : queued ? 'queued' : st}${val ? ' — ' + val : ''}${note ? ' — ' + note : ''}`;
   return `<div class="hs-node st-${st} ${checking ? 'checking' : ''} ${queued ? 'queued' : ''}" data-k="${key}"
        title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">
-      ${dot}<div class="lbl">${ASPECT_LABEL[key] || key}</div></div>`;
+      ${dot}<div class="lbl">${aspectLabel(key)}</div></div>`;
 }
 
-function renderHealth(health, running) {
+function renderHealth(health, running, serverName) {
   const strip = $('healthStrip');
+  const srv = (inventory || []).find(s => s.name === serverName);
+  hcWin = /windows/i.test((srv && srv.platform) || '');
   const checks = health?.checks || {};
   const statuses = ASPECTS.map(([k]) => (checks[k]?.status || 'unknown').toLowerCase());
   const assessed = statuses.filter(s => s !== 'unknown');
@@ -4887,7 +4900,8 @@ function renderHealth(health, running) {
       let html = escapeHtml(n.dataset.tip);
       const top = Array.isArray(chk.top) ? chk.top.slice(0, 10) : null;
       if (top && top.length) {
-        const label = { cpu: 'CPU', memory: 'memory', swap: 'swap' }[k] || 'usage';
+        const label = (hcWin ? { cpu: 'CPU', memory: 'working set', swap: 'pagefile' }
+                              : { cpu: 'CPU', memory: 'memory', swap: 'swap' })[k] || 'usage';
         html += `<div class="hs-top"><div class="hs-top-h">Top ${top.length} processes by ${label}</div>`
           + top.map((p, i) => `<div class="hs-top-row">
                <span class="hs-top-r">${i + 1}</span>
