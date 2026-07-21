@@ -1129,23 +1129,26 @@ async def run_session(
 
 def _command_risk(cmd: str, server: Server) -> tuple[str, str]:
     """Classify what a Bash command actually does ON THE TARGET, for the live
-    risk tag. Pull the remote command out of an ssh/winps wrapper and ignore
-    local output redirection (saving collected output to ./logs is benign), so
-    the tag reflects server impact, not the plumbing."""
+    risk tag — so the operator sees real server impact, not the plumbing.
+
+    A bare command (no ssh / winps wrapper) runs only in the agent's ephemeral
+    sandbox — saving collected output to ./logs, mkdir, grep/parse, writing the
+    report file. None of that touches the server, so it is always read-only.
+    A wrapped command is classified on its inner remote command, on the right
+    platform."""
     c = (cmd or "").strip()
-    if "app.winps" in c:
-        plat = "windows"
-    elif c.startswith("ssh ") or " ssh " in c:
-        plat = "linux"
-    else:
-        plat = "windows" if server.is_windows else "linux"
+    has_win = "app.winps" in c
+    has_ssh = bool(re.search(r"(^|[|&;(]\s*)ssh\s", c))
+    if not (has_win or has_ssh):
+        return "readonly", "runs in the tool sandbox — no change on the server"
+    plat = "windows" if has_win else "linux"
     inner = c
-    if "app.winps" in c or "ssh " in c:
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", c)
-        if quoted:
-            inner = quoted[-1][0] or quoted[-1][1]   # the remote command
-    else:
-        inner = re.split(r"\s>{1,2}\s", inner)[0]     # drop local redirection
+    quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", c)
+    if quoted:
+        inner = quoted[-1][0] or quoted[-1][1]        # the remote command
+    elif has_ssh:
+        inner = re.sub(r"^.*?\bssh\s+\S+\s+", "", c)   # drop 'ssh <host> '
+        inner = re.split(r"\s>{1,2}\s", inner)[0]      # drop local redirection
     return cmdreview.classify(inner, plat)
 
 

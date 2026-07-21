@@ -101,15 +101,21 @@
   .ev.tool .badge { color: var(--accent2); border-color: #2b4a7a; }
   .ev.text .badge { color: var(--ok); border-color: #2b5a37; }
   .ev.fail .badge { color: var(--err); border-color: #6e2c2c; }
-  .ev .badges { flex: 0 0 92px; display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
-  .risk-pill { text-align: center; font: 700 9px/1.3 var(--mono); letter-spacing: .04em;
-               text-transform: uppercase; padding: 3px 4px; border-radius: 5px; border: 1px solid;
-               cursor: help; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .risk-readonly  { color: var(--ok);   border-color: #2b5a37; background: rgba(45,164,78,.10); }
-  .risk-modifies  { color: var(--warn); border-color: #7a5a1a; background: rgba(214,158,46,.12); }
+  .ev .risk-line { margin: 0 0 5px; display: flex; align-items: center; gap: 7px; }
+  .risk-pill { display: inline-block; font: 700 9px/1.35 var(--mono); letter-spacing: .05em;
+               text-transform: uppercase; padding: 2px 8px; border-radius: 999px; border: 1px solid;
+               cursor: help; white-space: nowrap; }
+  .risk-pill::before { content: '\2022'; margin-right: 5px; }
+  .risk-readonly  { color: var(--ok);   border-color: #2b5a37; background: rgba(63,185,80,.10); }
+  .risk-modifies  { color: var(--warn); border-color: #7a5a1a; background: rgba(210,153,34,.12); }
   .risk-dangerous,
-  .risk-blocked   { color: var(--err);  border-color: #6e2c2c; background: rgba(224,73,73,.12); }
+  .risk-blocked   { color: var(--err);  border-color: #6e2c2c; background: rgba(248,81,73,.12); }
+  .risk-note { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; min-width: 0; }
   .ev .body { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+  .ev .body.typing::after { content: '\258B'; color: var(--accent2); margin-left: 1px;
+                            animation: caret 1s step-end infinite; }
+  @keyframes caret { 50% { opacity: 0; } }
   .ev.tool .body { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
   .ev .body.clamp { max-height: 66px; overflow: hidden; }
   .ev .more { color: var(--accent2); font-size: 11px; cursor: pointer; }
@@ -1437,6 +1443,22 @@ function showTab(tab) {
 }
 
 /* ---------- timeline ---------- */
+// Reveal text with a lightweight typewriter effect so progress feels live.
+function typeInto(el, text) {
+  const tl = $('timeline');
+  const speed = Math.max(3, Math.min(30, Math.round(text.length / 60)));  // chars/frame
+  let i = 0;
+  el.classList.add('typing');
+  (function step() {
+    if (!el.isConnected) { el.textContent = text; el.classList.remove('typing'); return; }
+    i = Math.min(text.length, i + speed);
+    el.textContent = text.slice(0, i);
+    if (tlStick) tl.scrollTop = tl.scrollHeight;
+    if (i < text.length) requestAnimationFrame(step);
+    else el.classList.remove('typing');
+  })();
+}
+
 function addEvent(ev) {
   const tl = $('timeline');
   let cls = 'ev', badge = ev.type, body = '';
@@ -1452,22 +1474,28 @@ function addEvent(ev) {
   const div = document.createElement('div');
   div.className = cls;
   const long = body && body.length > 400;
-  let head = `<span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>`;
+  const badgeHtml = `<span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>`;
+  let riskHtml = '';
   if (ev.type === 'tool_use' && ev.risk) {
     const RISK = { readonly: 'read-only', modifies: 'change', dangerous: 'danger', blocked: 'blocked' };
     const label = RISK[ev.risk] || ev.risk;
-    const impact = ev.impact ? `${label.toUpperCase()} — ${ev.impact}` : label;
-    head = `<div class="badges"><span class="badge" title="${escapeHtml(badge)}">${escapeHtml(badge)}</span>
-      <span class="risk-pill risk-${escapeHtml(ev.risk)}" title="${escapeHtml(impact)}">${escapeHtml(label)}</span></div>`;
+    riskHtml = `<div class="risk-line">
+      <span class="risk-pill risk-${escapeHtml(ev.risk)}" title="${escapeHtml(ev.impact || label)}">${escapeHtml(label)}</span>
+      ${ev.impact ? `<span class="risk-note" title="${escapeHtml(ev.impact)}">${escapeHtml(ev.impact)}</span>` : ''}
+    </div>`;
   }
-  div.innerHTML = `${head}
-    <div style="min-width:0"><div class="body ${long ? 'clamp' : ''}">${escapeHtml(body)}</div>
+  div.innerHTML = `${badgeHtml}
+    <div style="min-width:0">${riskHtml}<div class="body ${long ? 'clamp' : ''}"></div>
     ${long ? '<span class="more">show more</span>' : ''}</div>`;
+  const bodyEl = div.querySelector('.body');
   if (long) div.querySelector('.more').onclick = (e) => {
-    const b = div.querySelector('.body');
-    b.classList.toggle('clamp');
-    e.target.textContent = b.classList.contains('clamp') ? 'show more' : 'show less';
+    bodyEl.classList.toggle('clamp');
+    e.target.textContent = bodyEl.classList.contains('clamp') ? 'show more' : 'show less';
   };
+  // Type the agent's narration out for a live, interactive feel; everything
+  // else (commands, status lines) appears at once so it stays readable.
+  if (ev.type === 'agent_text' && body) typeInto(bodyEl, body);
+  else bodyEl.textContent = body || '';
   tl.appendChild(div);
   // stick to the newest step unless the operator scrolled up to read something
   if (tlStick) tl.scrollTop = tl.scrollHeight;
