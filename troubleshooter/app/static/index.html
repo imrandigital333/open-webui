@@ -27,6 +27,9 @@
   #viewOverview { transition: margin-right .25s ease; }
   .resizer { width: 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; }
   .resizer:hover, .resizer.dragging { background: var(--accent); opacity: .55; }
+  /* collapse the New-investigation / Sessions sidebar while investigating */
+  main.hide-left { grid-template-columns: 1fr; }
+  main.hide-left > #workLeft, main.hide-left > #resizer { display: none; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
        color: var(--muted); margin: 0 0 12px; font-weight: 700; }
@@ -1122,7 +1125,7 @@
 </div>
 
 <main id="viewWork" style="display:none">
-  <div>
+  <div id="workLeft">
     <div class="panel">
       <h2>New investigation</h2>
       <label for="server">Affected server</label>
@@ -1173,6 +1176,7 @@
         <span class="shstats" id="shStats"></span>
         <span id="shPills"></span>
         <span class="actions">
+          <button class="ghost" id="panelToggle" title="Show / hide the New investigation & Sessions sidebar">☰ Sidebar</button>
           <button class="ghost" id="healthBtn">Health view</button>
           <button class="ghost" id="dlReport" style="display:none">Download report</button>
           <button class="ghost danger" id="cancelBtn" style="display:none">Cancel</button>
@@ -1286,7 +1290,8 @@ const ic = (n, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" f
 /* ---------- bootstrap ---------- */
 async function loadInventory() {
   inventory = (await (await fetch('/api/inventory')).json()).servers;
-  $('server').innerHTML = inventory.map(s =>
+  $('server').innerHTML = '<option value="" selected>— select a server —</option>' +
+    inventory.map(s =>
     `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} — ${escapeHtml(s.host)}</option>`).join('');
   $('server').onchange = renderServerMeta;
   renderServerMeta();
@@ -1327,6 +1332,7 @@ document.querySelectorAll('#depth button').forEach(b => b.onclick = () => {
 
 /* ---------- start ---------- */
 async function startSession() {
+  if (!$('server').value) { alert('Select the affected server first.'); return; }
   const problem = $('problem').value.trim();
   if (problem.length < 10) { alert('Please describe the problem (at least a sentence).'); return; }
   const layers = [...document.querySelectorAll('#layers input:checked')].map(c => c.value);
@@ -2454,6 +2460,8 @@ function switchView(view) {
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
   if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); setCategory(setCat); }
+  // on the Investigations tab with nothing open, show the New-investigation form
+  if (view === 'work' && !currentSession) $('viewWork').classList.remove('hide-left');
 }
 
 /* ---------- settings: SummitAI config ---------- */
@@ -4462,6 +4470,7 @@ function renderOvChg() {
 
 function investigate(name) {
   switchView('work');
+  $('viewWork').classList.remove('hide-left');   // reveal the form to fill it in
   $('server').value = name;
   renderServerMeta();
   $('problem').focus();
@@ -4802,6 +4811,7 @@ $('dlReport').onclick = () => {
 let healthPollTimer = null;
 async function openSession(id) {
   currentSession = id;
+  $('viewWork').classList.add('hide-left');   // give the session the full width
   renderSessions();
   if (eventSource) { eventSource.close(); eventSource = null; }
   clearInterval(healthPollTimer);
@@ -4872,6 +4882,7 @@ async function onLiveEnd(ev, session, id) {
 }
 
 $('startBtn').onclick = startSession;
+$('panelToggle').onclick = () => $('viewWork').classList.toggle('hide-left');
 fetch('/api/version').then(r => r.json()).then(v =>
   $('version').textContent = ` · v${v.version} (${v.commit})`);
 loadInventory(); loadDatasources(); refreshSessions(); loadFleet(); loadOvSummary();
