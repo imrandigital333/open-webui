@@ -663,15 +663,14 @@
   #chgImpl .incd-head .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
   #chgImpl .incd-head .rc-ava svg { width: 16px; height: 16px; }
   /* minimised implementer — floating restore chip */
-  #implMini { position: fixed; right: 22px; bottom: 22px; height: 46px; padding: 0 16px 0 14px;
-              border-radius: 12px; background: var(--panel2); border: 1px solid #2b4a7a;
-              color: var(--accent2); font-weight: 700; font-size: 12.5px; display: none;
-              align-items: center; gap: 9px; cursor: pointer; z-index: 72;
-              box-shadow: 0 8px 24px rgba(0,0,0,.5); }
-  #implMini.show { display: inline-flex; }
+  #implMini { position: fixed; right: 22px; bottom: 22px; width: 52px; height: 52px; padding: 0;
+              border-radius: 50%; background: var(--panel2); border: 1px solid #2b4a7a;
+              color: var(--accent2); display: none; place-items: center; cursor: pointer;
+              z-index: 72; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #implMini.show { display: grid; }
   #implMini:hover { border-color: var(--accent); }
-  #implMini .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
-  #implMini .rc-ava svg { width: 16px; height: 16px; }
+  #implMini .rc-ava { width: 40px; height: 40px; flex: 0 0 40px; }
+  #implMini .rc-ava svg { width: 23px; height: 23px; }
   /* implementer split: plan pane (left) + execution pane (right) */
   .impl-split { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
   .impl-plan-pane { flex: 0 0 320px; align-self: stretch; border: 1px solid var(--border);
@@ -3831,7 +3830,8 @@ function closeImplementer() {
 function implMinimize() {
   $('chgImpl').style.display = 'none';
   const chip = $('implMini');
-  chip.innerHTML = `<span class="rc-ava">${AI_ROBOT}</span><span>${escapeHtml(implState.id || 'Change Implementer')}</span>`;
+  chip.title = `Change Implementer — ${implState.id || ''} · click to restore`;
+  chip.innerHTML = `<span class="rc-ava">${AI_ROBOT}</span>`;
   chip.classList.add('show');
 }
 function implRestore() {
