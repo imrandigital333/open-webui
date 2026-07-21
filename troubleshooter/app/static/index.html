@@ -670,7 +670,8 @@
               box-shadow: 0 8px 24px rgba(0,0,0,.5); }
   #implMini.show { display: inline-flex; }
   #implMini:hover { border-color: var(--accent); }
-  #implMini::before { content: '🛠️'; font-size: 15px; }
+  #implMini .rc-ava { width: 26px; height: 26px; flex: 0 0 26px; }
+  #implMini .rc-ava svg { width: 16px; height: 16px; }
   /* implementer split: plan pane (left) + execution pane (right) */
   .impl-split { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
   .impl-plan-pane { flex: 0 0 320px; align-self: stretch; border: 1px solid var(--border);
@@ -3830,7 +3831,7 @@ function closeImplementer() {
 function implMinimize() {
   $('chgImpl').style.display = 'none';
   const chip = $('implMini');
-  chip.innerHTML = `<span>${escapeHtml(implState.id || 'Change Implementer')}</span>`;
+  chip.innerHTML = `<span class="rc-ava">${AI_ROBOT}</span><span>${escapeHtml(implState.id || 'Change Implementer')}</span>`;
   chip.classList.add('show');
 }
 function implRestore() {
