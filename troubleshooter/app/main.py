@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.72.0"
+APP_VERSION = "2.73.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -465,9 +465,30 @@ async def changes_batch(req: ChangeBatchRequest):
     return {"changes": out, "errors": errors}
 
 
+def _plan_server_context(server_name: str, fallback_platform: str = "linux") -> tuple[str, str]:
+    """Ground plan generation in a real server: return (facts_prefix, platform).
+    Uses whatever discovery already gathered for the server so the AI proposes
+    OS-correct commands (e.g. yum on RHEL) instead of assuming."""
+    name = (server_name or "").strip()
+    if not name:
+        return "", fallback_platform
+    srv = load_inventory().get(name)
+    if srv is None:
+        return "", fallback_platform
+    platform = "windows" if srv.is_windows else "linux"
+    lines = [f"TARGET SERVER: {srv.name} ({srv.host}); platform: {platform}; "
+             f"OS: {srv.os or 'unknown'}; services: {', '.join(srv.services) or 'unknown'}"]
+    disco = discovery.facts_summary(name)
+    if disco:
+        lines.append("DISCOVERED SERVER FACTS (use these — do not guess):")
+        lines.append(disco)
+    return "\n".join(lines) + "\n\n", platform
+
+
 class RefinePlanRequest(BaseModel):
     plan_text: str = Field(..., min_length=20, max_length=20000)
     platform: str = Field("linux", pattern=r"^(linux|windows)$")
+    server: str = Field("", max_length=100)
 
 
 @app.post("/api/changes/refine-plan")
@@ -475,7 +496,8 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
     """AI pass over a pasted implementation-plan document: structured steps,
     validation/corrections, downtime verification, risk + success-rate,
     inferred CR fields, and still-missing mandatory fields."""
-    result = await changeplan.refine_plan(req.plan_text, req.platform)
+    prefix, platform = _plan_server_context(req.server, req.platform)
+    result = await changeplan.refine_plan(prefix + req.plan_text, platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
@@ -486,6 +508,7 @@ class ReRefineRequest(BaseModel):
     plan: dict = Field(...)                       # the current refined plan
     answers: str = Field(..., min_length=1, max_length=6000)
     platform: str = Field("linux", pattern=r"^(linux|windows)$")
+    server: str = Field("", max_length=100)
 
 
 @app.post("/api/changes/re-refine")
@@ -505,7 +528,8 @@ async def re_refine_plan(req: ReRefineRequest, request: Request):
                  "Incorporate these facts and re-issue the FULL validated plan, updating "
                  "commands, downtime, risk and the success-rate accordingly:")
     lines.append(req.answers)
-    result = await changeplan.refine_plan("\n".join(lines), req.platform)
+    prefix, platform = _plan_server_context(req.server, req.platform)
+    result = await changeplan.refine_plan(prefix + "\n".join(lines), platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_rerefined",
                             {"chars": len(req.answers), "steps": len(result.get("steps", []))})
     return result
@@ -539,12 +563,14 @@ async def upload_change_plan(request: Request, file: UploadFile = File(...),
 class ChangeRecommendRequest(BaseModel):
     context: str = Field(..., min_length=5, max_length=6000)
     platform: str = Field("linux", pattern=r"^(linux|windows)$")
+    server: str = Field("", max_length=100)
 
 
 @app.post("/api/changes/recommend")
 async def recommend_change_fields(req: ChangeRecommendRequest):
     """Suggest CR attributes + an outline plan from a description (manual flow)."""
-    return await changeplan.recommend_change(req.context, req.platform)
+    prefix, platform = _plan_server_context(req.server, req.platform)
+    return await changeplan.recommend_change(prefix + req.context, platform)
 
 
 class ChangeCreateRequest(BaseModel):

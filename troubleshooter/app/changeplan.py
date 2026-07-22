@@ -192,12 +192,30 @@ def _os_directive(platform: str) -> str:
     return _WINDOWS_DIRECTIVE if str(platform).lower() == "windows" else ""
 
 
+_GROUNDING_RULES = """GROUNDING — use the real server, never assume:
+- If DISCOVERED SERVER FACTS are provided below (OS, package manager,
+  virtualization, services), you MUST use them. Match every command to that OS
+  and its package manager: on RHEL/CentOS/Rocky/Alma use yum/dnf and the
+  server's configured repositories; on Debian/Ubuntu use apt. NEVER propose a
+  source tarball / configure-make-install when the software is installable from
+  the distro repository (e.g. install httpd with `yum install -y httpd`, not by
+  downloading an Apache tarball).
+- Do NOT guess, expand, or substitute package or service names. Use the EXACT
+  name the operator gave. If the precise package name is uncertain, keep the
+  operator's name and ADD a read-only verify step (e.g. `yum list <name>` /
+  `dnf provides <name>`) — do NOT silently swap it for a variant (e.g. do NOT
+  turn 'vim' into 'vim-enhanced', or 'httpd' into 'apache2').
+- Keep exactly the scope the operator asked for; prefer the smallest standard
+  action for that platform.
+"""
+
 _REFINE_PROMPT = """You are a senior change-management reviewer for production Linux servers at an
 enterprise (an airport IT operation, 24x7 safety-critical). An operator gave you
 their change implementation plan below (written against their org template, or
 free text). Your job is to REDUCE FAILED CHANGES: turn it into a correct,
 executable, low-risk plan and honestly score it.
 
+""" + _GROUNDING_RULES + """
 Do ALL of this:
 
 1. Break the plan into ordered steps. Phases: pre | implement | verify |
@@ -269,6 +287,7 @@ this description (and any fields so far):
 
 %s
 
+""" + _GROUNDING_RULES + """
 Recommend sensible CR attributes and an outline plan to reduce the chance of a
 failed change. Also rewrite the operator's rough summary into a clear,
 industry-standard change TITLE (concise, action-first, includes the target
@@ -290,6 +309,7 @@ GENERATE a complete, safe, executable plan for this change from its description:
 
 %s
 
+""" + _GROUNDING_RULES + """
 Commands run DIRECTLY on the target host via an existing session — do NOT wrap
 them in ssh to another host (no `ssh user@host '...'`); write the command as it
 would be typed at a shell on the target itself (sudo is fine).
@@ -297,8 +317,8 @@ would be typed at a shell on the target itself (sudo is fine).
 Produce the full plan yourself: the exact shell commands to carry it out on the
 target Linux host, in a safe order (backups/snapshots BEFORE any state change,
 the change itself, then verification), plus a rollback/back-out path. Use
-concrete, runnable commands (real package/service names inferred from the
-description; dated backup filenames). Assess downtime per step honestly (kernel
+concrete, runnable commands (use the EXACT package/service names the operator
+gave — do not substitute variants; dated backup filenames). Assess downtime per step honestly (kernel
 patches and reboots ALWAYS need downtime unless live patching), score the risk
 and success rate, and note anything the operator must confirm before running.
 

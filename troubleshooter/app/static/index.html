@@ -3298,7 +3298,7 @@ async function cbotReRefine(answers) {
   try {
     const r = await (await fetch('/api/changes/re-refine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan: cbot.refined, answers }),
+      body: JSON.stringify({ plan: cbot.refined, answers, server: cbotServer() }),
     })).json();
     cbotStopTyping();
     if (r.refined_by !== 'ai' || r.ai_error) {
@@ -3328,6 +3328,15 @@ function cbotApplyRefined(r) {
   cbotClarify(cbotAskWorkgroup);   // let the operator answer open questions first
 }
 
+// which inventory server does this change target? match an IP/hostname/name
+// mentioned anywhere in the title/description (+ any extra text) so the plan
+// can be grounded in that server's discovered facts.
+function cbotServer(extra) {
+  return cbot.data.server
+    || matchServerFromText(`${cbot.data.title || ''} ${cbot.data.description || ''} ${extra || ''}`)
+    || '';
+}
+
 /* --- manual recommendations --- */
 async function cbotRecommend() {
   cbot.step = 'refining'; cbotChips([]); cbotBusy(true);
@@ -3335,7 +3344,7 @@ async function cbotRecommend() {
   try {
     const r = await (await fetch('/api/changes/recommend', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}` }),
+      body: JSON.stringify({ context: `Title: ${cbot.data.title}\n${cbot.data.description || ''}`, server: cbotServer() }),
     })).json();
     cbotStopTyping(); cbot.rec = r; cbotBusy(false);
     if (r.title) { cbot.data.title = r.title; cbotAdd(`I'll title it: <b>${escapeHtml(r.title)}</b>`, 'bot', true); }
@@ -3438,7 +3447,7 @@ async function cbotRefine(text, label) {
   try {
     const r = await (await fetch('/api/changes/refine-plan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan_text: text }),
+      body: JSON.stringify({ plan_text: text, server: cbotServer(text) }),
     })).json();
     cbotStopTyping();
     if (r.refined_by !== 'ai' || r.ai_error) {
@@ -3479,7 +3488,13 @@ function cbotHandle(text) {
       cbotAdd('Briefly describe what this change does and why (a sentence or two) — this lets me recommend the right risk, impact and priority:');
       break;
     case 'desc':
-      cbot.data.description = text; cbotRecommend();
+      cbot.data.description = text;
+      cbot.data.server = matchServerFromText(`${cbot.data.title || ''} ${text}`) || '';
+      if (cbot.data.server) {
+        const sv = (inventory || []).find(x => x.name === cbot.data.server);
+        cbotAdd(`Target server: <b>${escapeHtml(cbot.data.server)}</b>${sv ? ` · ${escapeHtml(sv.platform === 'windows' ? 'Windows' : 'Linux')}` : ''} — I'll ground the plan in its discovered facts (OS, package manager, services).`, 'bot', true);
+      }
+      cbotRecommend();
       break;
     case 'rec_choice':
       if (/accept/i.test(text)) {
