@@ -120,6 +120,7 @@ kb_docs_t = Table(
     Column("actor", String(120), nullable=True),
     Column("tokens_in", Integer, nullable=True),
     Column("tokens_out", Integer, nullable=True),
+    Column("content_hash", String(64), index=True, nullable=True),
 )
 
 kb_chunks_t = Table(
@@ -146,6 +147,7 @@ kb_usage_t = Table(
 )
 
 _engine = None
+_fts_ok = False   # SQLite FTS5 full-text index available? (set in init)
 
 
 def engine():
@@ -177,9 +179,11 @@ def init_db() -> None:
         "ALTER TABLE sessions ADD COLUMN input_tokens INTEGER",
         "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER",
         "ALTER TABLE sessions ADD COLUMN incident_id VARCHAR(64)",
+        "ALTER TABLE kb_docs ADD COLUMN content_hash VARCHAR(64)",
     ):
         with _ctx.suppress(Exception), engine().begin() as conn:
             conn.execute(_text(ddl))
+    _kb_fts_init()
     # sessions left 'running' by a crash/restart can never finish
     with engine().begin() as conn:
         conn.execute(
@@ -386,6 +390,35 @@ def purge_older_than(days: int) -> dict:
 
 # ---------- knowledge base (RAG) ----------
 
+def _kb_fts_init() -> None:
+    """Create the SQLite FTS5 index (fast, scan-free retrieval) and backfill it.
+    No-op on non-SQLite or when FTS5 is unavailable — retrieval falls back to a
+    linear scan then."""
+    global _fts_ok
+    _fts_ok = False
+    if not DB_URL.startswith("sqlite"):
+        return
+    from sqlalchemy import text as _text
+    try:
+        with engine().begin() as conn:
+            conn.execute(_text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5("
+                "text, keywords, doc_id UNINDEXED, server UNINDEXED, "
+                "os UNINDEXED, category UNINDEXED, tokenize='unicode61')"))
+            cnt = conn.execute(_text("SELECT count(*) FROM kb_fts")).scalar() or 0
+            have = conn.execute(select(kb_chunks_t.c.id).limit(1)).first()
+            if not cnt and have:                       # backfill existing chunks
+                for r in conn.execute(select(kb_chunks_t)):
+                    conn.execute(_text(
+                        "INSERT INTO kb_fts(text,keywords,doc_id,server,os,category) "
+                        "VALUES(:t,:k,:d,:s,:o,:c)"),
+                        {"t": r.text or "", "k": r.keywords or "", "d": r.doc_id,
+                         "s": r.server or "", "o": r.os or "", "c": r.category or ""})
+        _fts_ok = True
+    except Exception:  # noqa: BLE001 - FTS5 not compiled in; use the scan fallback
+        _fts_ok = False
+
+
 def kb_add_doc(doc: dict) -> None:
     with engine().begin() as conn:
         conn.execute(kb_docs_t.insert().values(
@@ -396,7 +429,17 @@ def kb_add_doc(doc: dict) -> None:
             keywords=json.dumps(doc.get("keywords", [])), body=doc.get("body", ""),
             created_at=doc.get("created_at") or time.time(), actor=doc.get("actor"),
             tokens_in=doc.get("tokens_in"), tokens_out=doc.get("tokens_out"),
+            content_hash=doc.get("content_hash"),
         ))
+
+
+def kb_find_by_hash(content_hash: str) -> dict | None:
+    if not content_hash:
+        return None
+    with engine().connect() as conn:
+        r = conn.execute(select(kb_docs_t).where(
+            kb_docs_t.c.content_hash == content_hash)).first()
+        return _kb_doc_row(r) if r else None
 
 
 def kb_add_chunks(rows: list[dict]) -> None:
@@ -404,6 +447,42 @@ def kb_add_chunks(rows: list[dict]) -> None:
         return
     with engine().begin() as conn:
         conn.execute(kb_chunks_t.insert(), rows)
+    if _fts_ok:
+        from sqlalchemy import text as _text
+        with engine().begin() as conn:
+            for r in rows:
+                conn.execute(_text(
+                    "INSERT INTO kb_fts(text,keywords,doc_id,server,os,category) "
+                    "VALUES(:t,:k,:d,:s,:o,:c)"),
+                    {"t": r.get("text", ""), "k": r.get("keywords", ""),
+                     "d": r.get("doc_id"), "s": r.get("server", ""),
+                     "o": r.get("os", ""), "c": r.get("category", "")})
+
+
+def kb_fts_search(terms: list[str], server: str, limit: int) -> list[dict] | None:
+    """FTS5 ranked search. Returns None when FTS is unavailable (caller then
+    falls back to the linear scan); returns [] when there are simply no hits."""
+    if not _fts_ok:
+        return None
+    from sqlalchemy import text as _text
+    safe = [t for t in ('"%s"' % t.replace('"', '') for t in terms) if len(t) > 2]
+    if not safe:
+        return []
+    match = " OR ".join(safe)
+    sql = ("SELECT text, doc_id, server, os, category, bm25(kb_fts) AS rank "
+           "FROM kb_fts WHERE kb_fts MATCH :q")
+    params = {"q": match, "k": int(limit)}
+    if server:
+        sql += " AND (server = :s OR server = '')"
+        params["s"] = server
+    sql += " ORDER BY rank LIMIT :k"
+    try:
+        with engine().connect() as conn:
+            return [{"text": r.text, "doc_id": r.doc_id, "server": r.server or "",
+                     "os": r.os or "", "category": r.category or "", "rank": r.rank}
+                    for r in conn.execute(_text(sql), params)]
+    except Exception:  # noqa: BLE001 - malformed MATCH etc.
+        return None
 
 
 def _kb_doc_row(r) -> dict:
@@ -434,6 +513,13 @@ def kb_delete_doc(doc_id: str) -> None:
     with engine().begin() as conn:
         conn.execute(delete(kb_chunks_t).where(kb_chunks_t.c.doc_id == doc_id))
         conn.execute(delete(kb_docs_t).where(kb_docs_t.c.id == doc_id))
+    if _fts_ok:
+        from sqlalchemy import text as _text
+        try:
+            with engine().begin() as conn:
+                conn.execute(_text("DELETE FROM kb_fts WHERE doc_id = :d"), {"d": doc_id})
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def kb_candidate_chunks(server: str = "") -> list[dict]:

@@ -15,6 +15,7 @@ offline / air-gapped); Haiku adds the smart classification and answering.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -170,11 +171,23 @@ async def classify(text: str, title_hint: str = "") -> tuple[dict, dict]:
 
 # ---------- ingest ----------
 
+def _content_hash(text: str) -> str:
+    return hashlib.sha256(re.sub(r"\s+", " ", text.strip().lower()).encode()).hexdigest()
+
+
 async def ingest(text: str, *, title_hint: str = "", source_type: str = "text",
                  filename: str | None = None, actor: str | None = None) -> dict:
     text = (text or "").strip()
     if len(text) < 3:
         return {"ok": False, "error": "Nothing to store — the content was empty."}
+    # dedup: identical content already stored → skip the (paid) re-index
+    chash = _content_hash(text)
+    dup = await asyncio.to_thread(db.kb_find_by_hash, chash)
+    if dup:
+        return {"ok": True, "duplicate": True,
+                "doc": {"id": dup["id"], "title": dup["title"], "server": dup["server"],
+                        "os": dup["os"], "category": dup["category"],
+                        "summary": dup["summary"], "keywords": dup["keywords"], "chunks": 0}}
     meta, usage = await classify(text, title_hint)
     _record_usage(usage)
     doc_id = uuid.uuid4().hex[:16]
@@ -182,7 +195,7 @@ async def ingest(text: str, *, title_hint: str = "", source_type: str = "text",
            "filename": filename, "server": meta["server"], "os": meta["os"],
            "category": meta["category"], "summary": meta["summary"],
            "keywords": meta["keywords"], "body": text[:200000],
-           "created_at": time.time(), "actor": actor,
+           "created_at": time.time(), "actor": actor, "content_hash": chash,
            "tokens_in": usage.get("input_tokens"), "tokens_out": usage.get("output_tokens")}
     await asyncio.to_thread(db.kb_add_doc, doc)
     rows = []
@@ -209,6 +222,11 @@ def _score(query_tokens: list[str], chunk: dict) -> float:
 
 async def retrieve(query: str, server: str = "", top_k: int = 6) -> list[dict]:
     qtok = list(dict.fromkeys(_tokens(query)))
+    # Fast path: SQLite FTS5 index (scales to very large KBs without a scan).
+    fts = await asyncio.to_thread(db.kb_fts_search, qtok, server or "", top_k)
+    if fts is not None:
+        return [dict(h, _score=round(-(h.get("rank") or 0.0), 3)) for h in fts]
+    # Fallback: in-memory lexical scan (FTS5 unavailable / non-SQLite backend).
     cands = await asyncio.to_thread(db.kb_candidate_chunks, server or "")
     scored = [(c, _score(qtok, c)) for c in cands]
     scored = [cs for cs in scored if cs[1] > 0]
@@ -279,6 +297,10 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
         d = res["doc"]
         where = " → ".join([x for x in [d["server"] or "General",
                             d["os"] or None, d["category"]] if x])
+        if res.get("duplicate"):
+            return {"mode": "teach", "ok": True, "stored": d,
+                    "answer": f"I already have that — it's stored under **{where}** as "
+                              f"“{d['title']}”, so I didn't duplicate it."}
         return {"mode": "teach", "ok": True, "stored": d,
                 "answer": f"Got it — stored under **{where}** as “{d['title']}”"
                           f" ({d['chunks']} chunk{'s' if d['chunks'] != 1 else ''}).",
