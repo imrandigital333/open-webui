@@ -534,6 +534,48 @@
   .ops-empty { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px;
                height: 80px; justify-content: center; }
   .ops-plat { display: inline-flex; gap: 8px; font-size: 11px; color: var(--muted); }
+  /* knowledge base (RAG) tab */
+  .kb-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+             flex-wrap: wrap; margin-bottom: 14px; }
+  .kb-usage { display: flex; flex-wrap: wrap; gap: 8px; }
+  .kb-layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+  .kb-tree-panel { max-height: calc(100vh - 200px); overflow: auto; position: sticky; top: 16px; }
+  .kb-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .kb-model-chip { font: 700 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .05em;
+    color: var(--accent2); border: 1px solid #2b4a7a; background: rgba(56,139,253,.08);
+    border-radius: 999px; padding: 3px 9px; margin-left: 6px; vertical-align: 2px; }
+  .kb-drop { border: 1.5px dashed var(--border); border-radius: 10px; padding: 18px; text-align: center;
+    transition: border-color .15s, background .15s; }
+  .kb-drop.drag { border-color: var(--accent); background: rgba(56,139,253,.06); }
+  /* taxonomy tree */
+  .kb-node { margin: 1px 0; }
+  .kb-srv { font-weight: 700; font-size: 13px; padding: 5px 6px; border-radius: 7px; cursor: pointer;
+    display: flex; align-items: center; gap: 7px; }
+  .kb-srv:hover { background: var(--panel2); }
+  .kb-srv .os-tag { font: 600 9px/1 var(--mono); text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; }
+  .kb-cat { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    font-weight: 700; margin: 6px 0 2px 20px; }
+  .kb-doc { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 24px; border-radius: 6px;
+    cursor: pointer; font-size: 12.5px; }
+  .kb-doc:hover { background: var(--panel2); }
+  .kb-doc .del { margin-left: auto; color: var(--muted); opacity: 0; font-size: 12px; }
+  .kb-doc:hover .del { opacity: 1; }
+  .kb-doc .del:hover { color: var(--err); }
+  .kb-count { color: var(--muted); font-weight: 400; font-size: 11px; }
+  /* chat */
+  .kb-chat-panel { display: flex; flex-direction: column; }
+  .kb-chat-body { min-height: 160px; max-height: 42vh; overflow-y: auto; display: flex;
+    flex-direction: column; gap: 8px; padding: 4px 2px; }
+  .kb-msg { max-width: 88%; padding: 8px 11px; border-radius: 11px; font-size: 13px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word; }
+  .kb-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+  .kb-msg.bot { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border);
+    border-bottom-left-radius: 3px; }
+  .kb-msg.bot.teach { border-color: #2b5a37; }
+  .kb-msg .src { display: block; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
+  .kb-chat-in { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .kb-chat-in input { flex: 1; margin: 0; }
   /* settings: left category nav + content */
   .set-layout { display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start; }
   @media (max-width: 900px) { .set-layout { grid-template-columns: 1fr; } }
@@ -893,6 +935,7 @@
     <button id="navIncidents">Incidents</button>
     <button id="navWork">Investigations</button>
     <button id="navChanges">Changes</button>
+    <button id="navKnowledge">Knowledge</button>
     <button id="navSettings">Settings</button>
   </nav>
   <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
@@ -1007,6 +1050,57 @@
 <!-- change implementer slide-over -->
 <div id="chgImpl" style="display:none"></div>
 <button id="implMini" title="Change Implementer — click to restore" onclick="implRestore()"></button>
+
+<div id="viewKnowledge" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
+  <div class="kb-head">
+    <div>
+      <h2 style="margin:0">Knowledge base</h2>
+      <div class="hint">Upload design docs, server configs and notes. Everything is indexed by
+        <b>Server → OS → category</b> and used to ground change plans and incident troubleshooting.</div>
+    </div>
+    <div class="kb-usage" id="kbUsage"></div>
+  </div>
+  <div class="kb-layout">
+    <div class="panel kb-tree-panel">
+      <h2>Library <span class="count" id="kbDocCount">0</span></h2>
+      <div class="hint" id="kbTreeStats" style="margin-bottom:8px"></div>
+      <input id="kbFilter" placeholder="filter…" style="margin-bottom:8px" oninput="kbRenderTree()">
+      <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
+    </div>
+    <div class="kb-main">
+      <div class="panel">
+        <h2>Add knowledge</h2>
+        <div id="kbDrop" class="kb-drop">
+          <div><b>Drop a file</b> here or <label class="link" for="kbFile">choose one</label>
+            <input type="file" id="kbFile" style="display:none"
+              accept=".txt,.md,.markdown,.log,.csv,.pdf,.docx,.doc,.rtf"></div>
+          <div class="hint">.txt · .md · .pdf · .docx — design documents, configs, runbooks</div>
+        </div>
+        <div style="margin-top:10px">
+          <textarea id="kbText" placeholder="…or paste notes / configuration / a fact to remember (e.g. 'web-01 runs Apache 2.4 behind lb-01; TLS on 443 via /etc/httpd/conf.d/ssl.conf')" style="min-height:80px"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+            <input id="kbTitle" placeholder="optional title" style="flex:1;margin:0">
+            <button class="primary" style="width:auto;margin:0" id="kbAddBtn" onclick="kbAddText()">Store</button>
+          </div>
+          <div id="kbAddMsg" class="hint" style="margin-top:6px"></div>
+        </div>
+      </div>
+      <div class="panel kb-chat-panel">
+        <h2><span class="rc-ava" style="width:24px;height:24px;display:inline-grid" id="kbAva"></span>
+          Knowledge assistant <span class="kb-model-chip" id="kbModelChip"></span></h2>
+        <div class="hint" style="margin-bottom:8px">Ask a question, or just tell me a fact and I'll remember it.
+          <span id="kbScopeNote"></span></div>
+        <div id="kbChatBody" class="kb-chat-body"></div>
+        <div class="kb-chat-in">
+          <select id="kbChatServer" title="Scope questions to a server" style="max-width:150px;margin:0"></select>
+          <input id="kbChatIn" placeholder="Ask, or state a fact to store…" autocomplete="off"
+            onkeydown="if(event.key==='Enter')kbSend()">
+          <button class="ci-run" onclick="kbSend()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div class="set-layout">
@@ -1373,10 +1467,15 @@ let currentSession = null, currentSessionInfo = null, eventSource = null, select
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// tiny markdown: escape, then **bold** and `code` — for chat bubbles
+const mdLite = (s) => escapeHtml(s)
+  .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+  .replace(/`([^`]+)`/g, '<code>$1</code>');
 
 /* inline stroke icons (Feather-style) so the report reads like an enterprise console */
 const ICONS = {
   'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  'server': '<rect x="2" y="4" width="20" height="7" rx="2"/><rect x="2" y="13" width="20" height="7" rx="2"/><line x1="6" y1="7.5" x2="6.02" y2="7.5"/><line x1="6" y1="16.5" x2="6.02" y2="16.5"/>',
   'layers': '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
   'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
@@ -2647,16 +2746,176 @@ function setCategory(cat) {
 }
 
 /* ---------- views ---------- */
+/* ---------- knowledge base (RAG) ---------- */
+let kbTreeData = {};
+const KB_CAT_LABEL = { network: 'Network', application: 'Application', process: 'Process',
+  kb_article: 'KB article', config: 'Config', design: 'Design', manual: 'Manual', general: 'General' };
+
+async function loadKnowledge() {
+  if ($('kbAva') && !$('kbAva').innerHTML) $('kbAva').innerHTML = AI_ROBOT;
+  // scope selector from inventory
+  const sel = $('kbChatServer');
+  if (sel) sel.innerHTML = '<option value="">All servers</option>' +
+    (inventory || []).map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+  if ($('kbChatBody') && !$('kbChatBody').children.length)
+    kbMsg('Hi — upload a document, or tell me anything about your environment and I\'ll remember it. Ask me a question and I\'ll answer from what\'s stored.', 'bot');
+  try {
+    const [ov, tr] = await Promise.all([
+      (await fetch('/api/kb/overview')).json(),
+      (await fetch('/api/kb/tree')).json(),
+    ]);
+    kbRenderUsage(ov);
+    kbTreeData = tr.tree || {};
+    kbRenderTree();
+  } catch (e) { /* offline */ }
+}
+
+function kbRenderUsage(ov) {
+  const u = ov.usage || {}, st = ov.stats || {};
+  $('kbModelChip').textContent = ov.model_label || 'Haiku';
+  $('kbModelChip').title = ov.model || '';
+  const inTok = u.input_tokens || 0, outTok = u.output_tokens || 0;
+  const cr = u.cache_read_tokens || 0, cw = u.cache_write_tokens || 0;
+  const t = [];
+  t.push(`<div class="usg model" title="${escapeHtml(ov.model || '')}"><div class="k">Model</div><div class="v">${escapeHtml(ov.model_label || 'Haiku')}</div></div>`);
+  t.push(`<div class="usg"><div class="k">Input</div><div class="v">${fmtTok(inTok)}</div></div>`);
+  t.push(`<div class="usg"><div class="k">Output</div><div class="v">${fmtTok(outTok)}</div></div>`);
+  t.push(`<div class="usg cache"><div class="k">Cache read</div><div class="v">${fmtTok(cr)}</div></div>`);
+  t.push(`<div class="usg cache"><div class="k">Cache write</div><div class="v">${fmtTok(cw)}</div></div>`);
+  t.push(`<div class="usg total"><div class="k">Total</div><div class="v">${fmtTok(inTok + outTok)}</div></div>`);
+  t.push(`<div class="usg"><div class="k">AI calls</div><div class="v">${u.calls || 0}</div></div>`);
+  $('kbUsage').innerHTML = t.join('');
+  $('kbDocCount').textContent = st.docs || 0;
+  $('kbTreeStats').textContent = `${st.docs || 0} docs · ${st.chunks || 0} chunks · ${st.servers || 0} servers`;
+}
+
+function kbRenderTree() {
+  const box = $('kbTree');
+  const q = ($('kbFilter').value || '').toLowerCase();
+  const srvs = Object.keys(kbTreeData).sort((a, b) => a === 'General' ? 1 : b === 'General' ? -1 : a.localeCompare(b));
+  if (!srvs.length) { box.innerHTML = '<div class="empty">Nothing stored yet.</div>'; return; }
+  const html = [];
+  for (const srv of srvs) {
+    const oses = kbTreeData[srv];
+    let n = 0, inner = '';
+    for (const os of Object.keys(oses).sort()) {
+      const cats = oses[os];
+      for (const cat of Object.keys(cats).sort()) {
+        const docs = cats[cat].filter(d => !q || (d.title + ' ' + (d.summary || '')).toLowerCase().includes(q));
+        if (!docs.length) continue;
+        n += docs.length;
+        inner += `<div class="kb-cat">${escapeHtml(KB_CAT_LABEL[cat] || cat)}${os !== '—' ? ' · ' + escapeHtml(os) : ''}</div>`;
+        inner += docs.map(d => `<div class="kb-doc" onclick="kbViewDoc('${d.id}')" title="${escapeHtml(d.summary || '')}">
+          ${ic('file-text', 12)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(d.title)}</span>
+          <span class="del" title="Delete" onclick="event.stopPropagation();kbDeleteDoc('${d.id}')">✕</span></div>`).join('');
+      }
+    }
+    if (!inner) continue;
+    const osTags = Object.keys(oses).filter(o => o !== '—');
+    html.push(`<div class="kb-node"><div class="kb-srv">${srv === 'General' ? ic('layers', 13) : ic('server', 13)}
+      <span>${escapeHtml(srv)}</span>${osTags.map(o => `<span class="os-tag">${escapeHtml(o)}</span>`).join('')}
+      <span class="kb-count" style="margin-left:auto">${n}</span></div>${inner}</div>`);
+  }
+  box.innerHTML = html.join('') || '<div class="empty">No matches.</div>';
+}
+
+async function kbAddText() {
+  const text = $('kbText').value.trim();
+  const msg = $('kbAddMsg');
+  if (text.length < 3) { msg.textContent = 'Enter something to store.'; return; }
+  const btn = $('kbAddBtn'); btn.disabled = true;
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Indexing with ' + ($('kbModelChip').textContent || 'Haiku') + '…';
+  try {
+    const r = await (await fetch('/api/kb/add-text', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, title: $('kbTitle').value.trim() }),
+    })).json();
+    if (r.ok) {
+      const d = r.doc;
+      msg.style.color = 'var(--ok)';
+      msg.innerHTML = `✓ Stored under <b>${escapeHtml(d.server || 'General')}${d.os ? ' · ' + escapeHtml(d.os) : ''} · ${escapeHtml(KB_CAT_LABEL[d.category] || d.category)}</b>`;
+      $('kbText').value = ''; $('kbTitle').value = '';
+      loadKnowledge();
+    } else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (r.error || 'failed'); }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+  btn.disabled = false;
+}
+
+async function kbUploadFile(file) {
+  if (!file) return;
+  const msg = $('kbAddMsg');
+  msg.style.color = 'var(--muted)'; msg.textContent = `Reading ${file.name} and indexing…`;
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const res = await fetch('/api/kb/upload', { method: 'POST', body: fd });
+    const r = await res.json();
+    if (res.ok && r.ok) {
+      const d = r.doc;
+      msg.style.color = 'var(--ok)';
+      msg.innerHTML = `✓ <b>${escapeHtml(file.name)}</b> stored under ${escapeHtml(d.server || 'General')}${d.os ? ' · ' + escapeHtml(d.os) : ''} · ${escapeHtml(KB_CAT_LABEL[d.category] || d.category)} (${d.chunks} chunks)`;
+      loadKnowledge();
+    } else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (r.detail || r.error || 'upload failed'); }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+}
+
+async function kbViewDoc(id) {
+  try {
+    const d = await (await fetch(`/api/kb/doc/${id}`)).json();
+    if (d.detail) return;
+    kbMsg(`📄 ${d.title}\n${d.summary || ''}\n\n${(d.body || '').slice(0, 1200)}${(d.body || '').length > 1200 ? '…' : ''}`, 'bot');
+    $('kbChatBody').scrollTop = $('kbChatBody').scrollHeight;
+  } catch { /* ignore */ }
+}
+
+async function kbDeleteDoc(id) {
+  if (!confirm('Delete this knowledge entry?')) return;
+  await fetch(`/api/kb/doc/${id}`, { method: 'DELETE' });
+  loadKnowledge();
+}
+
+function kbMsg(text, who, opts) {
+  opts = opts || {};
+  const d = document.createElement('div');
+  d.className = `kb-msg ${who}${opts.teach ? ' teach' : ''}`;
+  d.innerHTML = mdLite(text) + (opts.sources && opts.sources.length
+    ? `<span class="src">sources: ${opts.sources.map(escapeHtml).join(' · ')}</span>` : '');
+  $('kbChatBody').appendChild(d);
+  $('kbChatBody').scrollTop = $('kbChatBody').scrollHeight;
+  return d;
+}
+
+async function kbSend() {
+  const inp = $('kbChatIn'); const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  kbMsg(text, 'user');
+  $('kbAva')?.classList.add('think');
+  const thinking = kbMsg('…', 'bot');
+  try {
+    const r = await (await fetch('/api/kb/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, server: $('kbChatServer').value || '', mode: 'auto' }),
+    })).json();
+    thinking.remove();
+    if (r.ok === false) { kbMsg('✕ ' + (r.error || 'failed'), 'bot'); }
+    else kbMsg(r.answer || '(no answer)', 'bot', { teach: r.mode === 'teach', sources: r.sources });
+    if (r.mode === 'teach') loadKnowledge();   // refresh tree + usage after learning
+    else { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
+  } catch (e) { thinking.remove(); kbMsg('✕ ' + e.message, 'bot'); }
+  $('kbAva')?.classList.remove('think');
+}
+
 function switchView(view) {
   const views = { overview: 'viewOverview', incidents: 'viewIncidents', work: 'viewWork',
-                  changes: 'viewChanges', settings: 'viewSettings' };
+                  changes: 'viewChanges', knowledge: 'viewKnowledge', settings: 'viewSettings' };
   const nav = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
-                changes: 'navChanges', settings: 'navSettings' };
+                changes: 'navChanges', knowledge: 'navKnowledge', settings: 'navSettings' };
   Object.entries(views).forEach(([v, id]) => $(id).style.display = v === view ? '' : 'none');
   Object.entries(nav).forEach(([v, id]) => $(id).classList.toggle('active', v === view));
   if (view === 'overview') { loadFleet(); loadOvSummary(); }
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
+  if (view === 'knowledge') loadKnowledge();
   if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); setCategory(setCat); }
   // on the Investigations tab with nothing open, show the New-investigation form
   if (view === 'work' && !currentSession) $('viewWork').classList.remove('hide-left');
@@ -2872,7 +3131,16 @@ $('navOverview').onclick = () => switchView('overview');
 $('navIncidents').onclick = () => switchView('incidents');
 $('navWork').onclick = () => switchView('work');
 $('navChanges').onclick = () => switchView('changes');
+$('navKnowledge').onclick = () => switchView('knowledge');
 $('navSettings').onclick = () => switchView('settings');
+// knowledge: file picker + drag/drop
+$('kbFile').addEventListener('change', (e) => { if (e.target.files[0]) kbUploadFile(e.target.files[0]); e.target.value = ''; });
+(() => {
+  const dz = $('kbDrop');
+  ['dragover', 'dragenter'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) kbUploadFile(f); });
+})();
 
 /* ---------- incidents (SummitAI) ---------- */
 let incidentsCache = [];

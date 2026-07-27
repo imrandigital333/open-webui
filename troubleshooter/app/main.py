@@ -14,7 +14,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import changeplan, cmdreview, db, discovery, healthprobe, itsm, orchestrator, winexec
+from . import (changeplan, cmdreview, db, discovery, healthprobe, itsm,
+               knowledge, orchestrator, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -24,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.74.0"
+APP_VERSION = "2.75.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -497,7 +498,8 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
     validation/corrections, downtime verification, risk + success-rate,
     inferred CR fields, and still-missing mandatory fields."""
     prefix, platform = _plan_server_context(req.server, req.platform)
-    result = await changeplan.refine_plan(prefix + req.plan_text, platform)
+    kb = await knowledge.knowledge_context(req.plan_text, req.server)
+    result = await changeplan.refine_plan(kb + prefix + req.plan_text, platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
@@ -529,7 +531,9 @@ async def re_refine_plan(req: ReRefineRequest, request: Request):
                  "commands, downtime, risk and the success-rate accordingly:")
     lines.append(req.answers)
     prefix, platform = _plan_server_context(req.server, req.platform)
-    result = await changeplan.refine_plan(prefix + "\n".join(lines), platform)
+    body = "\n".join(lines)
+    kb = await knowledge.knowledge_context(body, req.server)
+    result = await changeplan.refine_plan(kb + prefix + body, platform)
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_rerefined",
                             {"chars": len(req.answers), "steps": len(result.get("steps", []))})
     return result
@@ -570,7 +574,98 @@ class ChangeRecommendRequest(BaseModel):
 async def recommend_change_fields(req: ChangeRecommendRequest):
     """Suggest CR attributes + an outline plan from a description (manual flow)."""
     prefix, platform = _plan_server_context(req.server, req.platform)
-    return await changeplan.recommend_change(prefix + req.context, platform)
+    kb = await knowledge.knowledge_context(req.context, req.server)
+    return await changeplan.recommend_change(kb + prefix + req.context, platform)
+
+
+# ---------- knowledge base (RAG) ----------
+
+@app.get("/api/kb/overview")
+async def kb_overview():
+    """KB stats + Haiku model + cumulative token usage for the UI header."""
+    return await asyncio.to_thread(knowledge.overview)
+
+
+@app.get("/api/kb/tree")
+async def kb_tree():
+    """Smart taxonomy: server → OS → category → docs."""
+    return {"tree": await asyncio.to_thread(knowledge.tree)}
+
+
+@app.get("/api/kb/doc/{doc_id}")
+async def kb_doc(doc_id: str):
+    d = await asyncio.to_thread(db.kb_get_doc, doc_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return d
+
+
+@app.delete("/api/kb/doc/{doc_id}")
+async def kb_delete(doc_id: str, request: Request):
+    await asyncio.to_thread(db.kb_delete_doc, doc_id)
+    await asyncio.to_thread(db.audit, _actor(request), "kb_doc_deleted", {"id": doc_id})
+    return {"ok": True}
+
+
+class KbTextRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=200000)
+    title: str = Field("", max_length=200)
+
+
+@app.post("/api/kb/add-text")
+async def kb_add_text(req: KbTextRequest, request: Request):
+    res = await knowledge.ingest(req.text, title_hint=req.title, source_type="text",
+                                 actor=_actor(request))
+    if res.get("ok"):
+        await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
+                                {"id": res["doc"]["id"], "server": res["doc"]["server"],
+                                 "category": res["doc"]["category"]})
+    return res
+
+
+@app.post("/api/kb/upload")
+async def kb_upload(request: Request, file: UploadFile = File(...)):
+    raw = await file.read()
+    if len(raw) > 10_000_000:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
+    try:
+        text = await asyncio.to_thread(changeplan.extract_text, file.filename or "", raw)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    if len((text or "").strip()) < 3:
+        raise HTTPException(status_code=422, detail="Could not read any text from that file.")
+    res = await knowledge.ingest(text, title_hint=file.filename or "", source_type="upload",
+                                 filename=file.filename, actor=_actor(request))
+    if res.get("ok"):
+        await asyncio.to_thread(db.audit, _actor(request), "kb_doc_uploaded",
+                                {"id": res["doc"]["id"], "file": file.filename,
+                                 "server": res["doc"]["server"], "category": res["doc"]["category"]})
+    return res
+
+
+class KbChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    server: str = Field("", max_length=100)
+    mode: str = Field("auto", pattern="^(auto|ask|teach)$")
+
+
+@app.post("/api/kb/chat")
+async def kb_chat(req: KbChatRequest, request: Request):
+    res = await knowledge.chat(req.message, req.server, req.mode)
+    if res.get("mode") == "teach" and res.get("ok"):
+        await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
+                                {"via": "chat", "id": (res.get("stored") or {}).get("id")})
+    return res
+
+
+@app.get("/api/kb/search")
+async def kb_search(q: str, server: str = ""):
+    hits = await knowledge.retrieve(q, server, top_k=8)
+    docs = {d["id"]: d for d in await asyncio.to_thread(db.kb_list_docs)}
+    return {"hits": [{"text": h["text"], "score": h.get("_score"),
+                      "server": h["server"], "os": h["os"], "category": h["category"],
+                      "title": docs.get(h["doc_id"], {}).get("title", "entry"),
+                      "doc_id": h["doc_id"]} for h in hits]}
 
 
 class ChangeCreateRequest(BaseModel):

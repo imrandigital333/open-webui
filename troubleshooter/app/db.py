@@ -103,6 +103,48 @@ audit_t = Table(
     Column("detail", Text),          # JSON
 )
 
+# ---- knowledge base (RAG) ----
+kb_docs_t = Table(
+    "kb_docs", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("title", Text),
+    Column("source_type", String(20)),            # upload | text | chat
+    Column("filename", Text, nullable=True),
+    Column("server", String(100), index=True),    # '' = general / fleet-wide
+    Column("os", String(40)),                      # linux | windows | ''
+    Column("category", String(40), index=True),    # network|application|process|kb_article|config|design|manual|general
+    Column("summary", Text),
+    Column("keywords", Text),                      # JSON list
+    Column("body", Text),                          # full extracted text
+    Column("created_at", Float, index=True),
+    Column("actor", String(120), nullable=True),
+    Column("tokens_in", Integer, nullable=True),
+    Column("tokens_out", Integer, nullable=True),
+)
+
+kb_chunks_t = Table(
+    "kb_chunks", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("doc_id", String(32), index=True),
+    Column("ordinal", Integer),
+    Column("server", String(100), index=True),
+    Column("os", String(40)),
+    Column("category", String(40)),
+    Column("text", Text),
+    Column("keywords", Text),                      # space-joined lowercase tokens for lexical scoring
+)
+
+kb_usage_t = Table(
+    "kb_usage", metadata,
+    Column("id", Integer, primary_key=True),       # single accumulating row, id=1
+    Column("input_tokens", Integer),
+    Column("output_tokens", Integer),
+    Column("cache_read_tokens", Integer),
+    Column("cache_write_tokens", Integer),
+    Column("calls", Integer),
+    Column("model", String(80)),
+)
+
 _engine = None
 
 
@@ -340,3 +382,109 @@ def purge_older_than(days: int) -> dict:
                 shutil.rmtree(target, ignore_errors=True)
                 removed_dirs += 1
     return {"sessions_purged": len(old_ids), "dirs_removed": removed_dirs}
+
+
+# ---------- knowledge base (RAG) ----------
+
+def kb_add_doc(doc: dict) -> None:
+    with engine().begin() as conn:
+        conn.execute(kb_docs_t.insert().values(
+            id=doc["id"], title=doc.get("title", ""),
+            source_type=doc.get("source_type", "text"), filename=doc.get("filename"),
+            server=doc.get("server", ""), os=doc.get("os", ""),
+            category=doc.get("category", "general"), summary=doc.get("summary", ""),
+            keywords=json.dumps(doc.get("keywords", [])), body=doc.get("body", ""),
+            created_at=doc.get("created_at") or time.time(), actor=doc.get("actor"),
+            tokens_in=doc.get("tokens_in"), tokens_out=doc.get("tokens_out"),
+        ))
+
+
+def kb_add_chunks(rows: list[dict]) -> None:
+    if not rows:
+        return
+    with engine().begin() as conn:
+        conn.execute(kb_chunks_t.insert(), rows)
+
+
+def _kb_doc_row(r) -> dict:
+    return {"id": r.id, "title": r.title, "source_type": r.source_type,
+            "filename": r.filename, "server": r.server or "", "os": r.os or "",
+            "category": r.category or "general", "summary": r.summary or "",
+            "keywords": json.loads(r.keywords or "[]"), "created_at": r.created_at,
+            "actor": r.actor, "tokens_in": r.tokens_in, "tokens_out": r.tokens_out}
+
+
+def kb_list_docs() -> list[dict]:
+    with engine().connect() as conn:
+        return [_kb_doc_row(r) for r in conn.execute(
+            select(kb_docs_t).order_by(kb_docs_t.c.created_at.desc()))]
+
+
+def kb_get_doc(doc_id: str) -> dict | None:
+    with engine().connect() as conn:
+        r = conn.execute(select(kb_docs_t).where(kb_docs_t.c.id == doc_id)).first()
+        if not r:
+            return None
+        d = _kb_doc_row(r)
+        d["body"] = r.body or ""
+        return d
+
+
+def kb_delete_doc(doc_id: str) -> None:
+    with engine().begin() as conn:
+        conn.execute(delete(kb_chunks_t).where(kb_chunks_t.c.doc_id == doc_id))
+        conn.execute(delete(kb_docs_t).where(kb_docs_t.c.id == doc_id))
+
+
+def kb_candidate_chunks(server: str = "") -> list[dict]:
+    """Chunks for lexical scoring. When a server is given, return that server's
+    chunks plus general (unscoped) knowledge; otherwise return everything."""
+    with engine().connect() as conn:
+        q = select(kb_chunks_t)
+        if server:
+            q = q.where((kb_chunks_t.c.server == server) | (kb_chunks_t.c.server == "")
+                        | (kb_chunks_t.c.server.is_(None)))
+        return [{"id": r.id, "doc_id": r.doc_id, "ordinal": r.ordinal,
+                 "server": r.server or "", "os": r.os or "", "category": r.category or "",
+                 "text": r.text or "", "keywords": r.keywords or ""}
+                for r in conn.execute(q)]
+
+
+def kb_stats() -> dict:
+    from sqlalchemy import func
+    with engine().connect() as conn:
+        docs = conn.execute(select(func.count()).select_from(kb_docs_t)).scalar() or 0
+        chunks = conn.execute(select(func.count()).select_from(kb_chunks_t)).scalar() or 0
+        servers = conn.execute(
+            select(func.count(func.distinct(kb_docs_t.c.server)))
+            .where(kb_docs_t.c.server != "")).scalar() or 0
+    return {"docs": int(docs), "chunks": int(chunks), "servers": int(servers)}
+
+
+def kb_usage_get() -> dict:
+    with engine().connect() as conn:
+        r = conn.execute(select(kb_usage_t).where(kb_usage_t.c.id == 1)).first()
+    if not r:
+        return {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                "cache_write_tokens": 0, "calls": 0, "model": None}
+    return {"input_tokens": r.input_tokens or 0, "output_tokens": r.output_tokens or 0,
+            "cache_read_tokens": r.cache_read_tokens or 0,
+            "cache_write_tokens": r.cache_write_tokens or 0,
+            "calls": r.calls or 0, "model": r.model}
+
+
+def kb_usage_add(u: dict) -> None:
+    cur = kb_usage_get()
+    vals = {
+        "input_tokens": cur["input_tokens"] + int(u.get("input_tokens") or 0),
+        "output_tokens": cur["output_tokens"] + int(u.get("output_tokens") or 0),
+        "cache_read_tokens": cur["cache_read_tokens"] + int(u.get("cache_read_tokens") or 0),
+        "cache_write_tokens": cur["cache_write_tokens"] + int(u.get("cache_write_tokens") or 0),
+        "calls": cur["calls"] + 1,
+        "model": u.get("model") or cur["model"],
+    }
+    with engine().begin() as conn:
+        if conn.execute(select(kb_usage_t.c.id).where(kb_usage_t.c.id == 1)).first():
+            conn.execute(kb_usage_t.update().where(kb_usage_t.c.id == 1).values(**vals))
+        else:
+            conn.execute(kb_usage_t.insert().values(id=1, **vals))

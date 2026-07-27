@@ -649,6 +649,7 @@ def build_prompt(
     incident_time: str | None = None,
     workdir: Path | None = None,
     past: list[dict] | None = None,
+    knowledge_ctx: str = "",
 ) -> str:
     hints = "\n".join(f"  - {h}" for h in server.log_hints) or "  - (none provided; discover them)"
     services = ", ".join(server.services) or "(unknown)"
@@ -715,9 +716,10 @@ def build_prompt(
             "     and last timestamps of each extract actually cover the failure window,\n"
             "     and re-collect with a wider window or timestamp grep if they don't.")
     wd_section = workdir_section(workdir) if workdir else ""
+    kb_section = f"\n## Environment knowledge base\n{knowledge_ctx}\n" if knowledge_ctx else ""
     return f"""You are an SRE troubleshooting agent investigating a production incident.
 
-{wd_section}
+{wd_section}{kb_section}
 ## Target server
 - Name: {server.name} ({server.description or "no description"})
 - OS: {server.os or "unknown"}
@@ -1016,6 +1018,11 @@ async def run_session(
                 past = await asyncio.to_thread(db.past_incidents, server.name, state.id)
             except Exception:  # noqa: BLE001
                 past = []
+            try:                     # ground the RCA in the knowledge base, if any
+                from . import knowledge
+                kb_ctx = await knowledge.knowledge_context(state.problem, server.name)
+            except Exception:  # noqa: BLE001
+                kb_ctx = ""
             prompt = build_prompt(
                 server,
                 state.problem,
@@ -1024,6 +1031,7 @@ async def run_session(
                 incident_time=state.incident_time,
                 workdir=workdir,
                 past=past,
+                knowledge_ctx=kb_ctx,
             )
         # Debug artifacts: exactly what this run was asked to do (no secrets)
         (workdir / "prompt.txt").write_text(prompt)
