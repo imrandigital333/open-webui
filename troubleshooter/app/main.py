@@ -24,7 +24,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.73.0"
+APP_VERSION = "2.74.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -886,6 +886,15 @@ async def get_session(session_id: str):
         await asyncio.to_thread(db.get_session, session_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    # the sessions table predates the token breakdown/model — overlay those
+    # from the session's outcome.json for a completed (non-live) session
+    if state is None:
+        try:
+            oc = json.loads((_session_workdir(session_id) / "outcome.json").read_text())
+            for k in ("cache_read_tokens", "cache_write_tokens", "model"):
+                out.setdefault(k, oc.get(k))
+        except (OSError, json.JSONDecodeError):
+            pass
     out["feedback"] = await asyncio.to_thread(db.get_feedback, session_id)
     return out
 

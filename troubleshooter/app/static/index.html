@@ -859,6 +859,18 @@
   .modebadge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
                border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; color: var(--muted); }
   .shstats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* per-session token / model usage tiles */
+  .sh-usage { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+  .usg { border: 1px solid var(--border); border-radius: 9px; padding: 6px 11px;
+         background: var(--panel2); min-width: 74px; }
+  .usg .k { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; }
+  .usg .v { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 2px; line-height: 1.1; }
+  .usg .s { font-size: 9.5px; color: var(--muted); margin-top: 1px; }
+  .usg.model { border-color: #2b4a7a; background: rgba(56,139,253,.08); }
+  .usg.model .v { font-size: 12.5px; font-family: var(--mono); color: var(--accent2); }
+  .usg.cache .v { color: var(--purple); }
+  .usg.total { border-color: #2b5a37; }
+  .usg.total .v { color: var(--ok); }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
              border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite;
              vertical-align: -2px; margin-right: 6px; }
@@ -1278,6 +1290,7 @@
           <button class="ghost danger" id="cancelBtn" style="display:none">Cancel</button>
         </span>
       </div>
+      <div id="shUsage" class="sh-usage" style="display:none"></div>
       <div class="stepper" id="stepper" style="display:none"></div>
       <div id="healthStrip">
         <div class="hs-server">
@@ -4798,6 +4811,36 @@ function fmtDur(ms) {
   const s = Math.floor(ms / 1000);
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
+// friendly label for a raw model id (keeps the full id in the tooltip)
+function prettyModel(m) {
+  if (!m) return '—';
+  const s = String(m);
+  const fam = /opus/i.test(s) ? 'Opus' : /sonnet/i.test(s) ? 'Sonnet'
+            : /haiku/i.test(s) ? 'Haiku' : /fable/i.test(s) ? 'Fable' : '';
+  const ver = (s.match(/(\d+)-(\d+)/) || [])[0]?.replace('-', '.');
+  return fam ? `${fam}${ver ? ' ' + ver : ''}` : s;
+}
+// per-session token consumption + model view
+function renderUsage(s) {
+  const el = $('shUsage');
+  const inTok = s.input_tokens || 0, outTok = s.output_tokens || 0;
+  const cr = s.cache_read_tokens || 0, cw = s.cache_write_tokens || 0;
+  const fresh = Math.max(0, inTok - cr - cw);
+  if (!inTok && !outTok && !s.model) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const t = [];
+  if (s.model)
+    t.push(`<div class="usg model" title="${escapeHtml(String(s.model))}"><div class="k">Model</div><div class="v">${escapeHtml(prettyModel(s.model))}</div></div>`);
+  t.push(`<div class="usg"><div class="k">Input</div><div class="v">${fmtTok(inTok)}</div><div class="s">${fmtTok(fresh)} fresh</div></div>`);
+  t.push(`<div class="usg"><div class="k">Output</div><div class="v">${fmtTok(outTok)}</div></div>`);
+  t.push(`<div class="usg cache"><div class="k">Cache read</div><div class="v">${fmtTok(cr)}</div></div>`);
+  t.push(`<div class="usg cache"><div class="k">Cache write</div><div class="v">${fmtTok(cw)}</div></div>`);
+  t.push(`<div class="usg total"><div class="k">Total</div><div class="v">${fmtTok(inTok + outTok)}</div></div>`);
+  if (s.num_turns) t.push(`<div class="usg"><div class="k">Turns</div><div class="v">${s.num_turns}</div></div>`);
+  if (s.cost_usd != null) t.push(`<div class="usg"><div class="k">Cost</div><div class="v">$${Number(s.cost_usd).toFixed(Number(s.cost_usd) < 1 ? 4 : 2)}</div></div>`);
+  el.innerHTML = t.join('');
+  el.style.display = 'flex';
+}
+
 function renderStats(s) {
   clearInterval(elapsedTimer);
   if (s.status === 'running') {
@@ -5095,6 +5138,7 @@ function renderHead(s) {
   $('cancelBtn').style.display = s.status === 'running' ? '' : 'none';
   $('dlReport').style.display = (s.status === 'completed' || s.report) ? '' : 'none';
   renderStats(s);
+  renderUsage(s);
   // investigations run the lean prompt (no phase markers / health duties) —
   // show the stepper only where phase data actually exists
   if (s.mode !== 'investigate' || s.phase) renderStepper(s.mode || 'investigate', s.phase, s.status);
@@ -5174,7 +5218,12 @@ async function onLiveEnd(ev, session, id) {
                          report: ev.report || null, feedback: null };
   if (ev.report) renderReport(ev.report);
   await refreshSessions();
-  const fresh = sessionsCache.find(x => x.id === id);
+  // pull the full detail so the token/model usage panel fills in immediately
+  let fresh = sessionsCache.find(x => x.id === id);
+  try {
+    const full = await (await fetch(`/api/sessions/${id}`)).json();
+    if (full && !full.detail) { fresh = full; currentSessionInfo = { ...currentSessionInfo, ...full }; }
+  } catch { /* fall back to the list entry */ }
   if (fresh) renderHead(fresh);
   if (ev.type === 'completed') showTab('report');
   loadFiles(id);

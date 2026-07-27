@@ -473,6 +473,9 @@ class SessionState:
     num_turns: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    model: str | None = None
     events: list[dict] = field(default_factory=list)
     report: dict | None = None
     error: str | None = None
@@ -533,6 +536,9 @@ class SessionState:
             "num_turns": self.num_turns,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "model": self.model,
             "report": self.report,
             "error": self.error,
         }
@@ -1071,11 +1077,18 @@ async def run_session(
                 state.cost_usd = message.total_cost_usd
                 state.num_turns = message.num_turns
                 usage = getattr(message, "usage", None) or {}
+                fresh_in = usage.get("input_tokens", 0) or 0
+                cache_write = usage.get("cache_creation_input_tokens", 0) or 0
+                cache_read = usage.get("cache_read_input_tokens", 0) or 0
                 # total input = fresh + cache-created + cache-read tokens
-                state.input_tokens = (usage.get("input_tokens", 0)
-                                      + usage.get("cache_creation_input_tokens", 0)
-                                      + usage.get("cache_read_input_tokens", 0)) or None
+                state.input_tokens = (fresh_in + cache_write + cache_read) or None
                 state.output_tokens = usage.get("output_tokens") or None
+                state.cache_read_tokens = cache_read or None
+                state.cache_write_tokens = cache_write or None
+                # the model that actually served the run (fall back to configured)
+                state.model = (getattr(message, "model", None)
+                               or (usage.get("model") if isinstance(usage, dict) else None)
+                               or os.environ.get("TROUBLESHOOTER_MODEL") or None)
                 if message.is_error:
                     state.status = "failed"
                     if message.subtype == "error_max_turns":
@@ -1252,6 +1265,9 @@ def _write_outcome(state: SessionState) -> None:
             "num_turns": state.num_turns,
             "input_tokens": state.input_tokens,
             "output_tokens": state.output_tokens,
+            "cache_read_tokens": state.cache_read_tokens,
+            "cache_write_tokens": state.cache_write_tokens,
+            "model": state.model,
             "confidence": (state.report or {}).get("confidence"),
             "root_cause_layer": (state.report or {}).get("root_cause_layer"),
         }, indent=2))
