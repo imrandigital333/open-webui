@@ -234,27 +234,35 @@ async def retrieve(query: str, server: str = "", top_k: int = 6) -> list[dict]:
     return [dict(c, _score=round(s, 3)) for c, s in scored[:top_k]]
 
 
-async def knowledge_context(query: str, server: str = "", max_chars: int = 2600) -> str:
-    """A compact, cited knowledge block for grounding a plan or an RCA. Empty
-    string when nothing relevant is stored (so callers degrade gracefully)."""
+async def context_and_sources(query: str, server: str = "",
+                              max_chars: int = 2600) -> dict:
+    """Compact cited knowledge block + the distinct source docs it came from.
+    {"text": "", "sources": []} when nothing relevant is stored."""
     hits = await retrieve(query, server, top_k=6)
     if not hits:
-        return ""
-    doc_titles = {}
-    for d in await asyncio.to_thread(db.kb_list_docs):
-        doc_titles[d["id"]] = d["title"]
-    lines, used = [], 0
+        return {"text": "", "sources": []}
+    docs = {d["id"]: d for d in await asyncio.to_thread(db.kb_list_docs)}
+    lines, used, seen = [], 0, {}
     for h in hits:
-        src = doc_titles.get(h["doc_id"], "knowledge")
-        seg = f"- [{src}] {h['text'].strip()}"
-        if used + len(seg) > max_chars:
+        d = docs.get(h["doc_id"], {})
+        title = d.get("title", "knowledge")
+        seg = f"- [{title}] {h['text'].strip()}"
+        if used + len(seg) > max_chars and lines:
             break
         lines.append(seg)
         used += len(seg)
-    if not lines:
-        return ""
-    return ("Relevant knowledge-base entries (from uploaded design docs / notes — "
+        if h["doc_id"] not in seen:
+            seen[h["doc_id"]] = {"id": h["doc_id"], "title": title,
+                                 "server": d.get("server", ""), "os": d.get("os", ""),
+                                 "category": d.get("category", "")}
+    text = ("Relevant knowledge-base entries (from uploaded design docs / notes — "
             "prefer these facts over assumptions):\n" + "\n".join(lines) + "\n")
+    return {"text": text, "sources": list(seen.values())}
+
+
+async def knowledge_context(query: str, server: str = "", max_chars: int = 2600) -> str:
+    """Back-compat: just the grounding text block (see context_and_sources)."""
+    return (await context_and_sources(query, server, max_chars))["text"]
 
 
 # ---------- chat: learn or answer ----------

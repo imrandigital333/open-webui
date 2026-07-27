@@ -1018,9 +1018,13 @@ async def run_session(
                 past = await asyncio.to_thread(db.past_incidents, server.name, state.id)
             except Exception:  # noqa: BLE001
                 past = []
+            kb_ctx = ""
             try:                     # ground the RCA in the knowledge base, if any
                 from . import knowledge
-                kb_ctx = await knowledge.knowledge_context(state.problem, server.name)
+                kb = await knowledge.context_and_sources(state.problem, server.name)
+                kb_ctx = kb["text"]
+                if kb.get("sources"):
+                    await state.emit("knowledge", {"sources": kb["sources"]})
             except Exception:  # noqa: BLE001
                 kb_ctx = ""
             prompt = build_prompt(

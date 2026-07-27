@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.76.0"
+APP_VERSION = "2.77.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -498,8 +498,9 @@ async def refine_change_plan(req: RefinePlanRequest, request: Request):
     validation/corrections, downtime verification, risk + success-rate,
     inferred CR fields, and still-missing mandatory fields."""
     prefix, platform = _plan_server_context(req.server, req.platform)
-    kb = await knowledge.knowledge_context(req.plan_text, req.server)
-    result = await changeplan.refine_plan(kb + prefix + req.plan_text, platform)
+    kb = await knowledge.context_and_sources(req.plan_text, req.server)
+    result = await changeplan.refine_plan(kb["text"] + prefix + req.plan_text, platform)
+    result["kb_sources"] = kb["sources"]
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_refined",
                             {"chars": len(req.plan_text), "steps": len(result.get("steps", [])),
                              "refined_by": result.get("refined_by")})
@@ -532,8 +533,9 @@ async def re_refine_plan(req: ReRefineRequest, request: Request):
     lines.append(req.answers)
     prefix, platform = _plan_server_context(req.server, req.platform)
     body = "\n".join(lines)
-    kb = await knowledge.knowledge_context(body, req.server)
-    result = await changeplan.refine_plan(kb + prefix + body, platform)
+    kb = await knowledge.context_and_sources(body, req.server)
+    result = await changeplan.refine_plan(kb["text"] + prefix + body, platform)
+    result["kb_sources"] = kb["sources"]
     await asyncio.to_thread(db.audit, _actor(request), "change_plan_rerefined",
                             {"chars": len(req.answers), "steps": len(result.get("steps", []))})
     return result
@@ -574,8 +576,10 @@ class ChangeRecommendRequest(BaseModel):
 async def recommend_change_fields(req: ChangeRecommendRequest):
     """Suggest CR attributes + an outline plan from a description (manual flow)."""
     prefix, platform = _plan_server_context(req.server, req.platform)
-    kb = await knowledge.knowledge_context(req.context, req.server)
-    return await changeplan.recommend_change(kb + prefix + req.context, platform)
+    kb = await knowledge.context_and_sources(req.context, req.server)
+    out = await changeplan.recommend_change(kb["text"] + prefix + req.context, platform)
+    out["kb_sources"] = kb["sources"]
+    return out
 
 
 # ---------- knowledge base (RAG) ----------
