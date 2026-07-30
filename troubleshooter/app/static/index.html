@@ -538,6 +538,24 @@
   .kb-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
              flex-wrap: wrap; margin-bottom: 14px; }
   .kb-usage { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* new workspace: left slide-bar (controls+chat+upload+library) · right full canvas */
+  .kb-workspace { display: flex; gap: 14px; align-items: stretch; height: calc(100vh - 200px); min-height: 460px; }
+  .kb-side { flex: 0 0 360px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+             transition: margin-left .2s, opacity .2s; }
+  .kb-side.hide { display: none; }
+  .kb-side-sec { border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+                 padding: 10px 12px; }
+  .kb-side-h { font-weight: 700; font-size: 12.5px; margin-bottom: 4px; cursor: default; }
+  details.kb-side-sec > summary.kb-side-h { cursor: pointer; list-style: revert; margin-bottom: 0; }
+  details.kb-side-sec[open] > summary.kb-side-h { margin-bottom: 8px; }
+  .kb-side .kb-chat-panel { flex: 1; display: flex; flex-direction: column; min-height: 240px; }
+  .kb-side .kb-chat-body { flex: 1; max-height: none; }
+  .kb-canvas-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .kb-canvas-wrap .kb-arch-stage { flex: 1; min-height: 0; }
+  .kb-canvas-wrap .kb-arch-canvas { max-height: none; height: 100%; }
+  .kb-canvas-wrap .kb-arch-detail { max-height: none; }
+  @media (max-width: 900px) { .kb-workspace { flex-direction: column; height: auto; }
+    .kb-side { flex: none; width: 100%; } .kb-canvas-wrap .kb-arch-canvas { min-height: 320px; } }
   .kb-layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
   .kb-tree-panel { max-height: calc(100vh - 200px); overflow: auto; position: sticky; top: 16px; }
   .kb-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -1092,67 +1110,66 @@
 
 <div id="viewKnowledge" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div class="kb-head">
-    <div>
-      <h2 style="margin:0">Knowledge base</h2>
-      <div class="hint">Upload design docs, server configs and notes. Everything is indexed by
-        <b>Server → OS → category</b> and used to ground change plans and incident troubleshooting.</div>
+    <div style="display:flex;align-items:center;gap:11px;min-width:0">
+      <button class="ghost" id="kbSideToggle" title="Show / hide the panel" style="width:auto">☰ Panel</button>
+      <div style="min-width:0">
+        <h2 style="margin:0">Knowledge base</h2>
+        <div class="hint">Indexed by <b>Server → OS → category</b> · grounds change plans &amp; incident RCAs.</div>
+      </div>
     </div>
     <div class="kb-usage" id="kbUsage"></div>
   </div>
-  <div class="kb-layout">
-    <div class="panel kb-tree-panel">
-      <h2>Library <span class="count" id="kbDocCount">0</span></h2>
-      <div class="hint" id="kbTreeStats" style="margin-bottom:8px"></div>
-      <input id="kbFilter" placeholder="filter…" style="margin-bottom:8px" oninput="kbRenderTree()">
-      <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
-    </div>
-    <div class="kb-main">
-      <div class="panel kb-arch-panel">
-        <h2>Service map</h2>
-        <div class="hint">Live topology from inventory, discovery and the knowledge base — built <b>locally, no AI tokens</b>. Click a node for details, or ✨ enhance with AI for a richer map.</div>
-        <div style="display:flex;gap:8px;margin:8px 0;align-items:center;flex-wrap:wrap">
-          <select id="kbArchServer" style="max-width:230px;margin:0"></select>
-          <button class="ci-run" id="kbArchBtn" onclick="kbBuildArch(false)">Build map</button>
-          <button class="ci-run" id="kbArchAiBtn" style="background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)">✨ AI enhance <span class="kb-model-chip" id="kbArchModel" style="margin-left:4px"></span></button>
-          <span class="hint" id="kbArchMsg"></span>
+  <div class="kb-workspace" id="kbWorkspace">
+    <aside class="kb-side" id="kbSide">
+      <div class="kb-side-sec">
+        <div class="kb-side-h">Service map</div>
+        <select id="kbArchServer" style="width:100%;margin:0 0 6px"></select>
+        <div style="display:flex;gap:6px">
+          <button class="ci-run" id="kbArchBtn" style="flex:1" onclick="kbBuildArch(false)">Build map</button>
+          <button class="ci-run" id="kbArchAiBtn" style="background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Richer map using AI">✨ AI <span class="kb-model-chip" id="kbArchModel"></span></button>
         </div>
-        <div class="kb-arch-stage">
-          <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Select a server and build the map.</div></div>
-          <div id="kbArchDetail" class="kb-arch-detail" style="display:none"></div>
-        </div>
-        <div class="hint" id="kbArchNotes" style="margin-top:6px"></div>
+        <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
       </div>
-      <div class="panel">
-        <h2>Add knowledge</h2>
-        <div id="kbDrop" class="kb-drop">
-          <div><b>Drop files</b> here or <label class="link" for="kbFile">choose files</label>
-            <input type="file" id="kbFile" multiple style="display:none"
-              accept=".txt,.md,.markdown,.log,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.xml,.rtf,.pdf,.docx,.doc,.xlsx,.xls,.pptx"></div>
-          <div class="hint">text · PDF · Word (.docx/.doc) · Excel (.xlsx/.xls) · PowerPoint (.pptx) — design docs, configs, runbooks · bulk upload supported</div>
-          <div id="kbProg" class="kb-prog" style="display:none"><div class="kb-prog-bar"><i></i></div><span></span></div>
-        </div>
-        <div style="margin-top:10px">
-          <textarea id="kbText" placeholder="…or paste notes / configuration / a fact to remember (e.g. 'web-01 runs Apache 2.4 behind lb-01; TLS on 443 via /etc/httpd/conf.d/ssl.conf')" style="min-height:80px"></textarea>
-          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-            <input id="kbTitle" placeholder="optional title" style="flex:1;margin:0">
-            <button class="primary" style="width:auto;margin:0" id="kbAddBtn" onclick="kbAddText()">Store</button>
-          </div>
-          <div id="kbAddMsg" class="hint" style="margin-top:6px"></div>
-        </div>
-      </div>
-      <div class="panel kb-chat-panel">
-        <h2><span class="rc-ava" style="width:24px;height:24px;display:inline-grid" id="kbAva"></span>
-          Knowledge assistant <span class="kb-model-chip" id="kbModelChip"></span></h2>
-        <div class="hint" style="margin-bottom:8px">Ask a question, or just tell me a fact and I'll remember it.
-          <span id="kbScopeNote"></span></div>
+      <div class="kb-side-sec kb-chat-panel">
+        <div class="kb-side-h"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid;vertical-align:-6px" id="kbAva"></span>
+          Assistant <span class="kb-model-chip" id="kbModelChip"></span></div>
         <div id="kbChatBody" class="kb-chat-body"></div>
         <div class="kb-chat-in">
-          <select id="kbChatServer" title="Scope questions to a server" style="max-width:150px;margin:0"></select>
-          <input id="kbChatIn" placeholder="Ask, or state a fact to store…" autocomplete="off"
+          <select id="kbChatServer" title="Scope questions to a server" style="max-width:110px;margin:0"></select>
+          <input id="kbChatIn" placeholder="Ask, or state a fact…" autocomplete="off"
             onkeydown="if(event.key==='Enter')kbSend()">
           <button class="ci-run" onclick="kbSend()">Send</button>
         </div>
       </div>
+      <details class="kb-side-sec" open>
+        <summary class="kb-side-h">Add knowledge</summary>
+        <div id="kbDrop" class="kb-drop" style="margin-top:8px">
+          <div><b>Drop files</b> or <label class="link" for="kbFile">choose</label>
+            <input type="file" id="kbFile" multiple style="display:none"
+              accept=".txt,.md,.markdown,.log,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.xml,.rtf,.pdf,.docx,.doc,.xlsx,.xls,.pptx"></div>
+          <div class="hint">text · PDF · Word · Excel · PowerPoint · bulk</div>
+          <div id="kbProg" class="kb-prog" style="display:none"><div class="kb-prog-bar"><i></i></div><span></span></div>
+        </div>
+        <textarea id="kbText" style="min-height:64px;margin-top:8px" placeholder="…or paste notes / config / a fact to remember"></textarea>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+          <input id="kbTitle" placeholder="optional title" style="flex:1;margin:0">
+          <button class="primary" style="width:auto;margin:0" id="kbAddBtn" onclick="kbAddText()">Store</button>
+        </div>
+        <div id="kbAddMsg" class="hint" style="margin-top:6px"></div>
+      </details>
+      <details class="kb-side-sec">
+        <summary class="kb-side-h">Library <span class="count" id="kbDocCount">0</span></summary>
+        <div class="hint" id="kbTreeStats" style="margin:6px 0"></div>
+        <input id="kbFilter" placeholder="filter…" style="margin-bottom:8px" oninput="kbRenderTree()">
+        <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
+      </details>
+    </aside>
+    <div class="kb-canvas-wrap">
+      <div class="kb-arch-stage">
+        <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Ask the assistant about a server, or pick one and press <b>Build map</b>.</div></div>
+        <div id="kbArchDetail" class="kb-arch-detail" style="display:none"></div>
+      </div>
+      <div class="hint" id="kbArchNotes" style="margin-top:6px;flex:0 0 auto"></div>
     </div>
   </div>
 </div>
@@ -3327,6 +3344,7 @@ $('navWork').onclick = () => switchView('work');
 $('navChanges').onclick = () => switchView('changes');
 $('navKnowledge').onclick = () => switchView('knowledge');
 $('navSettings').onclick = () => switchView('settings');
+$('kbSideToggle').onclick = () => $('kbSide').classList.toggle('hide');
 // knowledge: file picker + drag/drop
 $('kbFile').addEventListener('change', (e) => { kbUploadFiles([...e.target.files]); e.target.value = ''; });
 (() => {
