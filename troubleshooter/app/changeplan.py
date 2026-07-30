@@ -624,37 +624,169 @@ async def verify_step(step: dict, result: dict, change_title: str = "",
             "verified_by": "ai"}
 
 
+_TEXT_EXT = (".txt", ".md", ".markdown", ".text", ".log", ".csv", ".tsv", ".rtf",
+             ".json", ".yaml", ".yml", ".ini", ".conf", ".cfg", ".xml", ".html", ".htm")
+
+
 def extract_text(filename: str, data: bytes) -> str:
-    """Best-effort text extraction from an uploaded implementation-plan file.
-    Text/markdown always work; docx/pdf need optional libs (graceful message)."""
+    """Best-effort LOCAL text extraction (no AI) from an uploaded file. Handles
+    plain text, PDF (with OCR fallback for scans), Word (.docx/.doc), Excel
+    (.xlsx/.xls) and PowerPoint (.pptx). Pure-Python formats need their lib
+    installed; .doc and OCR need a system tool (clear message if absent)."""
     name = (filename or "").lower()
-    if name.endswith((".txt", ".md", ".markdown", ".text", ".log", ".csv", ".rtf")):
+    if name.endswith(_TEXT_EXT):
         return data.decode("utf-8", errors="replace")
     if name.endswith(".docx"):
-        try:
-            import io
-            from docx import Document
-            doc = Document(io.BytesIO(data))
-            parts = [p.text for p in doc.paragraphs]
-            for tbl in doc.tables:
-                for row in tbl.rows:
-                    parts.append("\t".join(c.text for c in row.cells))
-            return "\n".join(p for p in parts if p is not None)
-        except ImportError:
-            raise RuntimeError("This server can't read .docx yet (python-docx not installed)."
-                               " Paste the plan text, or install python-docx.")
+        return _extract_docx(data)
+    if name.endswith(".doc"):
+        return _extract_doc(data)
     if name.endswith(".pdf"):
-        try:
-            import io
-            from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(data))
-            return "\n".join((pg.extract_text() or "") for pg in reader.pages)
-        except ImportError:
-            raise RuntimeError("This server can't read .pdf yet (pypdf not installed)."
-                               " Paste the plan text, or install pypdf.")
-    # unknown extension — try utf-8 and hope it's text
-    try:
+        return _extract_pdf(data)
+    if name.endswith(".xlsx"):
+        return _extract_xlsx(data)
+    if name.endswith(".xls"):
+        return _extract_xls(data)
+    if name.endswith(".pptx"):
+        return _extract_pptx(data)
+    try:                                     # unknown extension — assume text
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        raise RuntimeError(f"Unsupported file type: {filename}. Upload .txt, .md, .docx or .pdf,"
-                           " or paste the plan text.")
+        raise RuntimeError(
+            f"Unsupported file type: {filename}. Upload text, .pdf, .docx/.doc, "
+            ".xlsx/.xls or .pptx — or paste the content.")
+
+
+def _extract_docx(data: bytes) -> str:
+    try:
+        import io
+        from docx import Document
+    except ImportError:
+        raise RuntimeError("Can't read .docx (python-docx not installed).")
+    doc = Document(io.BytesIO(data))
+    parts = [p.text for p in doc.paragraphs]
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            parts.append("\t".join(c.text for c in row.cells))
+    return "\n".join(p for p in parts if p is not None)
+
+
+def _extract_pdf(data: bytes) -> str:
+    try:
+        import io
+        from pypdf import PdfReader
+    except ImportError:
+        raise RuntimeError("Can't read .pdf (pypdf not installed).")
+    reader = PdfReader(io.BytesIO(data))
+    text = "\n".join((pg.extract_text() or "") for pg in reader.pages)
+    if text.strip():
+        return text
+    ocr = _ocr_pdf(data)                     # scanned/image-only PDF → OCR
+    if ocr.strip():
+        return ocr
+    raise RuntimeError("This PDF has no extractable text (likely a scan). Install OCR "
+                       "(tesseract + poppler + pytesseract, pdf2image) or upload a text-based file.")
+
+
+def _ocr_pdf(data: bytes) -> str:
+    try:
+        from pdf2image import convert_from_bytes
+        import pytesseract
+    except ImportError:
+        return ""
+    try:
+        return "\n".join(pytesseract.image_to_string(im)
+                         for im in convert_from_bytes(data, dpi=200))
+    except Exception:  # noqa: BLE001 - tesseract/poppler missing or bad PDF
+        return ""
+
+
+def _extract_xlsx(data: bytes) -> str:
+    try:
+        import io
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("Can't read .xlsx (openpyxl not installed).")
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    out = []
+    for ws in wb.worksheets:
+        out.append(f"# Sheet: {ws.title}")
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) for c in row if c is not None and str(c).strip()]
+            if cells:
+                out.append("\t".join(cells))
+    return "\n".join(out)
+
+
+def _extract_xls(data: bytes) -> str:
+    try:
+        import xlrd
+    except ImportError:
+        raise RuntimeError("Can't read legacy .xls (xlrd not installed). Save it as .xlsx.")
+    book = xlrd.open_workbook(file_contents=data)
+    out = []
+    for sh in book.sheets():
+        out.append(f"# Sheet: {sh.name}")
+        for r in range(sh.nrows):
+            cells = [str(sh.cell_value(r, c)) for c in range(sh.ncols)
+                     if str(sh.cell_value(r, c)).strip()]
+            if cells:
+                out.append("\t".join(cells))
+    return "\n".join(out)
+
+
+def _extract_pptx(data: bytes) -> str:
+    try:
+        import io
+        from pptx import Presentation
+    except ImportError:
+        raise RuntimeError("Can't read .pptx (python-pptx not installed).")
+    prs = Presentation(io.BytesIO(data))
+    out = []
+    for i, slide in enumerate(prs.slides, 1):
+        out.append(f"# Slide {i}")
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    t = "".join(run.text for run in para.runs)
+                    if t.strip():
+                        out.append(t)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    out.append("\t".join(c.text for c in row.cells))
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            note = slide.notes_slide.notes_text_frame.text
+            if note.strip():
+                out.append("[notes] " + note)
+    return "\n".join(out)
+
+
+def _extract_doc(data: bytes) -> str:
+    """Legacy binary .doc — needs a system converter (antiword or LibreOffice)."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    if shutil.which("antiword"):
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
+            f.write(data)
+            path = f.name
+        try:
+            r = subprocess.run(["antiword", path], capture_output=True, timeout=60)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.decode("utf-8", errors="replace")
+        finally:
+            os.unlink(path)
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice:
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "in.doc")
+            with open(src, "wb") as f:
+                f.write(data)
+            subprocess.run([soffice, "--headless", "--convert-to", "txt:Text",
+                            "--outdir", d, src], capture_output=True, timeout=120)
+            out = os.path.join(d, "in.txt")
+            if os.path.exists(out):
+                with open(out, encoding="utf-8", errors="replace") as f:
+                    return f.read()
+    raise RuntimeError("Reading legacy .doc needs 'antiword' or LibreOffice on the server "
+                       "(e.g. apt install antiword) — or save the file as .docx / .pdf.")

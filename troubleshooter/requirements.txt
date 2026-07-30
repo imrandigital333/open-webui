@@ -3,10 +3,19 @@ uvicorn[standard]>=0.30.0
 PyYAML>=6.0
 claude-agent-sdk>=0.1.0
 SQLAlchemy>=2.0
-# Optional: lets the Change Assistant read uploaded .docx / .pdf implementation
-# plans. Without them, plain-text/markdown uploads and pasting still work.
+# Document ingestion for the Change Assistant + Knowledge base (all LOCAL, no
+# AI): Word, PDF, Excel and PowerPoint. Plain-text/markdown work without these.
 python-docx>=1.1.0
 pypdf>=4.0.0
+openpyxl>=3.1.0            # .xlsx
+xlrd>=2.0.1               # legacy .xls
+python-pptx>=0.6.23       # .pptx
+# Optional OCR for scanned/image-only PDFs — also needs the system packages
+# 'tesseract-ocr' and 'poppler-utils'. Skipped gracefully if not installed.
+# pytesseract>=0.3.10
+# pdf2image>=1.17.0
+# Legacy binary .doc needs a system tool instead of a pip package:
+#   apt install antiword   (or a headless LibreOffice/soffice on the box)
 # Optional: Windows Server troubleshooting over WinRM / PowerShell Remoting.
 # Only needed if the inventory contains platform: windows servers; Linux-only
 # deployments can skip it (the WinRM paths degrade with a clear message).
