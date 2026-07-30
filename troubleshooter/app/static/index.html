@@ -2966,6 +2966,14 @@ async function kbSend() {
   if (!text) return;
   inp.value = '';
   kbMsg(text, 'user');
+  // live service map: if the question names or is scoped to a server, draw its
+  // map in the side canvas automatically (local build — no tokens)
+  const target = matchServerFromText(text) || $('kbChatServer').value || '';
+  const validTarget = target && (inventory || []).some(s => s.name === target);
+  if (validTarget && (target !== $('kbArchServer').value || !kbArchData)) {
+    $('kbArchServer').value = target;
+    kbBuildArch(false);          // render this server's map live in the canvas
+  }
   $('kbAva')?.classList.add('think');
   const thinking = kbMsg('…', 'bot');
   try {
