@@ -303,6 +303,37 @@ _Q_START_RE = re.compile(
 def _is_question(message: str) -> bool:
     return "?" in message or bool(_Q_START_RE.match(message or ""))
 
+
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _match_server_ref(message: str) -> str:
+    """If the whole message is just a server identifier (an exact inventory name,
+    an exact host, or a lone IPv4 that equals a server's host), return that
+    server's name — so typing "10.70.5.44" or "BIALSRV-GENCL2" is treated as
+    *asking about that server*, not as a fact to store."""
+    m = (message or "").strip()
+    if not m or len(m.split()) > 1:
+        return ""
+    try:
+        inv = load_inventory()
+    except Exception:  # noqa: BLE001
+        return ""
+    low = m.lower()
+    for name, srv in inv.items():
+        if low == str(name).lower():
+            return name
+    for name, srv in inv.items():
+        if low == str(getattr(srv, "host", "") or "").lower():
+            return name
+    # a bare IPv4 that matches a server host (redundant with the host check but
+    # explicit so partial/aliased hosts don't accidentally teach an IP)
+    if _IPV4_RE.match(m):
+        for name, srv in inv.items():
+            if m == str(getattr(srv, "host", "") or ""):
+                return name
+    return ""
+
 _ANSWER_PROMPT = """You are the knowledge-base assistant for an airport IT operations team. Answer
 the operator's question USING ONLY the knowledge entries below. If they do not
 contain the answer, say so plainly and suggest what to upload. Be concise and
@@ -319,6 +350,17 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
     message = (message or "").strip()
     if not message:
         return {"ok": False, "error": "Empty message"}
+    # A bare server identifier ("10.70.5.44" / "BIALSRV-GENCL2") means "tell me
+    # about this server" — never store it as a fact. Scope the query to that
+    # server and broaden it so we surface its OS, services, ports, connections
+    # and configuration from what we already know.
+    ref = _match_server_ref(message)
+    if ref:
+        mode = "ask"
+        server = ref
+        message = (f"Summary of server {ref}: its operating system, running "
+                   "services and processes, listening ports, network "
+                   "connections and configuration.")
     if mode == "auto":
         mode = "ask" if _is_question(message) else "teach"
 
