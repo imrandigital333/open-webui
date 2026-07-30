@@ -614,6 +614,11 @@
   .arch-src.cap  { color: #8fb8ff; background: rgba(56,139,253,.15); border-color: rgba(56,139,253,.45); }
   .arch-src.ai   { color: #d2b3ff; background: rgba(163,113,247,.16); border-color: rgba(163,113,247,.45); }
   .arch-src.none { color: var(--muted); background: rgba(255,255,255,.05); border-color: var(--border); }
+  .arch-mt { font: 700 10.5px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid transparent;
+    white-space: nowrap; }
+  .arch-mt.vm   { color: #d2b3ff; background: rgba(163,113,247,.14); border-color: rgba(163,113,247,.4); }
+  .arch-mt.phys { color: #ffd7a3; background: rgba(219,151,60,.15); border-color: rgba(219,151,60,.45); }
+  .arch-mt.ctr  { color: #8fd3ff; background: rgba(56,169,253,.14); border-color: rgba(56,169,253,.4); }
   .arch-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; }
   .arch-leg { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--muted);
     text-transform: capitalize; }
@@ -3135,6 +3140,10 @@ function kbArchHeader(g) {
   const srcMap = { live: ['LIVE', 'live'], cached: ['CAPTURED', 'cap'], ai: ['AI DRAFT', 'ai'], local: ['LOCAL', 'cap'], none: ['NO MAP', 'none'] };
   const [srcTxt, srcCls] = srcMap[g.source] || ['MAP', 'cap'];
   const when = fmtCaptured(g.cached_at);
+  const h = g.host || {};
+  const mtIcon = h.machine_type === 'Physical' ? '🖥️' : h.machine_type === 'Container' ? '📦' : '🧩';
+  const mtCls = h.machine_type === 'Physical' ? 'phys' : h.machine_type === 'Container' ? 'ctr' : 'vm';
+  const mt = h.machine_type ? `<span class="arch-mt ${mtCls}" title="${escapeHtml(h.hardware || '')}">${mtIcon} ${escapeHtml(h.machine_type)}${h.virtualization && h.virtualization !== 'Bare metal' ? ' · ' + escapeHtml(h.virtualization) : ''}</span>` : '';
   const types = [...new Set((g.nodes || []).map(n => n.type))];
   const legend = types.map(t => `<span class="arch-leg"><span class="ic">${ARCH_ICON[t] || '•'}</span>${escapeHtml(t)}</span>`).join('');
   return `<div class="arch-topbar">
@@ -3145,6 +3154,7 @@ function kbArchHeader(g) {
         <div class="arch-tb-sub">${when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map')}</div>
       </div>
       <span class="arch-src ${srcCls}">${srcTxt}</span>
+      ${mt}
     </div>
     <div class="arch-legend">${legend}</div>
   </div>`;
@@ -3245,6 +3255,8 @@ function kbArchSelect(i) {
   if (isServer && g.host && Object.keys(g.host).length) {
     const h = g.host, r = [];
     if (h.os) r.push(['OS', h.os + (h.kernel ? ' · ' + h.kernel : '')]);
+    if (h.machine_type) r.push(['Type', h.machine_type + (h.virtualization ? ' · ' + h.virtualization : '')]);
+    if (h.hardware) r.push(['Hardware', h.hardware]);
     if (h.uptime) r.push(['Uptime', h.uptime]);
     if (h.cpu_cores) r.push(['CPU', h.cpu_cores + ' cores' + (h.cpu_model ? ' · ' + h.cpu_model : '')]);
     if (h.mem_total) r.push(['Memory', `${h.mem_used || 0}/${h.mem_total} MB (${Math.round((h.mem_used || 0) / h.mem_total * 100)}%)`]);

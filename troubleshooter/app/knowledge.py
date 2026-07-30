@@ -580,6 +580,11 @@ def _topology_text(server: str, srv, listen: list, estab: list, services: list,
         lines.append("Host configuration:")
         if facts.get("os"):
             lines.append(f"- OS: {facts['os']}" + (f" (kernel {facts['kernel']})" if facts.get("kernel") else ""))
+        if facts.get("machine_type"):
+            lines.append(f"- Machine type: {facts['machine_type']}"
+                         + (f" · virtualization: {facts['virtualization']}" if facts.get("virtualization") else ""))
+        if facts.get("hardware"):
+            lines.append(f"- Hardware: {facts['hardware']}")
         if facts.get("uptime"):
             lines.append(f"- Uptime: {facts['uptime']}")
         if facts.get("cpu_cores"):
@@ -625,6 +630,8 @@ _WIN_TOPO_PS = (
     "'@@os'; (Get-CimInstance Win32_OperatingSystem).Caption; [string][Environment]::OSVersion.Version;"
     "'@@cpu'; (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors; "
     "(Get-CimInstance Win32_Processor | Select-Object -First 1 -Expand Name);"
+    "'@@virt'; $cs=Get-CimInstance Win32_ComputerSystem; $cs.Manufacturer; $cs.Model; "
+    "[string]$cs.HypervisorPresent;"
     "'@@mem'; $o=Get-CimInstance Win32_OperatingSystem; "
     "\"mem $([math]::round($o.TotalVisibleMemorySize/1024)) "
     "$([math]::round(($o.TotalVisibleMemorySize-$o.FreePhysicalMemory)/1024))\";"
@@ -642,6 +649,9 @@ _WIN_TOPO_PS = (
 _LNX_TOPO_CMD = (
     "echo @@os; . /etc/os-release 2>/dev/null; echo \"$PRETTY_NAME\"; uname -r; uptime -p 2>/dev/null; "
     "echo @@cpu; nproc; grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ //'; "
+    "echo @@virt; { systemd-detect-virt 2>/dev/null || echo unknown; }; "
+    "sudo -n dmidecode -s system-manufacturer 2>/dev/null; "
+    "sudo -n dmidecode -s system-product-name 2>/dev/null; "
     "echo @@mem; free -m 2>/dev/null | awk '/^Mem:/{print \"mem \"$2\" \"$3} /^Swap:/{print \"swap \"$2\" \"$3}'; "
     "echo @@disk; df -hPT -x tmpfs -x devtmpfs -x overlay 2>/dev/null | tail -n +2; "
     "echo @@listen; { sudo -n ss -ltnp 2>/dev/null || ss -ltnp 2>/dev/null; }; "
@@ -655,7 +665,74 @@ def _mb(mb: int) -> str:
     return f"{mb/1024:.1f} GB" if mb and mb >= 1024 else f"{mb} MB"
 
 
-def _parse_host_facts(sec: dict) -> dict:
+# systemd-detect-virt tokens → friendly platform names
+_VIRT_MAP = {
+    "vmware": "VMware", "kvm": "KVM/QEMU", "qemu": "QEMU", "xen": "Xen",
+    "microsoft": "Microsoft Hyper-V", "hyperv": "Microsoft Hyper-V",
+    "oracle": "Oracle VirtualBox", "virtualbox": "Oracle VirtualBox",
+    "parallels": "Parallels", "bochs": "Bochs", "uml": "User-mode Linux",
+    "amazon": "Amazon EC2 (Nitro)", "google": "Google Compute Engine",
+    "bhyve": "bhyve", "acrn": "ACRN", "powervm": "IBM PowerVM",
+    "lxc": "LXC", "lxc-libvirt": "LXC (libvirt)", "systemd-nspawn": "systemd-nspawn",
+    "docker": "Docker", "podman": "Podman", "openvz": "OpenVZ", "wsl": "WSL", "rkt": "rkt",
+}
+_VIRT_CONTAINERS = {"lxc", "lxc-libvirt", "systemd-nspawn", "docker", "podman",
+                    "openvz", "wsl", "rkt", "container-other"}
+_DMI_JUNK = {"", "none", "not specified", "not available", "system product name",
+             "system manufacturer", "to be filled by o.e.m.", "default string",
+             "o.e.m.", "unknown"}
+
+
+def _classify_virt_linux(f: dict, vlines: list) -> None:
+    tok = (vlines[0].lower() if vlines else "").strip()
+    if tok in ("none", ""):
+        f["machine_type"], f["virtualization"] = "Physical", "Bare metal"
+    elif tok == "unknown":
+        f["machine_type"], f["virtualization"] = "Unknown", ""
+    elif tok in _VIRT_CONTAINERS:
+        f["machine_type"], f["virtualization"] = "Container", _VIRT_MAP.get(tok, tok)
+    else:
+        f["machine_type"], f["virtualization"] = "Virtual machine", _VIRT_MAP.get(tok, tok.upper())
+    # optional dmidecode manufacturer + product (needs sudo; ignored if junk)
+    extra = [x.strip() for x in vlines[1:]
+             if x.strip() and x.strip().lower() not in _DMI_JUNK]
+    if extra:
+        f["hardware"] = " · ".join(extra[:2])[:90]
+
+
+def _classify_virt_windows(f: dict, vlines: list) -> None:
+    manuf = vlines[0].strip() if vlines else ""
+    model = vlines[1].strip() if len(vlines) > 1 else ""
+    hyperv = vlines[2].strip().lower() if len(vlines) > 2 else ""
+    blob = f"{manuf} {model}".lower()
+    plat = ""
+    if "vmware" in blob:
+        plat = "VMware"
+    elif "hyper-v" in blob or ("microsoft" in blob and "virtual" in blob):
+        plat = "Microsoft Hyper-V"
+    elif "virtualbox" in blob:
+        plat = "Oracle VirtualBox"
+    elif "kvm" in blob or "qemu" in blob:
+        plat = "KVM/QEMU"
+    elif "xen" in blob:
+        plat = "Xen"
+    elif "amazon" in blob or "ec2" in blob:
+        plat = "Amazon EC2"
+    elif "google" in blob:
+        plat = "Google Compute Engine"
+    is_vm = bool(plat) or "virtual" in blob
+    if is_vm:
+        f["machine_type"], f["virtualization"] = "Virtual machine", plat or "Virtual"
+    else:
+        f["machine_type"] = "Physical"
+        f["virtualization"] = ("Bare metal (Hyper-V role present)"
+                               if hyperv == "true" else "Bare metal")
+    hw = " · ".join(x for x in (manuf, model) if x and x.lower() not in _DMI_JUNK)
+    if hw:
+        f["hardware"] = hw[:90]
+
+
+def _parse_host_facts(sec: dict, is_windows: bool = False) -> dict:
     f: dict = {}
     osl = [x for x in sec.get("os", "").splitlines() if x.strip()]
     if osl:
@@ -669,6 +746,9 @@ def _parse_host_facts(sec: dict) -> dict:
         f["cpu_cores"] = cpul[0].strip()
     if len(cpul) > 1:
         f["cpu_model"] = cpul[1].strip()
+    vlines = [x for x in sec.get("virt", "").splitlines() if x.strip()]
+    if vlines:
+        (_classify_virt_windows if is_windows else _classify_virt_linux)(f, vlines)
     for ln in sec.get("mem", "").splitlines():
         p = ln.split()
         if len(p) >= 3 and p[0] == "mem" and p[1].isdigit():
@@ -719,7 +799,7 @@ async def live_architecture(server_name: str) -> dict:
         return {"ok": False, "error": f"probe failed: {type(exc).__name__}: {exc}"[:200]}
 
     services = [s for s in sec.get("svc", "").splitlines() if s.strip()][:40]
-    facts = _parse_host_facts(sec)
+    facts = _parse_host_facts(sec, is_windows=srv.is_windows)
     g = _build_live_graph(srv, listen, estab, facts)
     g["host"] = facts
 
