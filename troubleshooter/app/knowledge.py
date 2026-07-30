@@ -946,13 +946,15 @@ async def architecture(server_name: str, use_ai: bool = False) -> dict:
             # reconnection to the server, no AI
             g = cached
             g["source"] = "cached"
-            when = cached.get("cached_at")
-            g["notes"] = ("Showing the last live probe"
-                          + (f" (stored data)." if when else ".")
-                          + " Run 🔎 Live probe to refresh from the server.")
+            g["notes"] = ("Showing the last captured live probe. "
+                          "Run 🔎 Live probe to refresh from the server.")
         else:
-            g = _sanitize_graph(local_architecture(server_name, srv, facts, docs_text), server_name)
-            g["source"] = "local"
+            # No service map has been captured for this server. We deliberately do
+            # NOT synthesize a basic map from inventory — the UI shows an empty
+            # state with a button to build one by connecting (live probe).
+            g = {"nodes": [], "edges": [], "source": "none",
+                 "notes": f"No service map has been captured for {server_name} yet. "
+                          "Run a live probe to connect to the device and map it."}
 
     # overlay live health status onto the server node (from the latest snapshot)
     try:
