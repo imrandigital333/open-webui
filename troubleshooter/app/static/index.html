@@ -568,24 +568,40 @@
   .kb-doc:hover .del { opacity: 1; }
   .kb-doc .del:hover { color: var(--err); }
   .kb-count { color: var(--muted); font-weight: 400; font-size: 11px; }
-  /* architecture view */
-  .kb-arch-canvas { border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
-    overflow: auto; max-height: 60vh; min-height: 120px; }
+  /* architecture / service map */
+  .kb-arch-stage { display: flex; gap: 12px; align-items: stretch; }
+  .kb-arch-canvas { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--bg); overflow: auto; max-height: 62vh; min-height: 140px; }
   .kb-arch-canvas svg { display: block; }
   .kb-arch-canvas .empty { padding: 24px; }
+  .kb-arch-detail { flex: 0 0 260px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel2); padding: 12px 14px; max-height: 62vh; overflow: auto; }
+  .kb-arch-detail h4 { margin: 0 0 2px; font-size: 14px; }
+  .kb-arch-detail .k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 700; margin-top: 10px; }
+  .kb-arch-detail .v { font-size: 12.5px; margin-top: 2px; word-break: break-word; }
   .arch-node { cursor: pointer; }
-  .arch-node rect { fill: var(--panel2); stroke: var(--border); stroke-width: 1.5; rx: 8; transition: stroke .15s; }
-  .arch-node:hover rect { stroke: var(--accent); }
-  .arch-node .lbl { fill: var(--text); font: 700 12px var(--font, sans-serif); }
-  .arch-node .meta { fill: var(--muted); font: 10.5px var(--mono); }
-  .arch-node.t-server rect { fill: rgba(56,139,253,.10); stroke: var(--accent2); stroke-width: 2; }
-  .arch-node.t-loadbalancer rect { stroke: #02C39A; }
-  .arch-node.t-database rect, .arch-node.t-storage rect { stroke: var(--purple); }
-  .arch-node.t-network rect { stroke: #1C7293; }
-  .arch-node.t-client rect, .arch-node.t-external rect { stroke-dasharray: 4 3; }
-  .arch-edge { stroke: var(--muted); stroke-width: 1.4; fill: none; opacity: .7; }
+  .arch-node circle { fill: var(--panel2); stroke: var(--border); stroke-width: 2; transition: stroke .15s, filter .15s; }
+  .arch-node:hover circle { stroke: var(--accent); }
+  .arch-node.sel circle { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 6px rgba(56,139,253,.5)); }
+  .arch-node .ic { font-size: 15px; }
+  .arch-node .lbl { fill: var(--text); font: 700 12px sans-serif; }
+  .arch-node .meta { fill: var(--muted); font: 10px var(--mono); }
+  .arch-node.t-server circle { fill: rgba(56,139,253,.12); stroke: var(--accent2); }
+  .arch-node.t-loadbalancer circle { stroke: #02C39A; }
+  .arch-node.t-database circle, .arch-node.t-storage circle { stroke: var(--purple); }
+  .arch-node.t-network circle { stroke: #1C7293; }
+  .arch-node.t-client circle, .arch-node.t-external circle { stroke-dasharray: 4 3; }
+  /* health ring overrides colour */
+  .arch-node.h-ok circle { stroke: var(--ok); }
+  .arch-node.h-warning circle { stroke: var(--warn); }
+  .arch-node.h-critical circle { stroke: var(--err); }
+  .arch-edge { stroke: var(--muted); stroke-width: 1.6; fill: none; opacity: .65; }
   .arch-elbl { fill: var(--muted); font: 9.5px var(--mono); }
-  .arch-elbl-bg { fill: var(--bg); }
+  .arch-elbl-bg { fill: var(--bg); opacity: .85; }
+  .arch-badge { font-size: 11px; font-weight: 700; }
+  .arch-badge.ok { fill: var(--ok); } .arch-badge.warning { fill: var(--warn); }
+  .arch-badge.critical { fill: var(--err); }
   /* chat */
   .kb-chat-panel { display: flex; flex-direction: column; }
   .kb-chat-body { min-height: 160px; max-height: 42vh; overflow-y: auto; display: flex;
@@ -1092,14 +1108,18 @@
     </div>
     <div class="kb-main">
       <div class="panel kb-arch-panel">
-        <h2>Architecture view <span class="kb-model-chip" id="kbArchModel"></span></h2>
-        <div class="hint">Pick a server — I'll draw its live architecture from inventory, discovery and the knowledge base. Click any box to ask about it.</div>
+        <h2>Service map</h2>
+        <div class="hint">Live topology from inventory, discovery and the knowledge base — built <b>locally, no AI tokens</b>. Click a node for details, or ✨ enhance with AI for a richer map.</div>
         <div style="display:flex;gap:8px;margin:8px 0;align-items:center;flex-wrap:wrap">
           <select id="kbArchServer" style="max-width:230px;margin:0"></select>
-          <button class="ci-run" id="kbArchBtn" onclick="kbBuildArch()">Build view</button>
+          <button class="ci-run" id="kbArchBtn" onclick="kbBuildArch(false)">Build map</button>
+          <button class="ci-run" id="kbArchAiBtn" style="background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)">✨ AI enhance <span class="kb-model-chip" id="kbArchModel" style="margin-left:4px"></span></button>
           <span class="hint" id="kbArchMsg"></span>
         </div>
-        <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Select a server and build the view.</div></div>
+        <div class="kb-arch-stage">
+          <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Select a server and build the map.</div></div>
+          <div id="kbArchDetail" class="kb-arch-detail" style="display:none"></div>
+        </div>
         <div class="hint" id="kbArchNotes" style="margin-top:6px"></div>
       </div>
       <div class="panel">
@@ -2962,54 +2982,58 @@ async function kbSend() {
   $('kbAva')?.classList.remove('think');
 }
 
-/* architecture view — graph built from inventory + discovery + KB, drawn as SVG */
+/* service map — graph from inventory + discovery + KB, drawn as SVG (circular
+   nodes, health rings, click for a detail panel). Local by default (no tokens). */
 const ARCH_TIER = { client: 0, external: 0, network: 1, loadbalancer: 2, server: 3,
   application: 4, service: 4, process: 4, database: 5, storage: 5, dependency: 6 };
+const ARCH_ICON = { client: '👥', external: '🌐', network: '🧭', loadbalancer: '⚖️',
+  server: '🖥️', service: '⚙️', application: '📦', database: '🗄️', storage: '💽', dependency: '🔗' };
+let kbArchData = null, kbArchSelId = null;
 
-async function kbBuildArch() {
+async function kbBuildArch(useAi) {
   const server = $('kbArchServer').value;
   const msg = $('kbArchMsg');
   if (!server) { msg.style.color = 'var(--warn)'; msg.textContent = 'Pick a server first.'; return; }
-  const btn = $('kbArchBtn'); btn.disabled = true;
-  msg.style.color = 'var(--muted)'; msg.textContent = 'Building from data with ' + ($('kbArchModel').textContent || 'Haiku') + '…';
-  $('kbArchCanvas').innerHTML = '<div class="empty">Analysing inventory, discovery and the knowledge base…</div>';
+  const btn = useAi ? $('kbArchAiBtn') : $('kbArchBtn'); btn.disabled = true;
+  kbArchSelId = null; $('kbArchDetail').style.display = 'none';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = useAi ? ('Enhancing with ' + ($('kbArchModel').textContent || 'Haiku') + '…') : 'Building locally (no tokens)…';
+  $('kbArchCanvas').innerHTML = `<div class="empty">${useAi ? 'Analysing with AI…' : 'Building from data…'}</div>`;
   $('kbArchNotes').textContent = '';
   try {
-    const g = await (await fetch(`/api/kb/architecture?server=${encodeURIComponent(server)}`)).json();
+    const g = await (await fetch(`/api/kb/architecture?server=${encodeURIComponent(server)}${useAi ? '&ai=1' : ''}`)).json();
     if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
     else {
-      kbRenderArch(g);
-      msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${g.nodes.length} components`;
+      kbArchData = g; kbRenderArch(g);
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${g.nodes.length} components · ${g.source === 'ai' ? 'AI-enhanced' : 'local'}`;
       $('kbArchNotes').innerHTML = (g.ai_error ? '⚠ ' + escapeHtml(g.ai_error) + ' — ' : '')
         + escapeHtml(g.notes || '')
         + (g.sources && g.sources.length ? ` · <b>sources:</b> ${g.sources.map(escapeHtml).join(', ')}` : '');
     }
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
   btn.disabled = false;
-  const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov);   // reflect token spend
+  if (useAi) { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
 }
 
 function kbRenderArch(g) {
   const nodes = g.nodes || [], edges = g.edges || [];
   if (!nodes.length) { $('kbArchCanvas').innerHTML = '<div class="empty">No components found.</div>'; return; }
   const rows = {};
-  nodes.forEach(n => { const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
+  nodes.forEach((n, i) => { n._i = i; const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
   const tiers = Object.keys(rows).map(Number).sort((a, b) => a - b);
-  const NW = 160, NH = 54, GX = 26, GY = 64, PAD = 24;
-  const W = Math.max(...tiers.map(t => rows[t].length * NW + (rows[t].length - 1) * GX), 320) + PAD * 2;
-  const H = tiers.length * NH + (tiers.length - 1) * GY + PAD * 2;
+  const CW = 150, RGY = 116, PAD = 30, R = 26, RS = 34;
+  const W = Math.max(...tiers.map(t => rows[t].length * CW), 300) + PAD * 2;
+  const H = tiers.length * RGY + PAD * 2;
   const pos = {};
   tiers.forEach((t, ri) => {
-    const row = rows[t], rw = row.length * NW + (row.length - 1) * GX;
-    let x = (W - rw) / 2; const y = PAD + ri * (NH + GY);
-    row.forEach(n => { pos[n.id] = { cx: x + NW / 2, top: y, left: x }; x += NW + GX; });
+    const row = rows[t], rw = row.length * CW; let x = (W - rw) / 2; const cy = PAD + ri * RGY + RS;
+    row.forEach(n => { pos[n.id] = { cx: x + CW / 2, cy, r: n.type === 'server' ? RS : R }; x += CW; });
   });
   const clip = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || '');
   let ed = '';
   edges.forEach(e => {
     const a = pos[e.from], b = pos[e.to]; if (!a || !b) return;
-    const down = b.top > a.top;
-    const y1 = a.top + (down ? NH : 0), y2 = b.top + (down ? 0 : NH);
+    const down = b.cy > a.cy; const y1 = a.cy + (down ? a.r : -a.r), y2 = b.cy + (down ? -b.r : b.r);
     const my = (y1 + y2) / 2;
     ed += `<path class="arch-edge" marker-end="url(#arH)" d="M${a.cx},${y1} C ${a.cx},${my} ${b.cx},${my} ${b.cx},${y2}"/>`;
     if (e.label) { const mx = (a.cx + b.cx) / 2, w = e.label.length * 5.6 + 8;
@@ -3018,16 +3042,46 @@ function kbRenderArch(g) {
   });
   let nd = '';
   nodes.forEach(n => {
-    const p = pos[n.id], meta = clip(n.meta, 24), lbl = clip(n.label, 21);
-    nd += `<g class="arch-node t-${escapeHtml(n.type)}" onclick="kbArchAsk('${escapeHtml((n.label || '').replace(/['\\]/g, ''))}')">
-      <rect x="${p.left}" y="${p.top}" width="${NW}" height="${NH}" rx="8"/>
-      <text class="lbl" x="${p.left + NW / 2}" y="${p.top + (meta ? 23 : 31)}" text-anchor="middle">${escapeHtml(lbl)}</text>
-      ${meta ? `<text class="meta" x="${p.left + NW / 2}" y="${p.top + 39}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
+    const p = pos[n.id], meta = clip(n.meta, 20), lbl = clip(n.label, 18);
+    const health = n.status ? ' h-' + n.status : '', sel = n.id === kbArchSelId ? ' sel' : '';
+    nd += `<g class="arch-node t-${escapeHtml(n.type)}${health}${sel}" onclick="kbArchSelect(${n._i})">
+      <circle cx="${p.cx}" cy="${p.cy}" r="${p.r}"/>
+      <text class="ic" x="${p.cx}" y="${p.cy + 5}" text-anchor="middle">${ARCH_ICON[n.type] || '•'}</text>
+      <text class="lbl" x="${p.cx}" y="${p.cy + p.r + 15}" text-anchor="middle">${escapeHtml(lbl)}</text>
+      ${meta ? `<text class="meta" x="${p.cx}" y="${p.cy + p.r + 28}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
     </g>`;
   });
   $('kbArchCanvas').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-    <defs><marker id="arH" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <defs><marker id="arH" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
       <path d="M0,0 L6,3 L0,6 z" fill="var(--muted)"/></marker></defs>${ed}${nd}</svg>`;
+}
+
+function kbArchConns(g, id) {
+  const out = [];
+  (g.edges || []).forEach(e => {
+    if (e.from === id) { const t = g.nodes.find(x => x.id === e.to); out.push(`→ ${escapeHtml(t ? t.label : e.to)}${e.label ? ' · ' + escapeHtml(e.label) : ''}`); }
+    if (e.to === id) { const f = g.nodes.find(x => x.id === e.from); out.push(`← ${escapeHtml(f ? f.label : e.from)}${e.label ? ' · ' + escapeHtml(e.label) : ''}`); }
+  });
+  return out.join('<br>');
+}
+
+function kbArchSelect(i) {
+  const g = kbArchData; if (!g) return; const n = g.nodes[i]; if (!n) return;
+  kbArchSelId = n.id; kbRenderArch(g);
+  const HS = { ok: 'Healthy', warning: 'Warning', critical: 'Critical', unknown: 'Unknown' };
+  const isServer = n.type === 'server';
+  const nm = (n.label || '').replace(/['\\]/g, '');
+  const d = $('kbArchDetail'); d.style.display = 'block';
+  d.innerHTML = `<h4>${ARCH_ICON[n.type] || '•'} ${escapeHtml(n.label)}</h4>
+    <div class="v" style="color:var(--muted);text-transform:capitalize">${escapeHtml(n.type)}</div>
+    ${n.meta ? `<div class="k">Detail</div><div class="v">${escapeHtml(n.meta)}</div>` : ''}
+    ${n.status ? `<div class="k">Health</div><div class="v arch-badge ${escapeHtml(n.status)}">${HS[n.status] || n.status}</div>` : ''}
+    <div class="k">Connections</div><div class="v">${kbArchConns(g, n.id) || 'none recorded'}</div>
+    <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+      <button class="ci-run" onclick="kbArchAsk('${escapeHtml(nm)}')">Ask about this</button>
+      ${isServer ? `<button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="healthCheck('${escapeHtml(nm)}')">🩺 Health check</button>
+      <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="investigate('${escapeHtml(nm)}')">🔍 Investigate</button>` : ''}
+    </div>`;
 }
 
 function kbArchAsk(label) {

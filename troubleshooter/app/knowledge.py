@@ -434,11 +434,97 @@ def _sanitize_graph(graph: dict, server_name: str) -> dict:
     return {"nodes": nodes[:22], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
 
 
-async def architecture(server_name: str) -> dict:
+def _overall_status(checks: dict) -> str:
+    st = [(c or {}).get("status", "unknown") for c in (checks or {}).values()]
+    if "critical" in st:
+        return "critical"
+    if "warning" in st:
+        return "warning"
+    if any(s == "ok" for s in st):
+        return "ok"
+    return "unknown"
+
+
+# named-infrastructure hints for the LOCAL (token-free) graph builder
+_LOCAL_LB = re.compile(r"\b(lb[-_]?\w+|vip[-_]?\w*|haproxy|f5|netscaler|nginx-?lb)\b", re.I)
+_LOCAL_DB = re.compile(r"\b(db[-_]?\w+|postgre\w*|mysql|mariadb|oracle|mssql|sql-?server|"
+                       r"mongo\w*|redis|memcached|cassandra)\b", re.I)
+_LOCAL_PORT = re.compile(
+    r"\b(?:port\s*)?(443|80|8080|8443|5432|3306|1521|1433|6379|27017|9200)\b")
+_PORT_LABEL = {"443": "HTTPS 443", "8443": "HTTPS 8443", "80": "HTTP 80", "8080": "HTTP 8080",
+               "5432": "PostgreSQL 5432", "3306": "MySQL 3306", "1521": "Oracle 1521",
+               "1433": "MSSQL 1433", "6379": "Redis 6379", "27017": "MongoDB 27017",
+               "9200": "Elasticsearch 9200"}
+
+
+def local_architecture(server_name: str, srv, facts: str, docs_text: str) -> dict:
+    """Deterministic graph from inventory + discovery + KB text — NO AI tokens.
+    Conservative: only concrete, named entities become nodes."""
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+
+    def add(nid, label, typ, meta=""):
+        nodes.setdefault(nid, {"id": nid, "label": label, "type": typ, "meta": meta})
+
+    os_meta = (getattr(srv, "os", "") or "") + (f" · {srv.host}" if srv.host else "")
+    add(server_name, server_name, "server", os_meta.strip(" ·"))
+    for s in (getattr(srv, "services", None) or []):
+        add(f"svc:{s}", s, "service")
+        edges.append({"from": server_name, "to": f"svc:{s}", "label": ""})
+
+    text = f"{facts}\n{docs_text}"
+    ports = _LOCAL_PORT.findall(text)
+    inbound = next((p for p in ("443", "8443", "80", "8080") if p in ports), "")
+    dbport = next((p for p in ("5432", "3306", "1521", "1433", "6379", "27017") if p in ports), "")
+    inv = load_inventory()
+
+    def _role(other) -> str:
+        blob = (" ".join(getattr(other, "services", None) or []) + " " + other.name).lower()
+        if re.search(r"postgre|mysql|maria|oracle|mssql|\bsql\b|mongo|redis|\bdb\b|database", blob):
+            return "database"
+        if re.search(r"\blb\b|balanc|haproxy|\bvip\b|gateway|\bproxy\b", blob):
+            return "loadbalancer"
+        return "dependency"
+
+    have_lb = have_db = False
+    # other known inventory servers referenced here — typed by their role
+    for name, other in inv.items():
+        if name == server_name or not re.search(r"\b" + re.escape(name) + r"\b", text, re.I):
+            continue
+        role = _role(other)
+        add(name, name, role, getattr(other, "os", "") or "")
+        if role == "loadbalancer":
+            have_lb = True
+            edges.append({"from": name, "to": server_name, "label": _PORT_LABEL.get(inbound, "")})
+        elif role == "database":
+            have_db = True
+            edges.append({"from": server_name, "to": name, "label": _PORT_LABEL.get(dbport, "")})
+        else:
+            edges.append({"from": server_name, "to": name, "label": ""})
+
+    known_lc = {n.lower() for n in inv}
+    # regex-named infra that ISN'T already a known inventory server
+    if not have_lb:
+        lbs = {x.lower() for x in _LOCAL_LB.findall(text)} - known_lc
+        named = {m for m in lbs if re.match(r"(lb|vip|nlb|alb)[-_]?\w", m)}
+        for m in list(named or lbs)[:3]:
+            add(f"lb:{m}", m, "loadbalancer")
+            edges.append({"from": f"lb:{m}", "to": server_name, "label": _PORT_LABEL.get(inbound, "")})
+    if not have_db:
+        dbs = {x.lower() for x in _LOCAL_DB.findall(text)} - known_lc
+        named = {m for m in dbs if re.match(r"db[-_]?\w", m)}
+        for m in list(named or dbs)[:3]:
+            add(f"db:{m}", m, "database")
+            edges.append({"from": server_name, "to": f"db:{m}", "label": _PORT_LABEL.get(dbport, "")})
+    note = ("Built locally from inventory, discovery and the knowledge base (no AI). "
+            "Use ✨ AI enhance for a richer, more precise map.")
+    return {"nodes": list(nodes.values())[:22], "edges": edges, "notes": note, "source": "local"}
+
+
+async def architecture(server_name: str, use_ai: bool = False) -> dict:
     srv = load_inventory().get(server_name)
     if srv is None:
         return {"ok": False, "error": f"'{server_name}' is not in the inventory"}
-    # gather grounding data: inventory + discovery + this server's KB entries
     try:
         from . import discovery
         facts = await asyncio.to_thread(discovery.facts_summary, server_name)
@@ -450,20 +536,36 @@ async def architecture(server_name: str) -> dict:
         full = await asyncio.to_thread(db.kb_get_doc, d["id"])
         kb_lines.append(f"[{d['category']}] {d['title']}: {d['summary']}\n"
                         f"{(full or {}).get('body', '')[:1200]}")
-    data = (f"Inventory: name={srv.name}, host={srv.host}, os={srv.os or 'unknown'}, "
-            f"platform={'windows' if srv.is_windows else 'linux'}, "
-            f"services={', '.join(srv.services) or 'unknown'}\n\n"
-            + (f"Discovered facts:\n{facts}\n\n" if facts else "")
-            + ("Knowledge-base entries:\n" + "\n\n".join(kb_lines) if kb_lines else
-               "No knowledge-base entries for this server yet."))
-    graph, err, usage = await _haiku_json(_ARCH_PROMPT % (server_name, data[:9000]), timeout_s=120)
-    _record_usage(usage)
-    if not graph:
-        g = _sanitize_graph(_fallback_graph(srv, facts), server_name)
-        g.update({"ok": True, "ai_error": err, "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
-                  "server": server_name, "sources": [d["title"] for d in docs]})
-        return g
-    g = _sanitize_graph(graph, server_name)
-    g.update({"ok": True, "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
+    docs_text = "\n\n".join(kb_lines)
+
+    err = None
+    if use_ai:
+        data = (f"Inventory: name={srv.name}, host={srv.host}, os={srv.os or 'unknown'}, "
+                f"platform={'windows' if srv.is_windows else 'linux'}, "
+                f"services={', '.join(srv.services) or 'unknown'}\n\n"
+                + (f"Discovered facts:\n{facts}\n\n" if facts else "")
+                + ("Knowledge-base entries:\n" + docs_text if docs_text else
+                   "No knowledge-base entries for this server yet."))
+        graph, err, usage = await _haiku_json(_ARCH_PROMPT % (server_name, data[:9000]), timeout_s=120)
+        _record_usage(usage)
+        g = _sanitize_graph(graph or _fallback_graph(srv, facts), server_name)
+        g["source"] = "ai" if graph else "local"
+        g["notes"] = graph.get("notes", "") if graph else "AI unavailable — basic inventory view."
+    else:
+        g = _sanitize_graph(local_architecture(server_name, srv, facts, docs_text), server_name)
+        g["source"] = "local"
+
+    # overlay live health status onto the server node (from the latest snapshot)
+    try:
+        hist = await asyncio.to_thread(db.health_history, server_name, 1)
+        if hist:
+            status = _overall_status(hist[-1].get("checks"))
+            for n in g["nodes"]:
+                if n["id"] == server_name:
+                    n["status"] = status
+    except Exception:  # noqa: BLE001
+        pass
+
+    g.update({"ok": True, "ai_error": err, "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
               "server": server_name, "sources": [d["title"] for d in docs]})
     return g

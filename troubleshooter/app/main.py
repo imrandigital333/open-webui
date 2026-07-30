@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.78.0"
+APP_VERSION = "2.79.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -663,12 +663,13 @@ async def kb_chat(req: KbChatRequest, request: Request):
 
 
 @app.get("/api/kb/architecture")
-async def kb_architecture(server: str):
-    """Build a graphical architecture view for one CI from inventory +
-    discovery + its knowledge-base entries (Haiku extracts the graph)."""
+async def kb_architecture(server: str, ai: bool = False):
+    """Architecture view for one CI from inventory + discovery + KB. Default is
+    a deterministic LOCAL build (no AI tokens); ai=1 uses Haiku for a richer,
+    more precise graph."""
     if not server.strip():
         raise HTTPException(status_code=400, detail="server is required")
-    return await knowledge.architecture(server.strip())
+    return await knowledge.architecture(server.strip(), use_ai=ai)
 
 
 @app.get("/api/kb/search")
