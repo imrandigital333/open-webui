@@ -568,6 +568,24 @@
   .kb-doc:hover .del { opacity: 1; }
   .kb-doc .del:hover { color: var(--err); }
   .kb-count { color: var(--muted); font-weight: 400; font-size: 11px; }
+  /* architecture view */
+  .kb-arch-canvas { border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+    overflow: auto; max-height: 60vh; min-height: 120px; }
+  .kb-arch-canvas svg { display: block; }
+  .kb-arch-canvas .empty { padding: 24px; }
+  .arch-node { cursor: pointer; }
+  .arch-node rect { fill: var(--panel2); stroke: var(--border); stroke-width: 1.5; rx: 8; transition: stroke .15s; }
+  .arch-node:hover rect { stroke: var(--accent); }
+  .arch-node .lbl { fill: var(--text); font: 700 12px var(--font, sans-serif); }
+  .arch-node .meta { fill: var(--muted); font: 10.5px var(--mono); }
+  .arch-node.t-server rect { fill: rgba(56,139,253,.10); stroke: var(--accent2); stroke-width: 2; }
+  .arch-node.t-loadbalancer rect { stroke: #02C39A; }
+  .arch-node.t-database rect, .arch-node.t-storage rect { stroke: var(--purple); }
+  .arch-node.t-network rect { stroke: #1C7293; }
+  .arch-node.t-client rect, .arch-node.t-external rect { stroke-dasharray: 4 3; }
+  .arch-edge { stroke: var(--muted); stroke-width: 1.4; fill: none; opacity: .7; }
+  .arch-elbl { fill: var(--muted); font: 9.5px var(--mono); }
+  .arch-elbl-bg { fill: var(--bg); }
   /* chat */
   .kb-chat-panel { display: flex; flex-direction: column; }
   .kb-chat-body { min-height: 160px; max-height: 42vh; overflow-y: auto; display: flex;
@@ -1073,6 +1091,17 @@
       <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
     </div>
     <div class="kb-main">
+      <div class="panel kb-arch-panel">
+        <h2>Architecture view <span class="kb-model-chip" id="kbArchModel"></span></h2>
+        <div class="hint">Pick a server — I'll draw its live architecture from inventory, discovery and the knowledge base. Click any box to ask about it.</div>
+        <div style="display:flex;gap:8px;margin:8px 0;align-items:center;flex-wrap:wrap">
+          <select id="kbArchServer" style="max-width:230px;margin:0"></select>
+          <button class="ci-run" id="kbArchBtn" onclick="kbBuildArch()">Build view</button>
+          <span class="hint" id="kbArchMsg"></span>
+        </div>
+        <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Select a server and build the view.</div></div>
+        <div class="hint" id="kbArchNotes" style="margin-top:6px"></div>
+      </div>
       <div class="panel">
         <h2>Add knowledge</h2>
         <div id="kbDrop" class="kb-drop">
@@ -2770,6 +2799,9 @@ async function loadKnowledge() {
   const sel = $('kbChatServer');
   if (sel) sel.innerHTML = '<option value="">All servers</option>' +
     (inventory || []).map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+  const asel = $('kbArchServer');
+  if (asel) asel.innerHTML = '<option value="">— select a server —</option>' +
+    (inventory || []).map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
   if ($('kbChatBody') && !$('kbChatBody').children.length)
     kbMsg('Hi — upload a document, or tell me anything about your environment and I\'ll remember it. Ask me a question and I\'ll answer from what\'s stored.', 'bot');
   try {
@@ -2787,6 +2819,7 @@ function kbRenderUsage(ov) {
   const u = ov.usage || {}, st = ov.stats || {};
   $('kbModelChip').textContent = ov.model_label || 'Haiku';
   $('kbModelChip').title = ov.model || '';
+  if ($('kbArchModel')) { $('kbArchModel').textContent = ov.model_label || 'Haiku'; $('kbArchModel').title = ov.model || ''; }
   const inTok = u.input_tokens || 0, outTok = u.output_tokens || 0;
   const cr = u.cache_read_tokens || 0, cw = u.cache_write_tokens || 0;
   const t = [];
@@ -2927,6 +2960,81 @@ async function kbSend() {
     else { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
   } catch (e) { thinking.remove(); kbMsg('✕ ' + e.message, 'bot'); }
   $('kbAva')?.classList.remove('think');
+}
+
+/* architecture view — graph built from inventory + discovery + KB, drawn as SVG */
+const ARCH_TIER = { client: 0, external: 0, network: 1, loadbalancer: 2, server: 3,
+  application: 4, service: 4, process: 4, database: 5, storage: 5, dependency: 6 };
+
+async function kbBuildArch() {
+  const server = $('kbArchServer').value;
+  const msg = $('kbArchMsg');
+  if (!server) { msg.style.color = 'var(--warn)'; msg.textContent = 'Pick a server first.'; return; }
+  const btn = $('kbArchBtn'); btn.disabled = true;
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Building from data with ' + ($('kbArchModel').textContent || 'Haiku') + '…';
+  $('kbArchCanvas').innerHTML = '<div class="empty">Analysing inventory, discovery and the knowledge base…</div>';
+  $('kbArchNotes').textContent = '';
+  try {
+    const g = await (await fetch(`/api/kb/architecture?server=${encodeURIComponent(server)}`)).json();
+    if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
+    else {
+      kbRenderArch(g);
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${g.nodes.length} components`;
+      $('kbArchNotes').innerHTML = (g.ai_error ? '⚠ ' + escapeHtml(g.ai_error) + ' — ' : '')
+        + escapeHtml(g.notes || '')
+        + (g.sources && g.sources.length ? ` · <b>sources:</b> ${g.sources.map(escapeHtml).join(', ')}` : '');
+    }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+  btn.disabled = false;
+  const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov);   // reflect token spend
+}
+
+function kbRenderArch(g) {
+  const nodes = g.nodes || [], edges = g.edges || [];
+  if (!nodes.length) { $('kbArchCanvas').innerHTML = '<div class="empty">No components found.</div>'; return; }
+  const rows = {};
+  nodes.forEach(n => { const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
+  const tiers = Object.keys(rows).map(Number).sort((a, b) => a - b);
+  const NW = 160, NH = 54, GX = 26, GY = 64, PAD = 24;
+  const W = Math.max(...tiers.map(t => rows[t].length * NW + (rows[t].length - 1) * GX), 320) + PAD * 2;
+  const H = tiers.length * NH + (tiers.length - 1) * GY + PAD * 2;
+  const pos = {};
+  tiers.forEach((t, ri) => {
+    const row = rows[t], rw = row.length * NW + (row.length - 1) * GX;
+    let x = (W - rw) / 2; const y = PAD + ri * (NH + GY);
+    row.forEach(n => { pos[n.id] = { cx: x + NW / 2, top: y, left: x }; x += NW + GX; });
+  });
+  const clip = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || '');
+  let ed = '';
+  edges.forEach(e => {
+    const a = pos[e.from], b = pos[e.to]; if (!a || !b) return;
+    const down = b.top > a.top;
+    const y1 = a.top + (down ? NH : 0), y2 = b.top + (down ? 0 : NH);
+    const my = (y1 + y2) / 2;
+    ed += `<path class="arch-edge" marker-end="url(#arH)" d="M${a.cx},${y1} C ${a.cx},${my} ${b.cx},${my} ${b.cx},${y2}"/>`;
+    if (e.label) { const mx = (a.cx + b.cx) / 2, w = e.label.length * 5.6 + 8;
+      ed += `<rect class="arch-elbl-bg" x="${mx - w / 2}" y="${my - 8}" width="${w}" height="14" rx="3"/>`
+          + `<text class="arch-elbl" x="${mx}" y="${my + 2}" text-anchor="middle">${escapeHtml(e.label)}</text>`; }
+  });
+  let nd = '';
+  nodes.forEach(n => {
+    const p = pos[n.id], meta = clip(n.meta, 24), lbl = clip(n.label, 21);
+    nd += `<g class="arch-node t-${escapeHtml(n.type)}" onclick="kbArchAsk('${escapeHtml((n.label || '').replace(/['\\]/g, ''))}')">
+      <rect x="${p.left}" y="${p.top}" width="${NW}" height="${NH}" rx="8"/>
+      <text class="lbl" x="${p.left + NW / 2}" y="${p.top + (meta ? 23 : 31)}" text-anchor="middle">${escapeHtml(lbl)}</text>
+      ${meta ? `<text class="meta" x="${p.left + NW / 2}" y="${p.top + 39}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
+    </g>`;
+  });
+  $('kbArchCanvas').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <defs><marker id="arH" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="var(--muted)"/></marker></defs>${ed}${nd}</svg>`;
+}
+
+function kbArchAsk(label) {
+  if (!label) return;
+  const s = $('kbArchServer').value; if (s) $('kbChatServer').value = s;
+  $('kbChatIn').value = 'Tell me about ' + label;
+  kbSend();
 }
 
 function switchView(view) {

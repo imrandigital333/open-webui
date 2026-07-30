@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.77.0"
+APP_VERSION = "2.78.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -660,6 +660,15 @@ async def kb_chat(req: KbChatRequest, request: Request):
         await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
                                 {"via": "chat", "id": (res.get("stored") or {}).get("id")})
     return res
+
+
+@app.get("/api/kb/architecture")
+async def kb_architecture(server: str):
+    """Build a graphical architecture view for one CI from inventory +
+    discovery + its knowledge-base entries (Haiku extracts the graph)."""
+    if not server.strip():
+        raise HTTPException(status_code=400, detail="server is required")
+    return await knowledge.architecture(server.strip())
 
 
 @app.get("/api/kb/search")

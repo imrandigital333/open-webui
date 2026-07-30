@@ -361,3 +361,109 @@ def overview() -> dict:
     return {"stats": db.kb_stats(), "usage": db.kb_usage_get(),
             "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
             "categories": CATEGORIES}
+
+
+# ---------- architecture view (graph built from the data) ----------
+
+_ARCH_NODE_TYPES = {"client", "external", "network", "loadbalancer", "server",
+                    "service", "application", "database", "storage", "dependency"}
+
+_ARCH_PROMPT = """You are producing a SYSTEM ARCHITECTURE GRAPH for ONE server/CI, using only the
+facts provided (inventory + live discovery + knowledge-base entries). Extract
+only entities and relationships SUPPORTED BY THE DATA — never invent components,
+hostnames or ports.
+
+SERVER / CI: %s
+
+DATA:
+%s
+
+Reply with ONLY this JSON (no prose, no fences):
+{"nodes": [{"id": "web-01", "label": "web-01", "type": "server", "meta": "RHEL 8 · 10.70.5.44"}],
+ "edges": [{"from": "lb-01", "to": "web-01", "label": "HTTPS 443"}],
+ "notes": "one line on confidence / what's missing"}
+
+Rules:
+- The main CI itself MUST be present as type "server".
+- Node "type" is one of: client, external, network, loadbalancer, server,
+  service, application, database, storage, dependency.
+- Edge direction = traffic/dependency flow (caller -> callee). Put the
+  protocol/port in the edge "label" when the data gives it.
+- Use REAL names/IPs/ports from the data. Keep to <= 22 nodes.
+- "meta" is a short one-line detail (OS, IP, version) or "".
+"""
+
+
+def _fallback_graph(srv, facts_line: str) -> dict:
+    """A basic graph from inventory alone when the AI is unavailable."""
+    os_meta = (getattr(srv, "os", "") or "") + (f" · {srv.host}" if srv.host else "")
+    nodes = [{"id": srv.name, "label": srv.name, "type": "server", "meta": os_meta.strip(" ·")}]
+    edges = []
+    for s in (getattr(srv, "services", None) or []):
+        nid = f"svc:{s}"
+        nodes.append({"id": nid, "label": s, "type": "service", "meta": ""})
+        edges.append({"from": srv.name, "to": nid, "label": ""})
+    return {"nodes": nodes, "edges": edges, "notes": "Basic view from inventory (AI unavailable)."}
+
+
+def _sanitize_graph(graph: dict, server_name: str) -> dict:
+    raw_nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    nodes, ids = [], set()
+    for n in (raw_nodes or []):
+        if not isinstance(n, dict):
+            continue
+        nid = str(n.get("id") or n.get("label") or "").strip()
+        if not nid or nid in ids:
+            continue
+        t = str(n.get("type") or "dependency").lower()
+        if t not in _ARCH_NODE_TYPES:
+            t = "dependency"
+        ids.add(nid)
+        nodes.append({"id": nid, "label": str(n.get("label") or nid)[:60],
+                      "type": t, "meta": str(n.get("meta") or "")[:80]})
+    if server_name not in ids:                       # the CI must be present
+        nodes.insert(0, {"id": server_name, "label": server_name, "type": "server", "meta": ""})
+        ids.add(server_name)
+    edges = []
+    for e in (graph.get("edges") or []):
+        if not isinstance(e, dict):
+            continue
+        f, t = str(e.get("from") or "").strip(), str(e.get("to") or "").strip()
+        if f in ids and t in ids and f != t:
+            edges.append({"from": f, "to": t, "label": str(e.get("label") or "")[:40]})
+    return {"nodes": nodes[:22], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
+
+
+async def architecture(server_name: str) -> dict:
+    srv = load_inventory().get(server_name)
+    if srv is None:
+        return {"ok": False, "error": f"'{server_name}' is not in the inventory"}
+    # gather grounding data: inventory + discovery + this server's KB entries
+    try:
+        from . import discovery
+        facts = await asyncio.to_thread(discovery.facts_summary, server_name)
+    except Exception:  # noqa: BLE001
+        facts = ""
+    docs = [d for d in await asyncio.to_thread(db.kb_list_docs) if d["server"] == server_name]
+    kb_lines = []
+    for d in docs[:20]:
+        full = await asyncio.to_thread(db.kb_get_doc, d["id"])
+        kb_lines.append(f"[{d['category']}] {d['title']}: {d['summary']}\n"
+                        f"{(full or {}).get('body', '')[:1200]}")
+    data = (f"Inventory: name={srv.name}, host={srv.host}, os={srv.os or 'unknown'}, "
+            f"platform={'windows' if srv.is_windows else 'linux'}, "
+            f"services={', '.join(srv.services) or 'unknown'}\n\n"
+            + (f"Discovered facts:\n{facts}\n\n" if facts else "")
+            + ("Knowledge-base entries:\n" + "\n\n".join(kb_lines) if kb_lines else
+               "No knowledge-base entries for this server yet."))
+    graph, err, usage = await _haiku_json(_ARCH_PROMPT % (server_name, data[:9000]), timeout_s=120)
+    _record_usage(usage)
+    if not graph:
+        g = _sanitize_graph(_fallback_graph(srv, facts), server_name)
+        g.update({"ok": True, "ai_error": err, "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
+                  "server": server_name, "sources": [d["title"] for d in docs]})
+        return g
+    g = _sanitize_graph(graph, server_name)
+    g.update({"ok": True, "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
+              "server": server_name, "sources": [d["title"] for d in docs]})
+    return g
