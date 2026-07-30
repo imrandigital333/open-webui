@@ -3012,9 +3012,11 @@ async function kbSend() {
 /* service map — graph from inventory + discovery + KB, drawn as SVG (circular
    nodes, health rings, click for a detail panel). Local by default (no tokens). */
 const ARCH_TIER = { client: 0, external: 0, network: 1, loadbalancer: 2, server: 3,
-  application: 4, service: 4, process: 4, database: 5, storage: 5, dependency: 6 };
+  application: 4, service: 4, process: 4, database: 5, storage: 5, dependency: 6,
+  cpu: 7, memory: 7, disk: 7 };
 const ARCH_ICON = { client: '👥', external: '🌐', network: '🧭', loadbalancer: '⚖️',
-  server: '🖥️', service: '⚙️', application: '📦', database: '🗄️', storage: '💽', dependency: '🔗' };
+  server: '🖥️', service: '⚙️', application: '📦', database: '🗄️', storage: '💽', dependency: '🔗',
+  cpu: '🧠', memory: '📊', disk: '💽' };
 let kbArchData = null, kbArchSelId = null;
 
 async function kbBuildArch(useAi) {
@@ -3123,10 +3125,24 @@ function kbArchSelect(i) {
   const isServer = n.type === 'server';
   const nm = (n.label || '').replace(/['\\]/g, '');
   const d = $('kbArchDetail'); d.style.display = 'block';
+  // full host configuration (from a live probe) when the server node is selected
+  let cfg = '';
+  if (isServer && g.host && Object.keys(g.host).length) {
+    const h = g.host, r = [];
+    if (h.os) r.push(['OS', h.os + (h.kernel ? ' · ' + h.kernel : '')]);
+    if (h.uptime) r.push(['Uptime', h.uptime]);
+    if (h.cpu_cores) r.push(['CPU', h.cpu_cores + ' cores' + (h.cpu_model ? ' · ' + h.cpu_model : '')]);
+    if (h.mem_total) r.push(['Memory', `${h.mem_used || 0}/${h.mem_total} MB (${Math.round((h.mem_used || 0) / h.mem_total * 100)}%)`]);
+    if (h.swap_total) r.push(['Swap', `${h.swap_used || 0}/${h.swap_total} MB`]);
+    const mounts = (h.mounts || []).map(m => `${escapeHtml(m.mount)} — ${escapeHtml(m.used)}/${escapeHtml(m.size)} (${escapeHtml(m.use)}) ${escapeHtml(m.type)}`).join('<br>');
+    cfg = `<div class="k">Configuration</div><div class="v">${r.map(x => `<b>${escapeHtml(x[0])}:</b> ${escapeHtml(x[1])}`).join('<br>')}</div>`
+      + (mounts ? `<div class="k">Storage / mounts</div><div class="v" style="font-family:var(--mono);font-size:11px">${mounts}</div>` : '');
+  }
   d.innerHTML = `<h4>${ARCH_ICON[n.type] || '•'} ${escapeHtml(n.label)}</h4>
     <div class="v" style="color:var(--muted);text-transform:capitalize">${escapeHtml(n.type)}</div>
     ${n.meta ? `<div class="k">Detail</div><div class="v">${escapeHtml(n.meta)}</div>` : ''}
     ${n.status ? `<div class="k">Health</div><div class="v arch-badge ${escapeHtml(n.status)}">${HS[n.status] || n.status}</div>` : ''}
+    ${cfg}
     <div class="k">Connections</div><div class="v">${kbArchConns(g, n.id) || 'none recorded'}</div>
     <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
       <button class="ci-run" onclick="kbArchAsk('${escapeHtml(nm)}')">Ask about this</button>

@@ -454,23 +454,36 @@ def _parse_win_estab(body: str) -> list[dict]:
     return out
 
 
-def _build_live_graph(srv, listen: list, estab: list) -> dict:
+def _build_live_graph(srv, listen: list, estab: list, facts: dict) -> dict:
     nodes: dict = {}
     edges: list = []
 
     def add(nid, label, typ, meta=""):
         nodes.setdefault(nid, {"id": nid, "label": label, "type": typ, "meta": meta})
 
-    os_meta = (getattr(srv, "os", "") or "") + (f" · {srv.host}" if srv.host else "")
+    os_meta = (facts.get("os") or getattr(srv, "os", "") or "") + (f" · {srv.host}" if srv.host else "")
     add(srv.name, srv.name, "server", os_meta.strip(" ·"))
     seen_ports = set()
     for lst in listen:
         if lst["port"] in seen_ports:
             continue
         seen_ports.add(lst["port"])
-        nid = f"svc:{lst['proc']}:{lst['port']}"
-        add(nid, lst["proc"], "service", f":{lst['port']}")
+        label = _svc_label(lst["proc"], lst["port"])
+        nid = f"svc:{label}:{lst['port']}"
+        add(nid, label, "service", f":{lst['port']}")
         edges.append({"from": srv.name, "to": nid, "label": f":{lst['port']}"})
+    # OS configuration layer — CPU / memory / mounts as their own nodes
+    if facts.get("cpu_cores"):
+        add("res:cpu", f"{facts['cpu_cores']} vCPU", "cpu", (facts.get("cpu_model", "") or "")[:26])
+        edges.append({"from": srv.name, "to": "res:cpu", "label": ""})
+    if facts.get("mem_total"):
+        tot, used = facts["mem_total"], facts.get("mem_used", 0)
+        pct = round(used / tot * 100) if tot else 0
+        add("res:mem", f"{pct}% RAM", "memory", f"{_mb(used)}/{_mb(tot)}")
+        edges.append({"from": srv.name, "to": "res:mem", "label": ""})
+    for m in facts.get("mounts", [])[:4]:
+        add(f"res:{m['mount']}", m["mount"], "disk", f"{m['use']} of {m['size']}")
+        edges.append({"from": srv.name, "to": f"res:{m['mount']}", "label": ""})
     inv = load_inventory()
     ip2name = {getattr(o, "host", ""): n for n, o in inv.items() if getattr(o, "host", "")}
     seen_peer = set()
@@ -490,11 +503,27 @@ def _build_live_graph(srv, listen: list, estab: list) -> dict:
             add(tgt, e["ip"], _dep_type(e["port"]), f":{e['port']}")
         lbl = _PORT_LABEL.get(e["port"], f":{e['port']}")
         edges.append({"from": srv.name, "to": tgt, "label": lbl})
-    return {"nodes": list(nodes.values())[:24], "edges": edges}
+    return {"nodes": list(nodes.values())[:30], "edges": edges}
 
 
-def _topology_text(server: str, srv, listen: list, estab: list, services: list) -> str:
-    lines = [f"Live-discovered topology of {server} ({srv.host}), OS {srv.os or 'unknown'}."]
+def _topology_text(server: str, srv, listen: list, estab: list, services: list,
+                   facts: dict) -> str:
+    lines = [f"Live-discovered topology of {server} ({srv.host}), OS "
+             f"{facts.get('os') or srv.os or 'unknown'}."]
+    if facts:
+        lines.append("Host configuration:")
+        if facts.get("os"):
+            lines.append(f"- OS: {facts['os']}" + (f" (kernel {facts['kernel']})" if facts.get("kernel") else ""))
+        if facts.get("uptime"):
+            lines.append(f"- Uptime: {facts['uptime']}")
+        if facts.get("cpu_cores"):
+            lines.append(f"- CPU: {facts['cpu_cores']} cores {facts.get('cpu_model', '')}".rstrip())
+        if facts.get("mem_total"):
+            lines.append(f"- Memory: {facts.get('mem_used', 0)}/{facts['mem_total']} MB used")
+        if facts.get("swap_total"):
+            lines.append(f"- Swap: {facts.get('swap_used', 0)}/{facts['swap_total']} MB used")
+        for m in facts.get("mounts", []):
+            lines.append(f"- Mount {m['mount']}: {m['used']}/{m['size']} ({m['use']}) {m['type']} on {m['fs']}")
     if listen:
         lines.append("Listening services (inbound):")
         for proc, port in sorted({(x["proc"], x["port"]) for x in listen}):
@@ -512,9 +541,30 @@ def _topology_text(server: str, srv, listen: list, estab: list, services: list) 
     return "\n".join(lines)
 
 
+# well-known ports → service name, used to label a listener when the OS didn't
+# return the owning process (e.g. non-privileged ss with no sudo)
+_WELLKNOWN = {
+    "21": "ftp", "22": "ssh", "23": "telnet", "25": "smtp", "53": "dns", "80": "http",
+    "110": "pop3", "111": "rpcbind", "123": "ntp", "143": "imap", "161": "snmp",
+    "389": "ldap", "443": "https", "445": "smb", "465": "smtps", "514": "syslog",
+    "587": "smtp", "636": "ldaps", "993": "imaps", "995": "pop3s", "1433": "mssql",
+    "1521": "oracle", "2049": "nfs", "3000": "grafana", "3306": "mysql", "3389": "rdp",
+    "5432": "postgresql", "5601": "kibana", "5672": "rabbitmq", "5985": "winrm",
+    "5986": "winrm", "6379": "redis", "8080": "http-alt", "8443": "https-alt",
+    "9090": "prometheus", "9200": "elasticsearch", "11211": "memcached", "27017": "mongodb",
+}
+
 _WIN_TOPO_PS = (
     "$ErrorActionPreference='SilentlyContinue';"
-    "'@@host'; hostname;"
+    "'@@os'; (Get-CimInstance Win32_OperatingSystem).Caption; [string][Environment]::OSVersion.Version;"
+    "'@@cpu'; (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors; "
+    "(Get-CimInstance Win32_Processor | Select-Object -First 1 -Expand Name);"
+    "'@@mem'; $o=Get-CimInstance Win32_OperatingSystem; "
+    "\"mem $([math]::round($o.TotalVisibleMemorySize/1024)) "
+    "$([math]::round(($o.TotalVisibleMemorySize-$o.FreePhysicalMemory)/1024))\";"
+    "'@@disk'; Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object "
+    "{ \"$($_.DeviceID) NTFS $([math]::round($_.Size/1GB))G $([math]::round(($_.Size-$_.FreeSpace)/1GB))G "
+    "- $([math]::round(($_.Size-$_.FreeSpace)/$_.Size*100))% $($_.DeviceID)\" };"
     "'@@listen'; Get-NetTCPConnection -State Listen | ForEach-Object "
     "{ \"$($_.LocalPort) $((Get-Process -Id $_.OwningProcess).ProcessName)\" };"
     "'@@estab'; Get-NetTCPConnection -State Established | "
@@ -524,12 +574,55 @@ _WIN_TOPO_PS = (
 )
 
 _LNX_TOPO_CMD = (
-    "echo @@host; hostname; "
-    "echo @@listen; ss -Hltnp 2>/dev/null || netstat -ltnp 2>/dev/null; "
-    "echo @@estab; ss -Htnp state established 2>/dev/null || netstat -tnp 2>/dev/null; "
+    "echo @@os; . /etc/os-release 2>/dev/null; echo \"$PRETTY_NAME\"; uname -r; uptime -p 2>/dev/null; "
+    "echo @@cpu; nproc; grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ //'; "
+    "echo @@mem; free -m 2>/dev/null | awk '/^Mem:/{print \"mem \"$2\" \"$3} /^Swap:/{print \"swap \"$2\" \"$3}'; "
+    "echo @@disk; df -hPT -x tmpfs -x devtmpfs -x overlay 2>/dev/null | tail -n +2; "
+    "echo @@listen; { sudo -n ss -ltnp 2>/dev/null || ss -ltnp 2>/dev/null; }; "
+    "echo @@estab; { sudo -n ss -tnp state established 2>/dev/null || ss -tnp state established 2>/dev/null; }; "
     "echo @@svc; systemctl list-units --type=service --state=running --no-legend --no-pager "
     "2>/dev/null | awk '{print $1}'"
 )
+
+
+def _mb(mb: int) -> str:
+    return f"{mb/1024:.1f} GB" if mb and mb >= 1024 else f"{mb} MB"
+
+
+def _parse_host_facts(sec: dict) -> dict:
+    f: dict = {}
+    osl = [x for x in sec.get("os", "").splitlines() if x.strip()]
+    if osl:
+        f["os"] = osl[0].strip().strip('"')
+    if len(osl) > 1:
+        f["kernel"] = osl[1].strip()
+    if len(osl) > 2:
+        f["uptime"] = osl[2].strip()
+    cpul = [x for x in sec.get("cpu", "").splitlines() if x.strip()]
+    if cpul:
+        f["cpu_cores"] = cpul[0].strip()
+    if len(cpul) > 1:
+        f["cpu_model"] = cpul[1].strip()
+    for ln in sec.get("mem", "").splitlines():
+        p = ln.split()
+        if len(p) >= 3 and p[0] == "mem" and p[1].isdigit():
+            f["mem_total"], f["mem_used"] = int(p[1]), int(p[2])
+        elif len(p) >= 3 and p[0] == "swap" and p[1].isdigit():
+            f["swap_total"], f["swap_used"] = int(p[1]), int(p[2])
+    mounts = []
+    for ln in sec.get("disk", "").splitlines():
+        p = ln.split()
+        if len(p) >= 7:
+            mounts.append({"fs": p[0], "type": p[1], "size": p[2], "used": p[3],
+                           "avail": p[4], "use": p[5], "mount": p[6]})
+    f["mounts"] = mounts[:8]
+    return f
+
+
+def _svc_label(proc: str, port: str) -> str:
+    if proc and proc.strip() and proc not in ("service", "?"):
+        return proc
+    return _WELLKNOWN.get(port, "service")
 
 
 async def live_architecture(server_name: str) -> dict:
@@ -560,10 +653,12 @@ async def live_architecture(server_name: str) -> dict:
         return {"ok": False, "error": f"probe failed: {type(exc).__name__}: {exc}"[:200]}
 
     services = [s for s in sec.get("svc", "").splitlines() if s.strip()][:40]
-    g = _build_live_graph(srv, listen, estab)
+    facts = _parse_host_facts(sec)
+    g = _build_live_graph(srv, listen, estab, facts)
+    g["host"] = facts
 
     # persist the discovered topology to the KB (local, replaces prior live entry)
-    text = _topology_text(server_name, srv, listen, estab, services)
+    text = _topology_text(server_name, srv, listen, estab, services, facts)
     title = f"{server_name} — live topology"
     await store_local(text, server=server_name,
                       os_="windows" if srv.is_windows else "linux",
@@ -590,7 +685,8 @@ async def live_architecture(server_name: str) -> dict:
 # ---------- architecture view (graph built from the data) ----------
 
 _ARCH_NODE_TYPES = {"client", "external", "network", "loadbalancer", "server",
-                    "service", "application", "database", "storage", "dependency"}
+                    "service", "application", "database", "storage", "dependency",
+                    "cpu", "memory", "disk"}
 
 _ARCH_PROMPT = """You are producing a SYSTEM ARCHITECTURE GRAPH for ONE server/CI, using only the
 facts provided (inventory + live discovery + knowledge-base entries). Extract
