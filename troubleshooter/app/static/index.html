@@ -3034,7 +3034,8 @@ async function kbBuildArch(useAi) {
     if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
     else {
       kbArchData = g; kbRenderArch(g);
-      msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${g.nodes.length} components · ${g.source === 'ai' ? 'AI-enhanced' : 'local'}`;
+      const src = g.source === 'ai' ? 'AI-enhanced' : g.source === 'cached' ? 'from last live probe' : 'local';
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${g.nodes.length} components · ${src}`;
       $('kbArchNotes').innerHTML = (g.ai_error ? '⚠ ' + escapeHtml(g.ai_error) + ' — ' : '')
         + escapeHtml(g.notes || '')
         + (g.sources && g.sources.length ? ` · <b>sources:</b> ${g.sources.map(escapeHtml).join(', ')}` : '');

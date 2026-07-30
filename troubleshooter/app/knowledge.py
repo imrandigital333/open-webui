@@ -23,7 +23,31 @@ import uuid
 
 from . import db
 from .changeplan import extract_text  # reuse the txt/md/docx/pdf extractor
-from .inventory import load_inventory
+from .inventory import BASE_DIR, load_inventory
+
+# cached live service maps (so a server re-renders from the last probe without
+# reconnecting; refreshed only when the operator runs a new live probe)
+_LIVE_DIR = BASE_DIR / "data" / "live_maps"
+
+
+def _live_cache_path(server: str):
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", server)
+    return _LIVE_DIR / f"{safe}.json"
+
+
+def save_live_cache(server: str, graph: dict) -> None:
+    try:
+        _LIVE_DIR.mkdir(parents=True, exist_ok=True)
+        _live_cache_path(server).write_text(json.dumps(graph))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_live_cache(server: str) -> dict | None:
+    try:
+        return json.loads(_live_cache_path(server).read_text())
+    except Exception:  # noqa: BLE001
+        return None
 
 # The knowledge base deliberately uses the fast, low-cost Haiku model.
 KB_MODEL = "claude-haiku-4-5-20251001"
@@ -676,9 +700,11 @@ async def live_architecture(server_name: str) -> dict:
 
     peers = len({(e["ip"], e["port"]) for e in estab})
     g.update({"ok": True, "server": server_name, "source": "live", "stored": True,
+              "cached_at": time.time(),
               "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "sources": [title],
               "notes": f"Live probe: {len(listen)} listening service(s), {peers} outbound "
                        "connection(s). Stored to the knowledge base."})
+    save_live_cache(server_name, g)          # reuse this exact map next time (no reconnect)
     return g
 
 
@@ -872,8 +898,19 @@ async def architecture(server_name: str, use_ai: bool = False) -> dict:
         g["source"] = "ai" if graph else "local"
         g["notes"] = graph.get("notes", "") if graph else "AI unavailable — basic inventory view."
     else:
-        g = _sanitize_graph(local_architecture(server_name, srv, facts, docs_text), server_name)
-        g["source"] = "local"
+        cached = load_live_cache(server_name)
+        if cached and cached.get("nodes"):
+            # reuse the last live probe's rich map straight from storage — no
+            # reconnection to the server, no AI
+            g = cached
+            g["source"] = "cached"
+            when = cached.get("cached_at")
+            g["notes"] = ("Showing the last live probe"
+                          + (f" (stored data)." if when else ".")
+                          + " Run 🔎 Live probe to refresh from the server.")
+        else:
+            g = _sanitize_graph(local_architecture(server_name, srv, facts, docs_text), server_name)
+            g["source"] = "local"
 
     # overlay live health status onto the server node (from the latest snapshot)
     try:
