@@ -363,6 +363,230 @@ def overview() -> dict:
             "categories": CATEGORIES}
 
 
+# ---------- store data locally (no AI) ----------
+
+async def store_local(text: str, *, server: str, os_: str, category: str, title: str,
+                      source_type: str = "discovery") -> str:
+    """Persist text into the KB WITHOUT any AI call. Replaces a previous doc with
+    the same (server, title) so refreshable data (e.g. live topology) stays one
+    current entry instead of piling up."""
+    for d in await asyncio.to_thread(db.kb_list_docs):
+        if d["server"] == server and d["title"] == title:
+            await asyncio.to_thread(db.kb_delete_doc, d["id"])
+    doc_id = uuid.uuid4().hex[:16]
+    doc = {"id": doc_id, "title": title, "source_type": source_type, "filename": None,
+           "server": server, "os": os_, "category": category, "summary": text[:400],
+           "keywords": _keywords(text), "body": text[:200000], "created_at": time.time(),
+           "actor": "live-probe", "content_hash": _content_hash(text),
+           "tokens_in": 0, "tokens_out": 0}
+    await asyncio.to_thread(db.kb_add_doc, doc)
+    rows = [{"doc_id": doc_id, "ordinal": i, "server": server, "os": os_,
+             "category": category, "text": ch, "keywords": " ".join(_keywords(ch, 40))}
+            for i, ch in enumerate(_chunk(text))]
+    await asyncio.to_thread(db.kb_add_chunks, rows)
+    return doc_id
+
+
+# ---------- live topology probe (connect → learn → map → store) ----------
+
+_ESTAB_SKIP = re.compile(r"^(127\.|::1|0\.0\.0\.0|169\.254\.|::$)")
+_DB_PORTS = {"5432", "3306", "1521", "1433", "6379", "27017", "9200", "5984", "11211"}
+
+
+def _port_of(addr: str) -> str:
+    m = re.search(r":(\d+)$", (addr or "").strip())
+    return m.group(1) if m else ""
+
+
+def _dep_type(port: str) -> str:
+    return "database" if port in _DB_PORTS else "dependency"
+
+
+def _proc_from_ss(line: str) -> str:
+    m = re.search(r'\("([^"]+)"', line)
+    return m.group(1) if m else ""
+
+
+def _parse_linux_listen(body: str) -> list[dict]:
+    out = []
+    for ln in body.split("\n"):
+        f = ln.split()
+        if len(f) < 4:
+            continue
+        port = _port_of(f[3])
+        if port:
+            out.append({"port": port, "proc": _proc_from_ss(ln) or "service"})
+    return out
+
+
+def _parse_linux_estab(body: str) -> list[dict]:
+    out = []
+    for ln in body.split("\n"):
+        f = ln.split()
+        if len(f) < 5:
+            continue
+        m = re.match(r"((?:\d{1,3}\.){3}\d{1,3}):(\d+)$", f[4])
+        if not m or _ESTAB_SKIP.match(m.group(1)) or int(m.group(2)) >= 32768:
+            continue   # ephemeral peer port ⇒ an inbound client, not our dependency
+        out.append({"ip": m.group(1), "port": m.group(2), "proc": _proc_from_ss(ln)})
+    return out
+
+
+def _parse_win_listen(body: str) -> list[dict]:
+    out = []
+    for ln in body.split("\n"):
+        p = ln.split()
+        if p and p[0].isdigit():
+            out.append({"port": p[0], "proc": (p[1] if len(p) > 1 else "service")})
+    return out
+
+
+def _parse_win_estab(body: str) -> list[dict]:
+    out = []
+    for ln in body.split("\n"):
+        p = ln.split()
+        if not p:
+            continue
+        m = re.match(r"(.+):(\d+)$", p[0])
+        if not m or _ESTAB_SKIP.match(m.group(1)) or int(m.group(2)) >= 32768:
+            continue   # ephemeral peer port ⇒ an inbound client, not our dependency
+        out.append({"ip": m.group(1), "port": m.group(2), "proc": (p[1] if len(p) > 1 else "")})
+    return out
+
+
+def _build_live_graph(srv, listen: list, estab: list) -> dict:
+    nodes: dict = {}
+    edges: list = []
+
+    def add(nid, label, typ, meta=""):
+        nodes.setdefault(nid, {"id": nid, "label": label, "type": typ, "meta": meta})
+
+    os_meta = (getattr(srv, "os", "") or "") + (f" · {srv.host}" if srv.host else "")
+    add(srv.name, srv.name, "server", os_meta.strip(" ·"))
+    seen_ports = set()
+    for lst in listen:
+        if lst["port"] in seen_ports:
+            continue
+        seen_ports.add(lst["port"])
+        nid = f"svc:{lst['proc']}:{lst['port']}"
+        add(nid, lst["proc"], "service", f":{lst['port']}")
+        edges.append({"from": srv.name, "to": nid, "label": f":{lst['port']}"})
+    inv = load_inventory()
+    ip2name = {getattr(o, "host", ""): n for n, o in inv.items() if getattr(o, "host", "")}
+    seen_peer = set()
+    for e in estab:
+        key = (e["ip"], e["port"])
+        if key in seen_peer or len(seen_peer) >= 18:
+            continue
+        seen_peer.add(key)
+        name = ip2name.get(e["ip"])
+        if name == srv.name:
+            continue
+        if name:
+            tgt = name
+            add(name, name, "database" if _dep_type(e["port"]) == "database" else "dependency", f":{e['port']}")
+        else:
+            tgt = f"ext:{e['ip']}:{e['port']}"
+            add(tgt, e["ip"], _dep_type(e["port"]), f":{e['port']}")
+        lbl = _PORT_LABEL.get(e["port"], f":{e['port']}")
+        edges.append({"from": srv.name, "to": tgt, "label": lbl})
+    return {"nodes": list(nodes.values())[:24], "edges": edges}
+
+
+def _topology_text(server: str, srv, listen: list, estab: list, services: list) -> str:
+    lines = [f"Live-discovered topology of {server} ({srv.host}), OS {srv.os or 'unknown'}."]
+    if listen:
+        lines.append("Listening services (inbound):")
+        for proc, port in sorted({(x["proc"], x["port"]) for x in listen}):
+            lines.append(f"- {proc} on port {port}")
+    if estab:
+        lines.append("Outbound connections (dependencies):")
+        inv = load_inventory()
+        ip2name = {getattr(o, "host", ""): n for n, o in inv.items() if getattr(o, "host", "")}
+        for ip, port, proc in sorted({(x["ip"], x["port"], x.get("proc", "")) for x in estab}):
+            who = ip2name.get(ip)
+            lines.append(f"- -> {ip}:{port}" + (f" ({who})" if who else "")
+                         + (f" via {proc}" if proc else ""))
+    if services:
+        lines.append("Running services: " + ", ".join(services[:30]))
+    return "\n".join(lines)
+
+
+_WIN_TOPO_PS = (
+    "$ErrorActionPreference='SilentlyContinue';"
+    "'@@host'; hostname;"
+    "'@@listen'; Get-NetTCPConnection -State Listen | ForEach-Object "
+    "{ \"$($_.LocalPort) $((Get-Process -Id $_.OwningProcess).ProcessName)\" };"
+    "'@@estab'; Get-NetTCPConnection -State Established | "
+    "Where-Object { $_.RemoteAddress -notin '127.0.0.1','::1' } | ForEach-Object "
+    "{ \"$($_.RemoteAddress):$($_.RemotePort) $((Get-Process -Id $_.OwningProcess).ProcessName)\" };"
+    "'@@svc'; Get-Service | Where-Object Status -eq 'Running' | Select-Object -Expand Name"
+)
+
+_LNX_TOPO_CMD = (
+    "echo @@host; hostname; "
+    "echo @@listen; ss -Hltnp 2>/dev/null || netstat -ltnp 2>/dev/null; "
+    "echo @@estab; ss -Htnp state established 2>/dev/null || netstat -tnp 2>/dev/null; "
+    "echo @@svc; systemctl list-units --type=service --state=running --no-legend --no-pager "
+    "2>/dev/null | awk '{print $1}'"
+)
+
+
+async def live_architecture(server_name: str) -> dict:
+    """Connect to the server, discover its live listeners + outbound connections,
+    build a topology graph, and STORE the findings back into the knowledge base
+    (all local — no AI tokens)."""
+    srv = load_inventory().get(server_name)
+    if srv is None:
+        return {"ok": False, "error": f"'{server_name}' is not in the inventory"}
+    from . import healthprobe   # reuse its @@-section parser + ssh
+    try:
+        if srv.is_windows:
+            from . import winexec
+            res = await winexec.run_ps(srv, _WIN_TOPO_PS, timeout=90)
+            if not res.get("ok"):
+                return {"ok": False, "error": "WinRM: " + (res.get("error") or "could not connect")}
+            sec = healthprobe._sections(res.get("stdout", ""))
+            listen = _parse_win_listen(sec.get("listen", ""))
+            estab = _parse_win_estab(sec.get("estab", ""))
+        else:
+            rc, out = await healthprobe._ssh(srv, _LNX_TOPO_CMD)
+            if rc != 0 and not out.strip():
+                return {"ok": False, "error": "SSH: could not connect to the server"}
+            sec = healthprobe._sections(out)
+            listen = _parse_linux_listen(sec.get("listen", ""))
+            estab = _parse_linux_estab(sec.get("estab", ""))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"probe failed: {type(exc).__name__}: {exc}"[:200]}
+
+    services = [s for s in sec.get("svc", "").splitlines() if s.strip()][:40]
+    g = _build_live_graph(srv, listen, estab)
+
+    # persist the discovered topology to the KB (local, replaces prior live entry)
+    text = _topology_text(server_name, srv, listen, estab, services)
+    title = f"{server_name} — live topology"
+    await store_local(text, server=server_name,
+                      os_="windows" if srv.is_windows else "linux",
+                      category="network", title=title)
+
+    try:                                    # overlay latest health onto the server node
+        hist = await asyncio.to_thread(db.health_history, server_name, 1)
+        if hist:
+            status = _overall_status(hist[-1].get("checks"))
+            for n in g["nodes"]:
+                if n["id"] == server_name:
+                    n["status"] = status
+    except Exception:  # noqa: BLE001
+        pass
+
+    peers = len({(e["ip"], e["port"]) for e in estab})
+    g.update({"ok": True, "server": server_name, "source": "live", "stored": True,
+              "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "sources": [title],
+              "notes": f"Live probe: {len(listen)} listening service(s), {peers} outbound "
+                       "connection(s). Stored to the knowledge base."})
+    return g
+
+
 # ---------- architecture view (graph built from the data) ----------
 
 _ARCH_NODE_TYPES = {"client", "external", "network", "loadbalancer", "server",

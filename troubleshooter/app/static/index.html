@@ -1128,6 +1128,8 @@
           <button class="ci-run" id="kbArchBtn" style="flex:1" onclick="kbBuildArch(false)">Build map</button>
           <button class="ci-run" id="kbArchAiBtn" style="background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Richer map using AI">✨ AI <span class="kb-model-chip" id="kbArchModel"></span></button>
         </div>
+        <button class="ci-run" id="kbArchLiveBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--ok)"
+          onclick="kbBuildArchLive()" title="Connect to the server, discover its live connections, and store them to the knowledge base">🔎 Live probe — connect &amp; map</button>
         <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
       </div>
       <div class="kb-side-sec kb-chat-panel">
@@ -3040,6 +3042,30 @@ async function kbBuildArch(useAi) {
   if (useAi) { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
 }
 
+async function kbBuildArchLive(server) {
+  server = server || $('kbArchServer').value;
+  const msg = $('kbArchMsg');
+  if (!server) { msg.style.color = 'var(--warn)'; msg.textContent = 'Pick a server first.'; return; }
+  $('kbArchServer').value = server;
+  const btn = $('kbArchLiveBtn'); if (btn) btn.disabled = true;
+  kbArchSelId = null; $('kbArchDetail').style.display = 'none';
+  msg.style.color = 'var(--muted)'; msg.textContent = `Connecting to ${server} and mapping live…`;
+  $('kbArchCanvas').innerHTML = '<div class="empty">Connecting to the server — discovering listeners & outbound connections…</div>';
+  $('kbArchNotes').textContent = '';
+  try {
+    const g = await (await fetch(`/api/kb/architecture/live?server=${encodeURIComponent(server)}`, { method: 'POST' })).json();
+    if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
+    else {
+      kbArchData = g; kbRenderArch(g);
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ live · ${g.nodes.length} components`;
+      $('kbArchNotes').innerHTML = escapeHtml(g.notes || '')
+        + (g.stored ? ' <b style="color:var(--ok)">✓ learned & stored to the knowledge base</b>' : '');
+      loadKnowledge();   // refresh library + usage (a new KB entry was stored)
+    }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+  if (btn) btn.disabled = false;
+}
+
 function kbRenderArch(g) {
   const nodes = g.nodes || [], edges = g.edges || [];
   if (!nodes.length) { $('kbArchCanvas').innerHTML = '<div class="empty">No components found.</div>'; return; }
@@ -3104,7 +3130,8 @@ function kbArchSelect(i) {
     <div class="k">Connections</div><div class="v">${kbArchConns(g, n.id) || 'none recorded'}</div>
     <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
       <button class="ci-run" onclick="kbArchAsk('${escapeHtml(nm)}')">Ask about this</button>
-      ${isServer ? `<button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="healthCheck('${escapeHtml(nm)}')">🩺 Health check</button>
+      ${isServer ? `<button class="ci-run" style="background:var(--panel2);color:var(--ok)" onclick="kbBuildArchLive('${escapeHtml(nm)}')">🔎 Live probe &amp; map</button>
+      <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="healthCheck('${escapeHtml(nm)}')">🩺 Health check</button>
       <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="investigate('${escapeHtml(nm)}')">🔍 Investigate</button>` : ''}
     </div>`;
 }

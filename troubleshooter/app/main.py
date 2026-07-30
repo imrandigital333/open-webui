@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.83.0"
+APP_VERSION = "2.84.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -660,6 +660,19 @@ async def kb_chat(req: KbChatRequest, request: Request):
         await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
                                 {"via": "chat", "id": (res.get("stored") or {}).get("id")})
     return res
+
+
+@app.post("/api/kb/architecture/live")
+async def kb_architecture_live(server: str, request: Request):
+    """Connect to the server live, discover its listeners + outbound connections,
+    build the map, and store the findings in the knowledge base (local, no AI)."""
+    if not server.strip():
+        raise HTTPException(status_code=400, detail="server is required")
+    g = await knowledge.live_architecture(server.strip())
+    if g.get("ok"):
+        await asyncio.to_thread(db.audit, _actor(request), "kb_live_topology",
+                                {"server": server, "nodes": len(g.get("nodes", []))})
+    return g
 
 
 @app.get("/api/kb/architecture")
