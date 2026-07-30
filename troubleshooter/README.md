@@ -83,6 +83,31 @@ Put nginx (with auth) or your SSO proxy in front of port 8090 — the app itself
 has **no authentication**; anyone who can reach it can run SSH diagnostics on
 your inventory hosts.
 
+### HTTPS / TLS
+
+The app can serve HTTPS directly (no reverse proxy needed) — set the cert and
+key env vars and it will start on TLS:
+
+```bash
+export TROUBLESHOOTER_SSL_CERTFILE=/root/.ssl/streamlit/streamlit-bundle.pem
+export TROUBLESHOOTER_SSL_KEYFILE=/root/.ssl/streamlit/streamlit.key
+python -m app                      # reads host/port/SSL from the environment
+# → https://<server>:8090
+```
+
+For the systemd service, uncomment the `TROUBLESHOOTER_SSL_*` lines in the unit
+file. The cert/key must be **readable by the `User=` account** — `/root/.ssl/…`
+paths require `User=root` (or copy the files somewhere the service account can
+read). To serve on the standard HTTPS port, set `TROUBLESHOOTER_PORT=443`.
+
+Quick test with the raw uvicorn CLI instead:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8090 \
+  --ssl-certfile /root/.ssl/streamlit/streamlit-bundle.pem \
+  --ssl-keyfile  /root/.ssl/streamlit/streamlit.key
+```
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -93,6 +118,11 @@ your inventory hosts.
 | `TROUBLESHOOTER_MODEL` | Claude Code's configured default | Optional model override (e.g. `claude-opus-4-8`) |
 | `TROUBLESHOOTER_MAX_TURNS` | unset | Optional hard cap on agent turns (caps all depths) |
 | `TROUBLESHOOTER_DB` | `sqlite:///<app>/data/troubleshooter.db` | Database URL (SQLite or PostgreSQL) |
+| `TROUBLESHOOTER_HOST` | `0.0.0.0` | Bind address (used by `python -m app`) |
+| `TROUBLESHOOTER_PORT` | `8090` | Listen port (used by `python -m app`) |
+| `TROUBLESHOOTER_SSL_CERTFILE` | unset | TLS certificate (PEM/bundle) — set with the key to serve HTTPS |
+| `TROUBLESHOOTER_SSL_KEYFILE` | unset | TLS private key — set with the cert to serve HTTPS |
+| `TROUBLESHOOTER_SSL_KEY_PASSWORD` | unset | Passphrase, only if the private key is encrypted |
 | `TROUBLESHOOTER_RETENTION_DAYS` | `90` | Purge sessions (DB rows + evidence dirs) older than this; `0` disables |
 | `TROUBLESHOOTER_SCRIPTLIB` | `<app>/data/scriptlib` | Location of the agent script library |
 

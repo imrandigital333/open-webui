@@ -12,9 +12,16 @@ Group=aitrouble
 WorkingDirectory=/opt/ai-troubleshooter/troubleshooter
 Environment=TROUBLESHOOTER_INVENTORY=/opt/ai-troubleshooter/inventory.yaml
 Environment=TROUBLESHOOTER_DATA=/opt/ai-troubleshooter/data/sessions
+Environment=TROUBLESHOOTER_HOST=0.0.0.0
+Environment=TROUBLESHOOTER_PORT=8090
 # Optional: pin a model instead of the Claude Code default
 # Environment=TROUBLESHOOTER_MODEL=claude-opus-4-8
-ExecStart=/opt/ai-troubleshooter/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8090
+# HTTPS/TLS — set both to serve HTTPS directly (the cert/key must be readable
+# by the User= account above; /root/.ssl paths require User=root).
+# Environment=TROUBLESHOOTER_SSL_CERTFILE=/root/.ssl/streamlit/streamlit-bundle.pem
+# Environment=TROUBLESHOOTER_SSL_KEYFILE=/root/.ssl/streamlit/streamlit.key
+# Environment=TROUBLESHOOTER_SSL_KEY_PASSWORD=   # only if the key is encrypted
+ExecStart=/opt/ai-troubleshooter/venv/bin/python -m app
 Restart=on-failure
 RestartSec=5
 
