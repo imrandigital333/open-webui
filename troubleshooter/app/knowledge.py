@@ -338,15 +338,43 @@ def _match_server_ref(message: str) -> str:
     return ""
 
 _ANSWER_PROMPT = """You are the knowledge-base assistant for an airport IT operations team. Answer
-the operator's question USING ONLY the knowledge entries below. If they do not
-contain the answer, say so plainly and suggest what to upload. Be concise and
-concrete; cite the entry titles you used in square brackets.
+the operator's question USING ONLY the knowledge entries below.
+
+Lead with the actual information — state the facts directly. Do NOT preface with
+meta-statements like "I have information about..." or "Based on the knowledge
+base...". Just give the answer. Be concise and concrete, use short bullet points
+for lists, and cite the entry titles you used in square brackets. Only if the
+entries genuinely do not contain the answer, say so briefly and suggest what to
+upload.
 
 KNOWLEDGE ENTRIES:
 %s
 
 QUESTION: %s
 """
+
+
+async def _pick_diagram_doc(hits: list, docs: dict) -> str:
+    """Choose a document among the retrieved hits to render as a diagram in the
+    canvas — so asking about a topic also shows its design. Prefer a doc that
+    already has a cached diagram (free), then a design/architecture doc, then the
+    top hit if its body is substantial enough to plausibly diagram."""
+    order = []
+    for h in hits:
+        did = h.get("doc_id")
+        if did and did in docs and did not in order:
+            order.append(did)
+    for did in order:                               # already-generated diagram → free
+        if _design_cache_path(did).exists():
+            return did
+    for did in order:                               # a design / architecture doc
+        if _is_design_doc(docs[did]):
+            return did
+    if order:                                       # else the single top hit, if substantial
+        full = await asyncio.to_thread(db.kb_get_doc, order[0])
+        if full and len(str(full.get("body") or "")) >= 600:
+            return order[0]
+    return ""
 
 
 async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
@@ -400,13 +428,16 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
         '\n\nReply with ONLY this JSON: {"answer": "your answer with [citations]"}')
     _record_usage(usage)
     sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
+    diagram_doc_id = await _pick_diagram_doc(hits, docs)   # show a relevant design in the canvas
     if not data:
         # fall back to returning the raw top chunks
         return {"mode": "ask", "ok": True, "sources": sources,
+                "diagram_doc_id": diagram_doc_id,
                 "answer": "Closest knowledge I have:\n\n" +
                           "\n\n".join(f"• {h['text'][:400]}" for h in hits[:3]),
                 "ai_error": err}
     return {"mode": "ask", "ok": True, "sources": sources,
+            "diagram_doc_id": diagram_doc_id,
             "answer": str(data.get("answer") or "").strip() or "(no answer)"}
 
 

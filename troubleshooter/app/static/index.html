@@ -2982,18 +2982,24 @@ async function kbLoadDesignDocs() {
   } catch (e) { /* offline */ }
 }
 
-async function kbShowDesign(docId, regenerate) {
+const KB_ARCH_PLACEHOLDER = '<div class="empty">Pick a server, or ask the assistant about one, to view its service map.</div>';
+
+async function kbShowDesign(docId, regenerate, auto) {
   if (!docId) return;
   if ($('kbDesignSec')) $('kbDesignSec').open = true;
   const msg = $('kbArchMsg');
   kbArchSelId = null; $('kbArchDetail').style.display = 'none';
   msg.style.color = 'var(--muted)';
-  msg.textContent = regenerate ? 'Regenerating diagram from the document…' : 'Loading design diagram…';
-  $('kbArchCanvas').innerHTML = `<div class="empty">${regenerate ? 'Re-reading the document and extracting components with AI…' : 'Loading…'}</div>`;
+  msg.textContent = regenerate ? 'Regenerating diagram from the document…' : (auto ? 'Looking for a relevant design…' : 'Loading design diagram…');
+  if (!auto) $('kbArchCanvas').innerHTML = `<div class="empty">${regenerate ? 'Re-reading the document and extracting components with AI…' : 'Loading…'}</div>`;
   $('kbArchNotes').textContent = '';
   try {
     const g = await (await fetch(`/api/kb/design-diagram?doc_id=${encodeURIComponent(docId)}${regenerate ? '&regenerate=1' : ''}`)).json();
-    if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
+    if (!g.ok) {
+      // an auto lookup that finds nothing diagrammable should stay quiet
+      if (auto) { msg.textContent = ''; if (!kbArchData) $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+    }
     else {
       kbArchData = g; kbRenderArch(g);
       msg.style.color = 'var(--ok)'; msg.textContent = `✓ diagram · ${g.nodes.length} components`;
@@ -3152,6 +3158,9 @@ async function kbSend() {
     thinking.remove();
     if (r.ok === false) { kbMsg('✕ ' + (r.error || 'failed'), 'bot'); }
     else kbMsg(r.answer || '(no answer)', 'bot', { teach: r.mode === 'teach', sources: r.sources });
+    // show a relevant design in the canvas for the thing asked about (a server
+    // query already drew its map above; otherwise render the cited design doc)
+    if (!validTarget && r.diagram_doc_id) kbShowDesign(r.diagram_doc_id, false, true);
     if (r.mode === 'teach') loadKnowledge();   // refresh tree + usage after learning
     else { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
   } catch (e) { thinking.remove(); kbMsg('✕ ' + e.message, 'bot'); }
