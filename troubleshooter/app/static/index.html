@@ -6,10 +6,35 @@
 <title>AI Troubleshooter</title>
 <style>
   :root {
+    /* Dark (default) */
     --bg: #0b0f16; --panel: #121826; --panel2: #1a2233; --border: #263043;
     --text: #e7edf5; --muted: #8b98ac; --accent: #4c8dff; --accent2: #7aa8ff;
     --ok: #3fb950; --warn: #d29922; --err: #f85149; --purple: #a371f7;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* theme-able surfaces used by the canvas / overlays / chips */
+    --canvas-bg: radial-gradient(1200px 500px at 20% -10%, rgba(56,139,253,.10), transparent 60%),
+                 radial-gradient(900px 500px at 100% 110%, rgba(163,113,247,.08), transparent 55%),
+                 linear-gradient(180deg, #0c1220, #0a0e18);
+    --overlay: rgba(13,19,33,.94); --chip: rgba(255,255,255,.05); --shadow: rgba(0,0,0,.45);
+  }
+  /* Light */
+  :root[data-theme="light"] {
+    --bg: #eef1f6; --panel: #ffffff; --panel2: #f2f5fa; --border: #d3d9e3;
+    --text: #1a2230; --muted: #5a6676; --accent: #2563eb; --accent2: #3b82f6;
+    --ok: #1a8f3c; --warn: #b5730f; --err: #d92d20; --purple: #7c3aed;
+    --canvas-bg: radial-gradient(1200px 500px at 20% -10%, rgba(37,99,235,.08), transparent 60%),
+                 linear-gradient(180deg, #f8fafd, #eef2f8);
+    --overlay: rgba(255,255,255,.92); --chip: rgba(0,0,0,.05); --shadow: rgba(30,41,59,.18);
+  }
+  /* BIAL — Bangalore airport brand: crimson primary, teal secondary */
+  :root[data-theme="bial"] {
+    --bg: #f6efe9; --panel: #ffffff; --panel2: #f8f1ec; --border: #e6d6ca;
+    --text: #2a1c17; --muted: #7c6a60; --accent: #c8102e; --accent2: #e0485c;
+    --ok: #2e7d32; --warn: #b7791f; --err: #c62828; --purple: #00838f;
+    --canvas-bg: radial-gradient(1200px 500px at 20% -10%, rgba(200,16,46,.08), transparent 60%),
+                 radial-gradient(900px 500px at 100% 110%, rgba(0,131,143,.09), transparent 55%),
+                 linear-gradient(180deg, #fdf6f1, #f4e9e1);
+    --overlay: rgba(255,251,248,.94); --chip: rgba(122,20,30,.06); --shadow: rgba(84,20,16,.18);
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -607,10 +632,7 @@
   /* architecture / service map */
   .kb-arch-stage { display: flex; gap: 12px; align-items: stretch; position: relative; }
   .kb-arch-canvas { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 12px;
-    background:
-      radial-gradient(1200px 500px at 20% -10%, rgba(56,139,253,.10), transparent 60%),
-      radial-gradient(900px 500px at 100% 110%, rgba(163,113,247,.08), transparent 55%),
-      linear-gradient(180deg, #0c1220, #0a0e18);
+    background: var(--canvas-bg);
     overflow: auto; max-height: 62vh; min-height: 140px; position: relative;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.02); }
   .kb-arch-canvas .arch-svg-wrap { padding: 6px 8px 14px; }
@@ -619,7 +641,7 @@
   /* enterprise topbar over the map */
   .arch-topbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center;
     justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 9px 13px;
-    background: linear-gradient(180deg, rgba(13,19,33,.96), rgba(13,19,33,.82));
+    background: var(--overlay);
     backdrop-filter: blur(4px); border-bottom: 1px solid var(--border); }
   .arch-tb-l { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .arch-tb-ic { font-size: 20px; line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
@@ -658,8 +680,8 @@
   .arch-leg { flex: 0 0 auto; width: auto; display: inline-flex; align-items: center; gap: 4px;
     font-size: 10.5px; font-weight: 600; color: var(--text); text-transform: capitalize;
     cursor: pointer; white-space: nowrap; padding: 2px 8px 2px 6px; border-radius: 999px;
-    border: 1px solid transparent; background: rgba(255,255,255,.04); transition: background .12s, opacity .12s; }
-  .arch-leg:hover { background: rgba(255,255,255,.09); border-color: var(--border); }
+    border: 1px solid transparent; background: var(--chip); transition: background .12s, opacity .12s; }
+  .arch-leg:hover { background: var(--chip); border-color: var(--border); filter: brightness(1.4); }
   .arch-leg .ic { font-size: 12px; }
   .arch-leg.off { color: var(--muted); opacity: .5; text-decoration: line-through; background: transparent; }
   .arch-leg.reset { color: var(--accent2); background: rgba(163,113,247,.12); border-color: rgba(163,113,247,.4);
@@ -700,8 +722,8 @@
   .arch-draw-sub { font-size: 12px; color: var(--muted); }
   /* zoom control (floats bottom-right of the stage) */
   .arch-zoom { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: flex; align-items: center;
-    gap: 2px; background: rgba(13,19,33,.92); border: 1px solid var(--border); border-radius: 9px;
-    padding: 3px; box-shadow: 0 3px 10px rgba(0,0,0,.4); backdrop-filter: blur(3px); }
+    gap: 2px; background: var(--overlay); border: 1px solid var(--border); border-radius: 9px;
+    padding: 3px; box-shadow: 0 3px 10px var(--shadow); backdrop-filter: blur(3px); }
   .arch-zoom button { width: 28px; height: 26px; border: none; background: transparent; color: var(--text);
     font-size: 15px; cursor: pointer; border-radius: 6px; }
   .arch-zoom button:hover { background: var(--panel2); }
@@ -1132,11 +1154,9 @@
   }
   /* ---- login gate ---- */
   .auth-gate { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center;
-    justify-content: center; background:
-      radial-gradient(1000px 500px at 30% 0%, rgba(56,139,253,.14), transparent 60%),
-      linear-gradient(180deg, #0b0f1a, #070a12); }
+    justify-content: center; background: var(--canvas-bg); }
   .auth-card { width: 360px; max-width: 90vw; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 16px; padding: 30px 28px; box-shadow: 0 20px 60px rgba(0,0,0,.5); text-align: center; }
+    border-radius: 16px; padding: 30px 28px; box-shadow: 0 20px 60px var(--shadow); text-align: center; }
   .auth-logo { font-size: 34px; color: var(--accent2); margin-bottom: 8px; }
   .auth-card h2 { font-size: 20px; }
   .auth-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
@@ -1145,6 +1165,7 @@
   .auth-form .primary { margin-top: 4px; }
   .auth-err { color: var(--err); font-size: 12.5px; min-height: 16px; }
   .auth-who { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .theme-sel { width: auto; padding: 6px 8px; font-size: 12px; margin-left: 6px; }
   /* ---- users & access tables ---- */
   .acc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .acc-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
@@ -1154,6 +1175,19 @@
 </style>
 </head>
 <body>
+<script>
+  // apply the saved theme immediately (before paint) to avoid a flash
+  (function () {
+    var t = 'dark';
+    try { t = localStorage.getItem('theme') || 'dark'; } catch (e) {}
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+  function setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    var s = document.getElementById('themeSel'); if (s) s.value = t;
+  }
+</script>
 <div id="authGate" class="auth-gate" style="display:none">
   <div class="auth-card">
     <div class="auth-logo">◎</div>
@@ -1190,6 +1224,11 @@
     <button id="navSettings">Settings</button>
   </nav>
   <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span>
+    <select id="themeSel" class="theme-sel" title="Theme" onchange="setTheme(this.value)">
+      <option value="dark">🌙 Dark</option>
+      <option value="light">☀️ Light</option>
+      <option value="bial">✈️ BIAL</option>
+    </select>
     <span id="authWho" class="auth-who" style="display:none"></span>
     <button id="logoutBtn" class="ghost" style="display:none;width:auto;padding:6px 12px" onclick="authLogout()">Logout</button>
   </div>
@@ -6811,6 +6850,7 @@ async function bootAuth() {
     authHideGate(); startApp();
   } catch (ex) { authShowGate('login'); }
 }
+{ const _ts = $('themeSel'); if (_ts) _ts.value = document.documentElement.getAttribute('data-theme') || 'dark'; }
 bootAuth();
 </script>
 </body>
