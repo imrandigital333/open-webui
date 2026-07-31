@@ -649,22 +649,17 @@
   .arch-mt.vm   { color: #d2b3ff; background: rgba(163,113,247,.14); border-color: rgba(163,113,247,.4); }
   .arch-mt.phys { color: #ffd7a3; background: rgba(219,151,60,.15); border-color: rgba(219,151,60,.45); }
   .arch-mt.ctr  { color: #8fd3ff; background: rgba(56,169,253,.14); border-color: rgba(56,169,253,.4); }
-  .arch-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; }
-  .arch-leg { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--muted);
-    text-transform: capitalize; }
+  .arch-legend { display: flex; flex-wrap: wrap; gap: 5px 6px; align-items: center; }
+  /* legend chips double as the layer show/hide control */
+  .arch-leg { flex: 0 0 auto; width: auto; display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10.5px; font-weight: 600; color: var(--text); text-transform: capitalize;
+    cursor: pointer; white-space: nowrap; padding: 2px 8px 2px 6px; border-radius: 999px;
+    border: 1px solid transparent; background: rgba(255,255,255,.04); transition: background .12s, opacity .12s; }
+  .arch-leg:hover { background: rgba(255,255,255,.09); border-color: var(--border); }
   .arch-leg .ic { font-size: 12px; }
-  /* layer show/hide chips */
-  .arch-layers { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
-    margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
-  .arch-layers .ll { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
-    text-transform: uppercase; margin-right: 2px; }
-  .arch-layer { width: auto; flex: 0 0 auto; font-size: 10.5px; font-weight: 700; padding: 3px 9px;
-    border-radius: 999px; cursor: pointer; white-space: nowrap;
-    color: var(--accent2); background: rgba(163,113,247,.14); border: 1px solid rgba(163,113,247,.45); }
-  .arch-layer:hover { background: rgba(163,113,247,.26); }
-  .arch-layer.off { color: var(--muted); background: transparent; border-color: var(--border);
-    text-decoration: line-through; opacity: .7; }
-  .arch-layer.all { color: var(--muted); background: var(--panel2); border-color: var(--border); }
+  .arch-leg.off { color: var(--muted); opacity: .5; text-decoration: line-through; background: transparent; }
+  .arch-leg.reset { color: var(--accent2); background: rgba(163,113,247,.12); border-color: rgba(163,113,247,.4);
+    text-decoration: none; opacity: 1; }
   /* swim-lane bands + labels */
   .arch-lane { fill: rgba(255,255,255,.012); }
   .arch-lane.alt { fill: rgba(255,255,255,.030); }
@@ -3480,14 +3475,12 @@ function kbArchHeader(g) {
   const mtIcon = h.machine_type === 'Physical' ? '🖥️' : h.machine_type === 'Container' ? '📦' : '🧩';
   const mtCls = h.machine_type === 'Physical' ? 'phys' : h.machine_type === 'Container' ? 'ctr' : 'vm';
   const mt = h.machine_type ? `<span class="arch-mt ${mtCls}" title="${escapeHtml(h.hardware || '')}">${mtIcon} ${escapeHtml(h.machine_type)}${h.virtualization && h.virtualization !== 'Bare metal' ? ' · ' + escapeHtml(h.virtualization) : ''}</span>` : '';
+  // the legend icons ARE the layer show/hide control — click one to toggle that
+  // component type (one clean row, no extra line)
   const types = [...new Set((g.nodes || []).map(n => n.type))];
-  const legend = types.map(t => `<span class="arch-leg"><span class="ic">${ARCH_ICON[t] || '•'}</span>${escapeHtml(t)}</span>`).join('');
-  // layer show/hide: a chip per tier (layer) present; click to toggle
-  const hidden = new Set(g._hidden || []);
-  const presentTiers = [...new Set((g.nodes || []).map(n => ARCH_TIER[n.type] ?? 6))].sort((a, b) => a - b);
-  const layerChips = presentTiers.length > 1 ? presentTiers.map(t =>
-    `<button class="arch-layer${hidden.has(t) ? ' off' : ''}" onclick="kbArchToggleLayer(${t})">${escapeHtml(ARCH_TIER_LABEL[t] || ('Layer ' + t))}</button>`).join('') : '';
-  const layerBar = layerChips ? `<div class="arch-layers"><span class="ll">Layers:</span>${layerChips}<button class="arch-layer all" onclick="kbArchShowAllLayers()">show all</button></div>` : '';
+  const hidden = new Set(g._hiddenTypes || []);
+  const legend = types.map(t => `<button class="arch-leg${hidden.has(t) ? ' off' : ''}" onclick="kbArchToggleType('${escapeHtml(t)}')" title="Show / hide the ${escapeHtml(t)} layer"><span class="ic">${ARCH_ICON[t] || '•'}</span>${escapeHtml(t)}</button>`).join('')
+    + (hidden.size ? `<button class="arch-leg reset" onclick="kbArchShowAllTypes()" title="Show every layer">⟲ all</button>` : '');
   const sub = isDesign
     ? (when ? '📐 diagram generated ' + escapeHtml(when) : 'design flow diagram')
     : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
@@ -3507,21 +3500,20 @@ function kbArchHeader(g) {
       ${mt}${regen}
     </div>
     <div class="arch-legend">${legend}</div>
-    ${layerBar}
   </div>`;
 }
 
-// show/hide a whole layer (tier) after generation
-function kbArchToggleLayer(t) {
+// show/hide a component-type "layer" straight from its legend icon
+function kbArchToggleType(t) {
   const g = kbArchData; if (!g) return;
-  const s = new Set(g._hidden || []);
+  const s = new Set(g._hiddenTypes || []);
   s.has(t) ? s.delete(t) : s.add(t);
-  g._hidden = [...s];
+  g._hiddenTypes = [...s];
   kbRenderArch(g, { animate: false });
 }
-function kbArchShowAllLayers() {
+function kbArchShowAllTypes() {
   const g = kbArchData; if (!g) return;
-  g._hidden = [];
+  g._hiddenTypes = [];
   kbRenderArch(g, { animate: false });
 }
 
@@ -3554,15 +3546,16 @@ function kbRenderArch(g, opts) {
   }
   const animate = !(opts && opts.animate === false);
   const layout = g.layout || {};
-  // layer filter: hide nodes (and their edges) whose tier the operator turned off
+  // layer filter: hide nodes (and their edges) whose type the operator toggled
+  // off from the legend
   nodes.forEach((n, i) => { n._i = i; });               // stable index into g.nodes
-  const hiddenTiers = new Set(g._hidden || []);
-  const vis = nodes.filter(n => !hiddenTiers.has(ARCH_TIER[n.type] ?? 6));
+  const hiddenTypes = new Set(g._hiddenTypes || []);
+  const vis = nodes.filter(n => !hiddenTypes.has(n.type));
   if (!vis.length) {
     $('kbArchCanvas').innerHTML = kbArchHeader(g) + `<div class="arch-empty">
       <div class="arch-empty-ic">🫥</div>
       <div class="arch-empty-h">All layers are hidden</div>
-      <div class="arch-empty-p">Turn a layer back on above, or press <b>show all</b>.</div></div>`;
+      <div class="arch-empty-p">Click a legend icon above to show it again, or press <b>⟲ all</b>.</div></div>`;
     return;
   }
   const rows = {}, tierOf = {};
