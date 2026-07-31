@@ -600,7 +600,7 @@
   .kb-doc .del:hover { color: var(--err); }
   .kb-count { color: var(--muted); font-weight: 400; font-size: 11px; }
   /* architecture / service map */
-  .kb-arch-stage { display: flex; gap: 12px; align-items: stretch; }
+  .kb-arch-stage { display: flex; gap: 12px; align-items: stretch; position: relative; }
   .kb-arch-canvas { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 12px;
     background:
       radial-gradient(1200px 500px at 20% -10%, rgba(56,139,253,.10), transparent 60%),
@@ -664,6 +664,39 @@
   .arch-empty-h { font-weight: 800; font-size: 16px; margin-top: 10px; color: var(--text); }
   .arch-empty-p { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.5; }
   .arch-empty-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-width: 320px; margin-inline: auto; }
+  /* "agent is drawing" animation shown while a design generates */
+  .arch-drawing { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 40px 20px; min-height: 300px; text-align: center; }
+  .arch-draw-svg { width: 260px; max-width: 80%; height: auto; overflow: visible; }
+  .arch-drawing .dsk { fill: none; stroke: var(--accent2); stroke-width: 2.4; stroke-linecap: round;
+    stroke-dasharray: 1; stroke-dashoffset: 1; filter: drop-shadow(0 0 4px rgba(163,113,247,.5));
+    animation: dsk-loop 3.4s ease-in-out infinite; animation-delay: calc(var(--i) * 0.32s); }
+  @keyframes dsk-loop { 0% { stroke-dashoffset: 1; opacity: .25; } 45% { stroke-dashoffset: 0; opacity: 1; }
+    80% { stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dashoffset: 0; opacity: .25; } }
+  .arch-drawing .dpencil { font-size: 18px; animation: dpencil-move 3.4s ease-in-out infinite; }
+  @keyframes dpencil-move {
+    0% { transform: translate(40px,110px); } 20% { transform: translate(78px,42px); }
+    45% { transform: translate(160px,40px); } 65% { transform: translate(200px,74px); }
+    85% { transform: translate(210px,112px); } 100% { transform: translate(40px,110px); } }
+  .arch-draw-title { font-weight: 800; font-size: 15px; color: var(--text); }
+  .arch-draw-sub { font-size: 12px; color: var(--muted); }
+  /* zoom control (floats bottom-right of the stage) */
+  .arch-zoom { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: flex; align-items: center;
+    gap: 2px; background: rgba(13,19,33,.92); border: 1px solid var(--border); border-radius: 9px;
+    padding: 3px; box-shadow: 0 3px 10px rgba(0,0,0,.4); backdrop-filter: blur(3px); }
+  .arch-zoom button { width: 28px; height: 26px; border: none; background: transparent; color: var(--text);
+    font-size: 15px; cursor: pointer; border-radius: 6px; }
+  .arch-zoom button:hover { background: var(--panel2); }
+  .arch-zoom span { font: 700 11px var(--mono); color: var(--muted); min-width: 42px; text-align: center; }
+  /* container "N items" count chip + expandable list */
+  .arch-count rect { fill: rgba(163,113,247,.16); stroke: rgba(163,113,247,.5); stroke-width: 1; }
+  .arch-count text { fill: #d2b3ff; font: 700 10px var(--mono); }
+  .arch-node:hover .arch-count rect { fill: rgba(163,113,247,.3); }
+  .kb-children { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 8px; background: var(--panel); }
+  .kb-child { font-size: 11.5px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+  .kb-child:last-child { border-bottom: none; }
+  .kb-child span { color: var(--muted); }
   .kb-arch-detail { flex: 0 0 280px; border: 1px solid var(--border); border-radius: 10px;
     background: var(--panel2); padding: 12px 14px; max-height: 62vh; overflow: auto; position: relative; }
   .kb-detail-x { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; line-height: 22px;
@@ -1286,6 +1319,12 @@
       <div class="kb-arch-stage">
         <div id="kbArchCanvas" class="kb-arch-canvas"><div class="empty">Pick a server, or ask the assistant about one, to view its service map.</div></div>
         <div id="kbArchDetail" class="kb-arch-detail" style="display:none"></div>
+        <div class="arch-zoom" id="kbArchZoomCtl" style="display:none">
+          <button onclick="kbArchZoomBy(-1)" title="Zoom out">−</button>
+          <span id="kbZoomLbl">100%</span>
+          <button onclick="kbArchZoomBy(1)" title="Zoom in">＋</button>
+          <button onclick="kbArchZoomReset()" title="Fit to 100%">⤢</button>
+        </div>
       </div>
       <div class="hint" id="kbArchNotes" style="margin-top:6px;flex:0 0 auto"></div>
     </div>
@@ -3001,6 +3040,23 @@ async function kbLoadDesignDocs() {
 
 const KB_ARCH_PLACEHOLDER = '<div class="empty">Pick a server, or ask the assistant about one, to view its service map.</div>';
 
+// an animated "the agent is drawing" sketch shown while a design is generating
+function KB_DRAWING(label) {
+  return `<div class="arch-drawing">
+    <svg viewBox="0 0 260 150" class="arch-draw-svg">
+      <path class="dsk" pathLength="1" style="--i:0" d="M40,110 L40,55 L90,55"/>
+      <path class="dsk" pathLength="1" style="--i:1" d="M130,40 h60 v34 h-60 z"/>
+      <circle class="dsk" pathLength="1" style="--i:2" cx="60" cy="40" r="18"/>
+      <circle class="dsk" pathLength="1" style="--i:3" cx="210" cy="112" r="18"/>
+      <path class="dsk" pathLength="1" style="--i:4" d="M160,74 C 160,100 195,95 200,108"/>
+      <path class="dsk" pathLength="1" style="--i:2" d="M78,40 h44"/>
+      <text class="dpencil" x="0" y="0">✏️</text>
+    </svg>
+    <div class="arch-draw-title">✏️ Designing <b>${escapeHtml(label || 'the architecture')}</b>…</div>
+    <div class="arch-draw-sub">sketching components &amp; connections from your knowledge base</div>
+  </div>`;
+}
+
 async function kbShowDesign(docId, regenerate, auto) {
   if (!docId) return;
   if ($('kbDesignSec')) $('kbDesignSec').open = true;
@@ -3008,14 +3064,15 @@ async function kbShowDesign(docId, regenerate, auto) {
   kbArchSelId = null; $('kbArchDetail').style.display = 'none';
   msg.style.color = 'var(--muted)';
   msg.textContent = regenerate ? 'Regenerating diagram from the document…' : (auto ? 'Looking for a relevant design…' : 'Loading design diagram…');
-  if (!auto) $('kbArchCanvas').innerHTML = `<div class="empty">${regenerate ? 'Re-reading the document and extracting components with AI…' : 'Loading…'}</div>`;
+  $('kbArchCanvas').innerHTML = KB_DRAWING('the design');
+  const zc0 = $('kbArchZoomCtl'); if (zc0) zc0.style.display = 'none';
   $('kbArchNotes').textContent = '';
   try {
     const g = await (await fetch(`/api/kb/design-diagram?doc_id=${encodeURIComponent(docId)}${regenerate ? '&regenerate=1' : ''}`)).json();
     if (!g.ok) {
-      // an auto lookup that finds nothing diagrammable should stay quiet
-      if (auto) { msg.textContent = ''; if (!kbArchData) $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
-      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+      if (kbArchData) kbRenderArch(kbArchData); else $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER;
+      if (auto) msg.textContent = '';
+      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); }
     }
     else {
       kbArchData = g; kbRenderArch(g);
@@ -3034,15 +3091,18 @@ async function kbShowDesignQuery(query, server, regenerate, auto, broad) {
   kbArchSelId = null; $('kbArchDetail').style.display = 'none';
   msg.style.color = 'var(--muted)';
   msg.textContent = regenerate ? 'Rebuilding design across all sources…' : (auto ? 'Synthesising a design from the knowledge base…' : 'Building design…');
-  if (!auto) $('kbArchCanvas').innerHTML = `<div class="empty">Synthesising a design across the knowledge base…</div>`;
+  $('kbArchCanvas').innerHTML = KB_DRAWING(broad ? 'organisation architecture' : (query || 'the architecture'));
+  const zc = $('kbArchZoomCtl'); if (zc) zc.style.display = 'none';
   $('kbArchNotes').textContent = '';
   try {
     const qs = `q=${encodeURIComponent(query || '')}&server=${encodeURIComponent(server || '')}`
       + (regenerate ? '&regenerate=1' : '') + (broad ? '&broad=1' : '');
     const g = await (await fetch(`/api/kb/design-query?${qs}`)).json();
     if (!g.ok) {
-      if (auto) { msg.textContent = ''; if (!kbArchData) $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
-      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+      // restore whatever was showing (a prior diagram, else the placeholder)
+      if (kbArchData) kbRenderArch(kbArchData); else $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER;
+      if (auto) msg.textContent = '';
+      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); }
     } else {
       kbArchData = g; kbRenderArch(g);
       msg.style.color = 'var(--ok)'; msg.textContent = `✓ design · ${g.nodes.length} components · ${(g.sources || []).length} source(s)`;
@@ -3228,7 +3288,42 @@ const ARCH_ICON = { user: '👤', client: '👥', external: '🌐', cdn: '🌍',
   network: '🧭', gateway: '🚪', loadbalancer: '⚖️', server: '🖥️', service: '⚙️',
   application: '📦', api: '🔌', component: '🧩', process: '🧩', queue: '📨', cache: '⚡',
   database: '🗄️', storage: '💽', dependency: '🔗', cpu: '🧠', memory: '📊', disk: '💽' };
+// technology-aware icons: match real products/OSes in the label/meta/details so
+// a VM, an ESXi host, PostgreSQL, Redis, a firewall etc. each look right
+const TECH_ICON = [
+  [/\b(esxi|vsphere|vcenter|hypervisor)\b/, '💠'], [/\b(vmware|vm|virtual machine|guest vm)\b/, '💻'],
+  [/\bwindows|win(dows)? server|wsus\b/, '🪟'], [/\b(rhel|red hat|centos|ubuntu|debian|suse|linux|unix|aix)\b/, '🐧'],
+  [/\b(postgre|postgres)\b/, '🐘'], [/\b(mysql|mariadb)\b/, '🐬'], [/\bmongo/, '🍃'],
+  [/\b(oracle|db2|mssql|sql server|sybase|sql)\b/, '🛢️'],
+  [/\b(redis|memcache|cache)\b/, '⚡'], [/\b(kafka|rabbit|activemq|jms|mq|queue|broker)\b/, '📨'],
+  [/\b(elastic|elasticsearch|solr|opensearch)\b/, '🔎'],
+  [/\b(nginx|apache|httpd|iis|web server|tomcat|jboss|weblogic|webapp)\b/, '🌐'],
+  [/\b(java|jvm)\b/, '☕'], [/\bnode\.?js|express\b/, '🟢'],
+  [/\b(docker|kubernetes|k8s|openshift|container|pod)\b/, '🐳'],
+  [/\b(f5|haproxy|netscaler|load ?balanc|vip)\b/, '⚖️'],
+  [/\b(firewall|palo alto|fortinet|checkpoint|fortigate|asa)\b/, '🧱'],
+  [/\btape\b/, '📼'], [/\b(commvault|veeam|netbackup|spectrum protect|rubrik|networker|backup|mediaagent|commserve)\b/, '💾'],
+  [/\b(san|nas|netapp|isilon|v5000|lun|volume|datastore|storage)\b/, '💽'],
+  [/\bdns\b/, '🧭'], [/\b(ldap|active directory|kerberos|\bad\b|domain controller)\b/, '🪪'],
+  [/\b(smtp|exchange|mail|email)\b/, '✉️'],
+  [/\b(splunk|grafana|prometheus|zabbix|nagios|monitor)\b/, '📈'],
+  [/\b(cloudflare|akamai|cdn)\b/, '🌍'], [/\b(api gateway|apigee|kong|gateway)\b/, '🚪'],
+];
+function kbNodeIcon(n) {
+  const s = `${n.label || ''} ${n.meta || ''} ${n.type || ''} ${n.details || ''}`.toLowerCase();
+  for (const [re, ic] of TECH_ICON) if (re.test(s)) return ic;
+  return ARCH_ICON[n.type] || '•';
+}
 let kbArchData = null, kbArchSelId = null;
+let kbArchZoom = 1, kbArchBaseW = 0, kbArchBaseH = 0;
+function kbArchApplyZoom() {
+  const svg = $('kbArchCanvas').querySelector('svg'); if (!svg) return;
+  svg.setAttribute('width', Math.round(kbArchBaseW * kbArchZoom));
+  svg.setAttribute('height', Math.round(kbArchBaseH * kbArchZoom));
+  const lbl = $('kbZoomLbl'); if (lbl) lbl.textContent = Math.round(kbArchZoom * 100) + '%';
+}
+function kbArchZoomBy(dir) { kbArchZoom = Math.min(3, Math.max(0.3, +(kbArchZoom + dir * 0.15).toFixed(2))); kbArchApplyZoom(); }
+function kbArchZoomReset() { kbArchZoom = 1; kbArchApplyZoom(); const c = $('kbArchCanvas'); if (c) c.scrollTo({ left: 0, top: 0 }); }
 
 // show the captured service map for the currently-selected server (no tokens,
 // no reconnect — reads the last stored live probe; empty state if none)
@@ -3340,6 +3435,7 @@ function kbArchHeader(g) {
 function kbRenderArch(g, opts) {
   const nodes = g.nodes || [], edges = g.edges || [];
   const server = g.server || $('kbArchServer').value || '';
+  const zctl = $('kbArchZoomCtl'); if (zctl) zctl.style.display = nodes.length ? 'flex' : 'none';
   if (!nodes.length && g.kind === 'design') {
     $('kbArchCanvas').innerHTML = kbArchHeader(g) + `<div class="arch-empty">
       <div class="arch-empty-ic">📐</div>
@@ -3404,14 +3500,19 @@ function kbRenderArch(g, opts) {
     const p = pos[n.id], meta = clip(n.meta, 20), lbl = clip(n.label, 18);
     const health = n.status ? ' h-' + n.status : '', sel = n.id === kbArchSelId ? ' sel' : '';
     const pip = n.status ? `<circle class="arch-pip ${escapeHtml(n.status)}" cx="${p.r * 0.72}" cy="${-p.r * 0.72}" r="5"/>` : '';
+    const nc = (n.children || []).length;
+    const countY = p.r + (meta ? 40 : 27);
+    const countChip = nc ? `<g class="arch-count"><rect x="-30" y="${countY - 10}" width="60" height="16" rx="8"/>`
+      + `<text x="0" y="${countY + 2}" text-anchor="middle">▾ ${nc} item${nc !== 1 ? 's' : ''}</text></g>` : '';
     nd += `<g class="arch-node t-${escapeHtml(n.type)}${health}${sel}" data-nid="${escapeHtml(n.id)}" data-i="${n._i}" data-r="${p.r}" transform="translate(${p.cx},${p.cy})">
       <g class="arch-node-in" style="--d:${dly(n.id)}ms">
       <circle class="halo" cx="0" cy="0" r="${p.r + 5}"/>
       <circle class="body" cx="0" cy="0" r="${p.r}"/>
-      <text class="ic" x="0" y="6" text-anchor="middle">${ARCH_ICON[n.type] || '•'}</text>
+      <text class="ic" x="0" y="6" text-anchor="middle">${kbNodeIcon(n)}</text>
       ${pip}
       <text class="lbl" x="0" y="${p.r + 16}" text-anchor="middle">${escapeHtml(lbl)}</text>
       ${meta ? `<text class="meta" x="0" y="${p.r + 29}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
+      ${countChip}
       </g>
     </g>`;
   });
@@ -3430,6 +3531,14 @@ function kbRenderArch(g, opts) {
     <rect x="0" y="0" width="${W}" height="${H}" fill="url(#arGrid)"/>
     ${lanes}<g ${sketch ? 'filter="url(#arSketch)"' : ''}>${ed}</g>${nd}</svg></div>`;
   kbArchWireDrag(g, W, H);
+  // zoom: reset to fit for a fresh diagram, show the control, enable ctrl+wheel
+  kbArchBaseW = W; kbArchBaseH = H; kbArchZoom = 1; kbArchApplyZoom();
+  const ctl = $('kbArchZoomCtl'); if (ctl) ctl.style.display = 'flex';
+  const canvas = $('kbArchCanvas');
+  if (canvas && !canvas._zoomWired) {
+    canvas._zoomWired = true;
+    canvas.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); kbArchZoomBy(e.deltaY < 0 ? 1 : -1); }, { passive: false });
+  }
 }
 
 // make nodes draggable (direct DOM moves, edges follow) + click-to-select
@@ -3520,11 +3629,15 @@ function kbArchSelect(i) {
       + (mounts ? `<div class="k">Storage / mounts</div><div class="v" style="font-family:var(--mono);font-size:11px">${mounts}</div>` : '');
   }
   const scope = isServer ? nm : ($('kbArchServer').value || '');
+  const kids = n.children || [];
+  const kidList = kids.length ? `<div class="k">Contains (${kids.length})</div>
+    <div class="v kb-children">${kids.map(c => `<div class="kb-child">${kbNodeIcon(c)} <b>${escapeHtml(c.label)}</b>${c.meta ? ` — <span>${escapeHtml(c.meta)}</span>` : ''}</div>`).join('')}</div>` : '';
   d.innerHTML = `<button class="kb-detail-x" title="Close" onclick="kbArchDetailClose()">×</button>
-    <h4>${ARCH_ICON[n.type] || '•'} ${escapeHtml(n.label)}</h4>
+    <h4>${kbNodeIcon(n)} ${escapeHtml(n.label)}</h4>
     <div class="v" style="color:var(--muted);text-transform:capitalize">${escapeHtml(n.type)}</div>
     ${n.meta ? `<div class="k">Detail</div><div class="v">${escapeHtml(n.meta)}</div>` : ''}
     ${n.details ? `<div class="k">Design details</div><div class="v kb-node-details">${escapeHtml(n.details)}</div>` : ''}
+    ${kidList}
     ${n.status ? `<div class="k">Health</div><div class="v arch-badge ${escapeHtml(n.status)}">${HS[n.status] || n.status}</div>` : ''}
     ${cfg}
     <div class="k">Connections</div><div class="v">${kbArchConns(g, n.id) || 'none recorded'}</div>

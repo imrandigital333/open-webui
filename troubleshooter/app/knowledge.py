@@ -956,7 +956,8 @@ DOCUMENT TEXT:
 
 Reply with ONLY this JSON (no prose, no fences):
 {"nodes": [{"id": "api-gw", "label": "API Gateway", "type": "gateway",
-            "meta": "F5 · TLS 1.3", "details": "Terminates TLS on 443; routes /api to the app tier; rate-limits 1000 rps; HA active/standby pair in NDC & MCR."}],
+            "meta": "F5 · TLS 1.3", "details": "Terminates TLS on 443; routes /api to the app tier; rate-limits 1000 rps; HA active/standby pair in NDC & MCR.",
+            "children": [{"label": "vip-prod-01", "meta": "10.70.5.5"}]}],
  "edges": [{"from": "user", "to": "api-gw", "label": "HTTPS 443"}],
  "notes": "one line on what the diagram covers / anything unclear"}
 
@@ -967,12 +968,18 @@ Rules:
 - "label" is the component's short name. "meta" is a one-line tag (technology,
   version, host/IP). "details" is a FULL multi-sentence description of that
   component from the document — its purpose, technology/version, sizing,
-  configuration, interfaces, HA/DR, security — everything the document says
-  about it. Do not summarise away detail.
+  configuration, interfaces, HA/DR, security — everything the document says.
+- Be EXHAUSTIVE. Include EVERY component, sub-component, interface and
+  dependency the document describes (up to 55). Do NOT omit or over-summarise —
+  a long, complete diagram is expected.
+- If a component is a CONTAINER of many similar items (an ESXi/vCenter host with
+  VMs, a cluster with nodes, a DB server with many databases), keep it as ONE
+  node and put every member in its "children" array
+  ([{"label":"BIALSRV-VMCL12","meta":"Windows Server 2019"}], up to a few
+  hundred). This keeps the diagram readable while preserving every item.
 - Edge direction = request / data flow (caller -> callee). Put the protocol,
-  port or payload in the edge "label" when the document states it.
-- Include EVERY component the document describes (up to 40). Preserve the
-  layering: users / edge at the top, data stores at the bottom.
+  port or payload in the edge "label" when stated. Preserve layering: users /
+  edge at the top, data stores at the bottom.
 """
 
 
@@ -1053,10 +1060,22 @@ def _sanitize_flow_graph(graph: dict) -> dict:
         t = str(n.get("type") or "component").lower()
         if t not in _FLOW_NODE_TYPES:
             t = "component"
+        # child items a container holds (VMs under an ESXi host, nodes in a
+        # cluster, databases on a DB server) — kept as data, shown on expand
+        children = []
+        for c in (n.get("children") or []):
+            if isinstance(c, dict):
+                cl = str(c.get("label") or "").strip()
+                if cl:
+                    children.append({"label": cl[:80], "meta": str(c.get("meta") or "")[:80],
+                                     "type": str(c.get("type") or "").lower()[:20]})
+            elif isinstance(c, str) and c.strip():
+                children.append({"label": c.strip()[:80], "meta": "", "type": ""})
         ids.add(nid)
         nodes.append({"id": nid, "label": str(n.get("label") or nid)[:60],
                       "type": t, "meta": str(n.get("meta") or "")[:80],
-                      "details": str(n.get("details") or "")[:1200]})
+                      "details": str(n.get("details") or "")[:1600],
+                      "children": children[:400]})
     edges = []
     for e in (graph.get("edges") or []):
         if not isinstance(e, dict):
@@ -1064,7 +1083,7 @@ def _sanitize_flow_graph(graph: dict) -> dict:
         f, t = str(e.get("from") or "").strip(), str(e.get("to") or "").strip()
         if f in ids and t in ids and f != t:
             edges.append({"from": f, "to": t, "label": str(e.get("label") or "")[:40]})
-    return {"nodes": nodes[:40], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
+    return {"nodes": nodes[:60], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
 
 
 async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
@@ -1085,7 +1104,7 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
     if len(body.strip()) < 20:
         return {"ok": False, "error": "the document has no extractable text to diagram"}
     graph, err, usage = await _haiku_json(
-        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:40000]), timeout_s=180)
+        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:60000]), timeout_s=240)
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not extract a diagram from the document",
@@ -1120,7 +1139,8 @@ KNOWLEDGE ENTRIES (from multiple sources — each chunk is prefixed with its sou
 
 Reply with ONLY this JSON (no prose, no fences):
 {"nodes": [{"id": "commserve", "label": "CommServe", "type": "server",
-            "meta": "RHEL 9.6 · NDC", "details": "Master scheduler; coordinates MediaAgents; HA pair NDC/MCR."}],
+            "meta": "RHEL 9.6 · NDC", "details": "Master scheduler; coordinates MediaAgents; HA pair NDC/MCR.",
+            "children": [{"label": "BIALSRV-VMCL12", "meta": "Windows Server 2019"}]}],
  "edges": [{"from": "mediaagent", "to": "commserve", "label": "coordination"}],
  "notes": "one line on coverage / anything unclear"}
 
@@ -1131,10 +1151,16 @@ Rules:
 - "details" is a FULL multi-sentence description of the component drawn from ALL
   the sources that mention it (purpose, tech/version, sizing, config, interfaces,
   HA/DR, security). Do not summarise away detail.
+- Be EXHAUSTIVE across ALL the sources — include EVERY relevant component,
+  sub-component, interface and dependency (up to 55). Do NOT over-summarise.
+- If a component is a CONTAINER of many similar items (an ESXi/vCenter host with
+  its VMs, a cluster with its nodes, a DB server with its databases), keep it as
+  ONE node and list every member in its "children" array
+  ([{"label":"BIALSRV-VMCL12","meta":"Windows Server 2019"}], up to a few
+  hundred) instead of dropping them.
 - Edge direction = request / data flow (caller -> callee); label with the
-  protocol / port / payload when stated.
-- Include EVERY relevant component across the sources (up to 40). Preserve the
-  layering: users / edge at the top, data stores at the bottom.
+  protocol / port / payload when stated. Preserve layering: users / edge at the
+  top, data stores at the bottom.
 """
 
 
@@ -1193,12 +1219,12 @@ async def design_from_query(query: str, server: str = "", regenerate: bool = Fal
             cached["notes"] = (cached.get("notes") or "") + " · stored (press ↻ to rebuild)."
             return cached
     rq = query.strip() or "overall organisation architecture and how the systems connect"
-    hits = await retrieve(rq, server, top_k=(30 if broad else 14))
+    hits = await retrieve(rq, server, top_k=(44 if broad else 22))
     if not hits:
         return {"ok": False, "error": "no relevant knowledge to build a design from yet"}
     docs = {d["id"]: d for d in await asyncio.to_thread(db.kb_list_docs)}
     ctx = "\n".join(f"[{docs.get(h['doc_id'], {}).get('title', 'entry')}] {h['text']}"
-                    for h in hits)[:40000]
+                    for h in hits)[:60000]
     sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
     graph, err, usage = await _haiku_json(
         _DESIGN_QUERY_PROMPT % (title, ctx), timeout_s=180)
