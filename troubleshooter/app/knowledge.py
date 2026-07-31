@@ -307,6 +307,24 @@ def _is_question(message: str) -> bool:
     return "?" in message or bool(_Q_START_RE.match(message or ""))
 
 
+# a declarative statement (a fact to LEARN) usually links a subject to a
+# predicate with one of these verbs; a bare keyword / short phrase without one
+# is a LOOKUP ("D4PCI", "backup solution") — answer it, don't store it.
+_TEACH_VERB_RE = re.compile(
+    r"\b(is|are|was|were|be|has|have|had|runs?|uses?|hosts?|means?|equals?|"
+    r"refers?|stands for|located|configured|installed|serves?|provides?|"
+    r"supports?|contains?|includes?|consists?|comprises?|=|:)\b", re.I)
+
+
+def _looks_like_lookup(message: str) -> bool:
+    """True when the message reads as a keyword/topic to look up rather than a
+    fact to store — short and without a declarative verb."""
+    words = (message or "").split()
+    if _TEACH_VERB_RE.search(message or ""):
+        return False               # a declarative statement → treat as a fact
+    return 1 <= len(words) <= 6     # a short bare phrase → look it up
+
+
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 
@@ -393,23 +411,26 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
                    "services and processes, listening ports, network "
                    "connections and configuration.")
     if mode == "auto":
-        mode = "ask" if _is_question(message) else "teach"
+        # a question OR a bare keyword/topic → answer it; only a real declarative
+        # statement is treated as a fact to store
+        mode = "ask" if (_is_question(message) or _looks_like_lookup(message)) else "teach"
 
     if mode == "teach":
         res = await ingest(message, source_type="chat", actor=None)
         if not res.get("ok"):
             return {"mode": "teach", "ok": False, "error": res.get("error")}
-        d = res["doc"]
-        where = " → ".join([x for x in [d["server"] or "General",
-                            d["os"] or None, d["category"]] if x])
-        if res.get("duplicate"):
+        # if this exact content is already stored, the operator almost certainly
+        # wants to KNOW about it — fall through and answer instead of replying
+        # "I already have that"
+        if not res.get("duplicate"):
+            d = res["doc"]
+            where = " → ".join([x for x in [d["server"] or "General",
+                                d["os"] or None, d["category"]] if x])
             return {"mode": "teach", "ok": True, "stored": d,
-                    "answer": f"I already have that — it's stored under **{where}** as "
-                              f"“{d['title']}”, so I didn't duplicate it."}
-        return {"mode": "teach", "ok": True, "stored": d,
-                "answer": f"Got it — stored under **{where}** as “{d['title']}”"
-                          f" ({d['chunks']} chunk{'s' if d['chunks'] != 1 else ''}).",
-                "ai_error": res.get("ai_error")}
+                    "answer": f"Got it — stored under **{where}** as “{d['title']}”"
+                              f" ({d['chunks']} chunk{'s' if d['chunks'] != 1 else ''}).",
+                    "ai_error": res.get("ai_error")}
+        # duplicate → answer about it
 
     # ask
     hits = await retrieve(message, server, top_k=6)
@@ -943,10 +964,11 @@ _FLOW_NODE_TYPES = _ARCH_NODE_TYPES | {
     "user", "cdn", "firewall", "gateway", "api", "process", "component",
     "queue", "cache"}
 
-_DESIGN_PROMPT = """You are extracting an ARCHITECTURE / DATA-FLOW DIAGRAM from a design document
-(an HLD or LLD). Read the document text and produce a graph of the components it
-describes and how they connect. Use ONLY what the document states — do not invent
-components, technologies or connections.
+_DESIGN_PROMPT = """You are extracting a DETAILED ARCHITECTURE / DATA-FLOW DIAGRAM from a design
+document (an HLD or LLD). Read the document text and produce a graph of EVERY
+component it describes and how they connect. Use ONLY what the document states —
+do not invent anything — but do NOT drop components or their details: capture
+each one thoroughly. A longer, complete diagram is better than a simplified one.
 
 DOCUMENT TITLE: %s
 
@@ -954,20 +976,24 @@ DOCUMENT TEXT:
 %s
 
 Reply with ONLY this JSON (no prose, no fences):
-{"nodes": [{"id": "api-gw", "label": "API Gateway", "type": "gateway", "meta": "TLS termination"}],
- "edges": [{"from": "user", "to": "api-gw", "label": "HTTPS"}],
+{"nodes": [{"id": "api-gw", "label": "API Gateway", "type": "gateway",
+            "meta": "F5 · TLS 1.3", "details": "Terminates TLS on 443; routes /api to the app tier; rate-limits 1000 rps; HA active/standby pair in NDC & MCR."}],
+ "edges": [{"from": "user", "to": "api-gw", "label": "HTTPS 443"}],
  "notes": "one line on what the diagram covers / anything unclear"}
 
 Rules:
 - Node "type" is one of: user, client, external, cdn, firewall, network, gateway,
   loadbalancer, server, application, service, api, process, component, queue,
   cache, database, storage, dependency.
+- "label" is the component's short name. "meta" is a one-line tag (technology,
+  version, host/IP). "details" is a FULL multi-sentence description of that
+  component from the document — its purpose, technology/version, sizing,
+  configuration, interfaces, HA/DR, security — everything the document says
+  about it. Do not summarise away detail.
 - Edge direction = request / data flow (caller -> callee). Put the protocol,
   port or payload in the edge "label" when the document states it.
-- Keep node labels short (the component's name). Use <= 28 nodes.
-- "meta" is a short one-line detail (technology, protocol, note) or "".
-- Preserve the layering the document implies: users / edge at the top, data
-  stores at the bottom.
+- Include EVERY component the document describes (up to 40). Preserve the
+  layering: users / edge at the top, data stores at the bottom.
 """
 
 
@@ -989,6 +1015,23 @@ def load_design_cache(doc_id: str) -> dict | None:
         return json.loads(_design_cache_path(doc_id).read_text())
     except Exception:  # noqa: BLE001
         return None
+
+
+def save_design_layout(doc_id: str, layout: dict) -> bool:
+    """Persist operator-dragged node positions into the cached design diagram so
+    the custom arrangement survives a reload."""
+    g = load_design_cache(doc_id)
+    if not g:
+        return False
+    clean = {}
+    for nid, p in (layout or {}).items():
+        try:
+            clean[str(nid)] = {"cx": float(p["cx"]), "cy": float(p["cy"])}
+        except Exception:  # noqa: BLE001
+            continue
+    g["layout"] = clean
+    save_design_cache(doc_id, g)
+    return True
 
 
 _DESIGN_HINTS = ("hld", "lld", "high level design", "high-level design",
@@ -1033,7 +1076,8 @@ def _sanitize_flow_graph(graph: dict) -> dict:
             t = "component"
         ids.add(nid)
         nodes.append({"id": nid, "label": str(n.get("label") or nid)[:60],
-                      "type": t, "meta": str(n.get("meta") or "")[:80]})
+                      "type": t, "meta": str(n.get("meta") or "")[:80],
+                      "details": str(n.get("details") or "")[:1200]})
     edges = []
     for e in (graph.get("edges") or []):
         if not isinstance(e, dict):
@@ -1041,7 +1085,7 @@ def _sanitize_flow_graph(graph: dict) -> dict:
         f, t = str(e.get("from") or "").strip(), str(e.get("to") or "").strip()
         if f in ids and t in ids and f != t:
             edges.append({"from": f, "to": t, "label": str(e.get("label") or "")[:40]})
-    return {"nodes": nodes[:28], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
+    return {"nodes": nodes[:40], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
 
 
 async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
@@ -1062,7 +1106,7 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
     if len(body.strip()) < 20:
         return {"ok": False, "error": "the document has no extractable text to diagram"}
     graph, err, usage = await _haiku_json(
-        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:12000]), timeout_s=120)
+        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:40000]), timeout_s=180)
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not extract a diagram from the document",

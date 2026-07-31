@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.93.0"
+APP_VERSION = "2.94.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -699,6 +699,18 @@ async def kb_design_diagram(doc_id: str, regenerate: bool = False):
     if not doc_id.strip():
         raise HTTPException(status_code=400, detail="doc_id is required")
     return await knowledge.design_diagram(doc_id.strip(), regenerate=regenerate)
+
+
+class DesignLayoutRequest(BaseModel):
+    doc_id: str = Field(..., min_length=1, max_length=64)
+    layout: dict = Field(default_factory=dict)
+
+
+@app.post("/api/kb/design-layout")
+async def kb_design_layout(req: DesignLayoutRequest):
+    """Persist operator-dragged node positions for a design diagram."""
+    ok = await asyncio.to_thread(knowledge.save_design_layout, req.doc_id.strip(), req.layout)
+    return {"ok": ok}
 
 
 @app.get("/api/kb/search")
