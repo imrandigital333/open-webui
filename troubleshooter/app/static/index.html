@@ -551,6 +551,11 @@
   .kb-tab:hover { color: var(--text); }
   .kb-tab.active { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
   .kb-tab .count { display: inline-block; margin-left: 3px; font-size: 10px; color: var(--muted); }
+  .kb-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-size: 10.5px;
+    font-weight: 700; color: var(--muted); background: var(--panel2); border: 1px solid var(--border);
+    padding: 2px 7px 2px 5px; border-radius: 999px; user-select: none; white-space: nowrap; }
+  .kb-toggle input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+  .kb-toggle:has(input:checked) { color: var(--accent2); border-color: rgba(163,113,247,.5); background: rgba(163,113,247,.12); }
   .kb-tabpane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px;
                 overflow-y: auto; }
   .kb-tabpane[hidden] { display: none; }
@@ -1263,8 +1268,11 @@
 
       <!-- CHAT -->
       <div class="kb-tabpane kb-chat-panel" data-pane="chat">
-        <div class="kb-side-h" style="padding-bottom:6px"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid;vertical-align:-6px" id="kbAva"></span>
-          Assistant <span class="kb-model-chip" id="kbModelChip"></span></div>
+        <div class="kb-side-h" style="padding-bottom:6px;display:flex;align-items:center;gap:6px"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid" id="kbAva"></span>
+          Assistant <span class="kb-model-chip" id="kbModelChip"></span>
+          <label class="kb-toggle" style="margin-left:auto" title="When on, asking a question also draws a design in the canvas (uses AI tokens). Turn off for chat-only answers — no design, no extra tokens.">
+            <input type="checkbox" id="kbDesignAuto" checked onchange="kbSetDesignAuto(this.checked)">
+            <span>🖼 Design</span></label></div>
         <div id="kbChatBody" class="kb-chat-body"></div>
         <div class="kb-chat-in">
           <select id="kbChatServer" title="Scope questions to a server" style="max-width:110px;margin:0"></select>
@@ -2996,6 +3004,7 @@ const KB_CAT_LABEL = { network: 'Network', application: 'Application', process: 
 
 async function loadKnowledge() {
   if ($('kbAva') && !$('kbAva').innerHTML) $('kbAva').innerHTML = AI_ROBOT;
+  const dtg = $('kbDesignAuto'); if (dtg) dtg.checked = kbDesignAuto;   // reflect saved preference
   // scope selector from inventory
   const sel = $('kbChatServer');
   if (sel) sel.innerHTML = '<option value="">All servers</option>' +
@@ -3046,6 +3055,16 @@ async function kbLoadDesignDocs() {
 }
 
 const KB_ARCH_PLACEHOLDER = '<div class="empty">Pick a server, or ask the assistant about one, to view its service map.</div>';
+
+// whether asking a question also auto-builds a design in the canvas (uses AI
+// tokens). Operators can switch to chat-only answers. Persisted per browser.
+let kbDesignAuto = (() => { try { return localStorage.getItem('kbDesignAuto') !== '0'; } catch { return true; } })();
+function kbSetDesignAuto(on) {
+  kbDesignAuto = !!on;
+  try { localStorage.setItem('kbDesignAuto', on ? '1' : '0'); } catch {}
+  const m = $('kbArchMsg');
+  if (!on && m) { m.style.color = 'var(--muted)'; m.textContent = 'Chat-only mode — no designs will be generated.'; }
+}
 
 // an animated "the agent is drawing" sketch shown while a design is generating
 function KB_DRAWING(label) {
@@ -3277,8 +3296,9 @@ async function kbSend() {
     else kbMsg(r.answer || '(no answer)', 'bot', { teach: r.mode === 'teach', sources: r.sources });
     // show a relevant design in the canvas for the thing asked about (a server
     // query already drew its map above; otherwise synthesise a cross-document
-    // design for exactly this question)
-    if (!validTarget && r.diagram_query) kbShowDesignQuery(r.diagram_query, r.diagram_server || '', false, true);
+    // design for exactly this question) — unless the operator opted for
+    // chat-only answers
+    if (kbDesignAuto && !validTarget && r.diagram_query) kbShowDesignQuery(r.diagram_query, r.diagram_server || '', false, true);
     if (r.mode === 'teach') loadKnowledge();   // refresh tree + usage after learning
     else { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
   } catch (e) { thinking.remove(); kbMsg('✕ ' + e.message, 'bot'); }
