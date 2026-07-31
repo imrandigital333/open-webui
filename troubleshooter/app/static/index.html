@@ -689,9 +689,16 @@
   .arch-zoom button:hover { background: var(--panel2); }
   .arch-zoom span { font: 700 11px var(--mono); color: var(--muted); min-width: 42px; text-align: center; }
   /* container "N items" count chip + expandable list */
+  .arch-count { cursor: pointer; }
   .arch-count rect { fill: rgba(163,113,247,.16); stroke: rgba(163,113,247,.5); stroke-width: 1; }
   .arch-count text { fill: #d2b3ff; font: 700 10px var(--mono); }
   .arch-node:hover .arch-count rect { fill: rgba(163,113,247,.3); }
+  /* in-diagram expansion card listing the underlying items as bullets */
+  .arch-card .cbg { fill: rgba(13,19,33,.97); stroke: rgba(163,113,247,.45); stroke-width: 1.2;
+    filter: drop-shadow(0 5px 14px rgba(0,0,0,.55)); }
+  .arch-card .chd { fill: #d2b3ff; font: 800 11px var(--mono); letter-spacing: .04em; }
+  .arch-card .cit { fill: var(--text); font: 11px/1 sans-serif; }
+  .arch-card .cmore { fill: var(--muted); font: italic 10px sans-serif; }
   .kb-children { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
     padding: 4px 8px; background: var(--panel); }
   .kb-child { font-size: 11.5px; padding: 3px 0; border-bottom: 1px solid var(--border); }
@@ -3464,12 +3471,15 @@ function kbRenderArch(g, opts) {
   const rows = {}, tierOf = {};
   nodes.forEach((n, i) => { n._i = i; const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
   const tiers = Object.keys(rows).map(Number).sort((a, b) => a - b);
-  const CW = 158, RGY = 128, PAD = 34, LANE = 96, R = 27, RS = 36;
+  // balanced sizing: modest, consistent radii and generous spacing so circles
+  // don't crowd or hide each other
+  const CW = 174, RGY = 156, PAD = 36, LANE = 96, R = 24, RS = 29;
+  const expanded = new Set(g._expanded || []);
   let W = Math.max(...tiers.map(t => rows[t].length * CW), 320) + PAD * 2 + LANE;
   let H = tiers.length * RGY + PAD * 2;
   const pos = {};
   tiers.forEach((t, ri) => {
-    const row = rows[t], rw = row.length * CW; let x = LANE + (W - LANE - rw) / 2; const cy = PAD + ri * RGY + RS;
+    const row = rows[t], rw = row.length * CW; let x = LANE + (W - LANE - rw) / 2; const cy = PAD + ri * RGY + RS + 6;
     row.forEach(n => { pos[n.id] = { cx: x + CW / 2, cy, r: n.type === 'server' ? RS : R }; tierOf[n.id] = ri; x += CW; });
   });
   // apply operator-dragged positions, then grow the canvas so nothing clips
@@ -3496,24 +3506,41 @@ function kbRenderArch(g, opts) {
           + `<text class="arch-elbl${animate ? ' arch-fade' : ''}" data-ei="${ei}" x="${mx}" y="${my + 2.5}" text-anchor="middle" style="--d:${d + 200}ms">${escapeHtml(e.label)}</text>`; }
   });
   let nd = '';
-  nodes.forEach(n => {
+  // draw expanded containers last so their in-diagram item list sits on top
+  const orderNodes = [...nodes].sort((a, b) => (expanded.has(a.id) ? 1 : 0) - (expanded.has(b.id) ? 1 : 0));
+  orderNodes.forEach(n => {
     const p = pos[n.id], meta = clip(n.meta, 20), lbl = clip(n.label, 18);
     const health = n.status ? ' h-' + n.status : '', sel = n.id === kbArchSelId ? ' sel' : '';
     const pip = n.status ? `<circle class="arch-pip ${escapeHtml(n.status)}" cx="${p.r * 0.72}" cy="${-p.r * 0.72}" r="5"/>` : '';
     const nc = (n.children || []).length;
+    const isExp = expanded.has(n.id);
     const countY = p.r + (meta ? 40 : 27);
-    const countChip = nc ? `<g class="arch-count"><rect x="-30" y="${countY - 10}" width="60" height="16" rx="8"/>`
-      + `<text x="0" y="${countY + 2}" text-anchor="middle">▾ ${nc} item${nc !== 1 ? 's' : ''}</text></g>` : '';
+    const countChip = nc ? `<g class="arch-count"><rect x="-34" y="${countY - 10}" width="68" height="16" rx="8"/>`
+      + `<text x="0" y="${countY + 2}" text-anchor="middle">${isExp ? '▴' : '▾'} ${nc} item${nc !== 1 ? 's' : ''}</text></g>` : '';
+    // in-diagram expansion card: the underlying items as a bulleted list
+    let card = '';
+    if (isExp && nc) {
+      const shown = n.children.slice(0, 16), lh = 15, headH = 24, padB = 10, cardW = 216, x0 = p.r + 20;
+      const cardH = headH + shown.length * lh + (nc > shown.length ? lh : 0) + padB;
+      const rows2 = shown.map((c, i) => `<text class="cit" x="${x0 + 12}" y="${-cardH / 2 + headH + 10 + i * lh}">• ${escapeHtml(clip((c.label || '') + (c.meta ? ' — ' + c.meta : ''), 34))}</text>`).join('');
+      const more = nc > shown.length ? `<text class="cmore" x="${x0 + 12}" y="${-cardH / 2 + headH + 10 + shown.length * lh}">+${nc - shown.length} more — open the panel for all</text>` : '';
+      card = `<g class="arch-card">
+        <rect class="cbg" x="${x0}" y="${-cardH / 2}" width="${cardW}" height="${cardH}" rx="9"/>
+        <text class="chd" x="${x0 + 12}" y="${-cardH / 2 + 16}">Contains ${nc}</text>
+        ${rows2}${more}</g>`;
+      W = Math.max(W, p.cx + x0 + cardW + PAD);
+      H = Math.max(H, p.cy + cardH / 2 + PAD);
+    }
     nd += `<g class="arch-node t-${escapeHtml(n.type)}${health}${sel}" data-nid="${escapeHtml(n.id)}" data-i="${n._i}" data-r="${p.r}" transform="translate(${p.cx},${p.cy})">
       <g class="arch-node-in" style="--d:${dly(n.id)}ms">
-      <circle class="halo" cx="0" cy="0" r="${p.r + 5}"/>
+      <circle class="halo" cx="0" cy="0" r="${p.r + 4}"/>
       <circle class="body" cx="0" cy="0" r="${p.r}"/>
       <text class="ic" x="0" y="6" text-anchor="middle">${kbNodeIcon(n)}</text>
       ${pip}
-      <text class="lbl" x="0" y="${p.r + 16}" text-anchor="middle">${escapeHtml(lbl)}</text>
-      ${meta ? `<text class="meta" x="0" y="${p.r + 29}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
+      <text class="lbl" x="0" y="${p.r + 15}" text-anchor="middle">${escapeHtml(lbl)}</text>
+      ${meta ? `<text class="meta" x="0" y="${p.r + 28}" text-anchor="middle">${escapeHtml(meta)}</text>` : ''}
       ${countChip}
-      </g>
+      </g>${card}
     </g>`;
   });
   const sketch = g.kind === 'design';   // hand-drawn wobble on design flow diagrams
@@ -3566,7 +3593,8 @@ function kbArchWireDrag(g) {
     el.addEventListener('pointerdown', e => {
       e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch {}
       const c = centers[el.dataset.nid], s = toXY(e);
-      drag = { ox: c.x, oy: c.y, sx: s.x, sy: s.y, moved: false }; el.classList.add('dragging');
+      const onCount = !!(e.target.closest && e.target.closest('.arch-count'));
+      drag = { ox: c.x, oy: c.y, sx: s.x, sy: s.y, moved: false, onCount }; el.classList.add('dragging');
     });
     el.addEventListener('pointermove', e => {
       if (!drag) return; const s = toXY(e), dx = s.x - drag.sx, dy = s.y - drag.sy;
@@ -3576,8 +3604,12 @@ function kbArchWireDrag(g) {
     });
     el.addEventListener('pointerup', e => {
       if (!drag) return; try { el.releasePointerCapture(e.pointerId); } catch {}
-      el.classList.remove('dragging'); const c = centers[el.dataset.nid], moved = drag.moved; drag = null;
-      if (!moved) { kbArchSelect(+el.dataset.i); return; }
+      el.classList.remove('dragging'); const c = centers[el.dataset.nid], moved = drag.moved, onCount = drag.onCount; drag = null;
+      if (!moved) {
+        if (onCount) kbArchToggleExpand(el.dataset.nid);   // expand the item list inside the diagram
+        else kbArchSelect(+el.dataset.i);
+        return;
+      }
       g.layout = g.layout || {}; g.layout[el.dataset.nid] = { cx: c.x, cy: c.y };
       if (g.kind === 'design' && (g.query_key || g.doc_id)) kbSaveDesignLayout(g, g.layout);
     });
@@ -3588,6 +3620,15 @@ async function kbSaveDesignLayout(g, layout) {
   const body = g.query_key ? { query_key: g.query_key, layout } : { doc_id: g.doc_id, layout };
   try { await fetch('/api/kb/design-layout', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body) }); } catch { /* best-effort */ }
+}
+
+// toggle a container's item list inline inside the diagram
+function kbArchToggleExpand(id) {
+  const g = kbArchData; if (!g) return;
+  const s = new Set(g._expanded || []);
+  s.has(id) ? s.delete(id) : s.add(id);
+  g._expanded = [...s];
+  kbRenderArch(g, { animate: false });
 }
 
 // update the selected-node highlight without re-rendering (keeps drag + no re-animation)
