@@ -614,6 +614,18 @@
   .arch-src.cap  { color: #8fb8ff; background: rgba(56,139,253,.15); border-color: rgba(56,139,253,.45); }
   .arch-src.ai   { color: #d2b3ff; background: rgba(163,113,247,.16); border-color: rgba(163,113,247,.45); }
   .arch-src.none { color: var(--muted); background: rgba(255,255,255,.05); border-color: var(--border); }
+  .arch-src.design { color: #8fe0c9; background: rgba(2,195,154,.14); border-color: rgba(2,195,154,.45); }
+  .arch-regen { font: 700 10.5px var(--mono); padding: 4px 9px; border-radius: 999px; cursor: pointer;
+    color: var(--accent2); background: rgba(163,113,247,.14); border: 1px solid rgba(163,113,247,.4); }
+  .arch-regen:hover { background: rgba(163,113,247,.24); }
+  .kb-design-item { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px;
+    cursor: pointer; font-size: 12.5px; }
+  .kb-design-item:hover { background: var(--panel2); }
+  .kb-design-item .dg-ic { flex: 0 0 auto; }
+  .kb-design-item .dg-t { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kb-design-item .dg-srv { flex: 0 0 auto; color: var(--muted); font-size: 10.5px; font-family: var(--mono); }
+  .kb-design-item .dg-badge { flex: 0 0 auto; font-size: 9.5px; font-weight: 700; color: #8fe0c9;
+    background: rgba(2,195,154,.14); border: 1px solid rgba(2,195,154,.4); border-radius: 999px; padding: 1px 6px; }
   .arch-mt { font: 700 10.5px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid transparent;
     white-space: nowrap; }
   .arch-mt.vm   { color: #d2b3ff; background: rgba(163,113,247,.14); border-color: rgba(163,113,247,.4); }
@@ -1176,6 +1188,11 @@
         <button class="ci-run" id="kbArchAiBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Draft a map with AI when the device can't be reached">✨ AI draft <span class="kb-model-chip" id="kbArchModel"></span></button>
         <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
       </div>
+      <details class="kb-side-sec" id="kbDesignSec" style="display:none">
+        <summary class="kb-side-h">📐 Design diagrams <span class="count" id="kbDesignCount">0</span></summary>
+        <div class="hint" style="margin:6px 0">Flow diagrams extracted from your HLD / LLD design docs.</div>
+        <div id="kbDesignList"></div>
+      </details>
       <div class="kb-side-sec kb-chat-panel">
         <div class="kb-side-h"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid;vertical-align:-6px" id="kbAva"></span>
           Assistant <span class="kb-model-chip" id="kbModelChip"></span></div>
@@ -2896,6 +2913,46 @@ async function loadKnowledge() {
     kbTreeData = tr.tree || {};
     kbRenderTree();
   } catch (e) { /* offline */ }
+  kbLoadDesignDocs();
+}
+
+// design diagrams (HLD/LLD) — list uploaded design docs and render their flow
+async function kbLoadDesignDocs() {
+  try {
+    const r = await (await fetch('/api/kb/design-docs')).json();
+    const docs = r.docs || [];
+    const sec = $('kbDesignSec'), list = $('kbDesignList'), cnt = $('kbDesignCount');
+    if (!sec) return;
+    sec.style.display = docs.length ? '' : 'none';
+    if (cnt) cnt.textContent = docs.length;
+    list.innerHTML = docs.map(d => `<div class="kb-design-item" onclick="kbShowDesign('${escapeHtml(d.id)}', false)" title="${escapeHtml(d.title)}">
+      <span class="dg-ic">${d.has_diagram ? '📐' : '📄'}</span>
+      <span class="dg-t">${escapeHtml(d.title)}</span>
+      ${d.server ? `<span class="dg-srv">${escapeHtml(d.server)}</span>` : ''}
+      ${d.has_diagram ? '<span class="dg-badge" title="Diagram already generated">stored</span>' : ''}
+    </div>`).join('');
+  } catch (e) { /* offline */ }
+}
+
+async function kbShowDesign(docId, regenerate) {
+  if (!docId) return;
+  if ($('kbDesignSec')) $('kbDesignSec').open = true;
+  const msg = $('kbArchMsg');
+  kbArchSelId = null; $('kbArchDetail').style.display = 'none';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = regenerate ? 'Regenerating diagram from the document…' : 'Loading design diagram…';
+  $('kbArchCanvas').innerHTML = `<div class="empty">${regenerate ? 'Re-reading the document and extracting components with AI…' : 'Loading…'}</div>`;
+  $('kbArchNotes').textContent = '';
+  try {
+    const g = await (await fetch(`/api/kb/design-diagram?doc_id=${encodeURIComponent(docId)}${regenerate ? '&regenerate=1' : ''}`)).json();
+    if (!g.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = ''; }
+    else {
+      kbArchData = g; kbRenderArch(g);
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ diagram · ${g.nodes.length} components`;
+      $('kbArchNotes').innerHTML = (g.ai_error ? '⚠ ' + escapeHtml(g.ai_error) + ' — ' : '') + escapeHtml(g.notes || '');
+      if (regenerate) { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); kbLoadDesignDocs(); }
+    }
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 
 function kbRenderUsage(ov) {
@@ -3055,12 +3112,14 @@ async function kbSend() {
 
 /* service map — graph from inventory + discovery + KB, drawn as SVG (circular
    nodes, health rings, click for a detail panel). Local by default (no tokens). */
-const ARCH_TIER = { client: 0, external: 0, network: 1, loadbalancer: 2, server: 3,
-  application: 4, service: 4, process: 4, database: 5, storage: 5, dependency: 6,
+const ARCH_TIER = { user: 0, client: 0, external: 0, cdn: 0, firewall: 1, network: 1,
+  gateway: 2, loadbalancer: 2, server: 3, application: 4, service: 4, process: 4,
+  api: 4, component: 4, queue: 5, cache: 5, database: 5, storage: 5, dependency: 6,
   cpu: 7, memory: 7, disk: 7 };
-const ARCH_ICON = { client: '👥', external: '🌐', network: '🧭', loadbalancer: '⚖️',
-  server: '🖥️', service: '⚙️', application: '📦', database: '🗄️', storage: '💽', dependency: '🔗',
-  cpu: '🧠', memory: '📊', disk: '💽' };
+const ARCH_ICON = { user: '👤', client: '👥', external: '🌐', cdn: '🌍', firewall: '🧱',
+  network: '🧭', gateway: '🚪', loadbalancer: '⚖️', server: '🖥️', service: '⚙️',
+  application: '📦', api: '🔌', component: '🧩', process: '🧩', queue: '📨', cache: '⚡',
+  database: '🗄️', storage: '💽', dependency: '🔗', cpu: '🧠', memory: '📊', disk: '💽' };
 let kbArchData = null, kbArchSelId = null;
 
 // show the captured service map for the currently-selected server (no tokens,
@@ -3136,8 +3195,10 @@ const ARCH_TIER_LABEL = { 0: 'Clients / external', 1: 'Network', 2: 'Load balanc
   3: 'Host', 4: 'Services & processes', 5: 'Data', 6: 'Dependencies', 7: 'Resources' };
 
 function kbArchHeader(g) {
+  const isDesign = g.kind === 'design';
   const srv = g.server || $('kbArchServer').value || '';
-  const srcMap = { live: ['LIVE', 'live'], cached: ['CAPTURED', 'cap'], ai: ['AI DRAFT', 'ai'], local: ['LOCAL', 'cap'], none: ['NO MAP', 'none'] };
+  const srcMap = { live: ['LIVE', 'live'], cached: ['CAPTURED', 'cap'], ai: ['AI DRAFT', 'ai'],
+    local: ['LOCAL', 'cap'], none: ['NO MAP', 'none'], design: ['DESIGN', 'design'] };
   const [srcTxt, srcCls] = srcMap[g.source] || ['MAP', 'cap'];
   const when = fmtCaptured(g.cached_at);
   const h = g.host || {};
@@ -3146,15 +3207,20 @@ function kbArchHeader(g) {
   const mt = h.machine_type ? `<span class="arch-mt ${mtCls}" title="${escapeHtml(h.hardware || '')}">${mtIcon} ${escapeHtml(h.machine_type)}${h.virtualization && h.virtualization !== 'Bare metal' ? ' · ' + escapeHtml(h.virtualization) : ''}</span>` : '';
   const types = [...new Set((g.nodes || []).map(n => n.type))];
   const legend = types.map(t => `<span class="arch-leg"><span class="ic">${ARCH_ICON[t] || '•'}</span>${escapeHtml(t)}</span>`).join('');
+  const sub = isDesign
+    ? (when ? '📐 diagram generated ' + escapeHtml(when) : 'design flow diagram')
+    : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
+  const regen = isDesign && g.doc_id
+    ? `<button class="arch-regen" title="Re-extract the diagram from the document (uses AI)" onclick="kbShowDesign('${escapeHtml(g.doc_id)}', true)">↻ Regenerate</button>` : '';
   return `<div class="arch-topbar">
     <div class="arch-tb-l">
-      <span class="arch-tb-ic">🗺️</span>
+      <span class="arch-tb-ic">${isDesign ? '📐' : '🗺️'}</span>
       <div>
-        <div class="arch-tb-title">${escapeHtml(srv || 'Service map')}</div>
-        <div class="arch-tb-sub">${when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map')}</div>
+        <div class="arch-tb-title">${escapeHtml(srv || (isDesign ? 'Design diagram' : 'Service map'))}</div>
+        <div class="arch-tb-sub">${sub}</div>
       </div>
       <span class="arch-src ${srcCls}">${srcTxt}</span>
-      ${mt}
+      ${mt}${regen}
     </div>
     <div class="arch-legend">${legend}</div>
   </div>`;
@@ -3163,6 +3229,14 @@ function kbArchHeader(g) {
 function kbRenderArch(g) {
   const nodes = g.nodes || [], edges = g.edges || [];
   const server = g.server || $('kbArchServer').value || '';
+  if (!nodes.length && g.kind === 'design') {
+    $('kbArchCanvas').innerHTML = kbArchHeader(g) + `<div class="arch-empty">
+      <div class="arch-empty-ic">📐</div>
+      <div class="arch-empty-h">No diagram could be extracted</div>
+      <div class="arch-empty-p">${escapeHtml(g.notes || 'The document did not contain a describable architecture. Try a document with a clear components/flow section.')}</div>
+    </div>`;
+    return;
+  }
   if (!nodes.length) {
     // no captured map — offer to build one by connecting to the device
     const canBuild = !!server;

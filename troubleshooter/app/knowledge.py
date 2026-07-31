@@ -28,6 +28,9 @@ from .inventory import BASE_DIR, load_inventory
 # cached live service maps (so a server re-renders from the last probe without
 # reconnecting; refreshed only when the operator runs a new live probe)
 _LIVE_DIR = BASE_DIR / "data" / "live_maps"
+# cached design diagrams extracted from HLD/LLD documents (generated once with
+# AI, then re-rendered from storage with no further tokens)
+_DESIGN_DIR = BASE_DIR / "data" / "design_maps"
 
 
 def _live_cache_path(server: str):
@@ -900,6 +903,148 @@ def _sanitize_graph(graph: dict, server_name: str) -> dict:
         if f in ids and t in ids and f != t:
             edges.append({"from": f, "to": t, "label": str(e.get("label") or "")[:40]})
     return {"nodes": nodes[:22], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
+
+
+# ---------- design diagrams from HLD / LLD documents ----------
+
+# broader node vocabulary for logical design flows (superset of the server map)
+_FLOW_NODE_TYPES = _ARCH_NODE_TYPES | {
+    "user", "cdn", "firewall", "gateway", "api", "process", "component",
+    "queue", "cache"}
+
+_DESIGN_PROMPT = """You are extracting an ARCHITECTURE / DATA-FLOW DIAGRAM from a design document
+(an HLD or LLD). Read the document text and produce a graph of the components it
+describes and how they connect. Use ONLY what the document states — do not invent
+components, technologies or connections.
+
+DOCUMENT TITLE: %s
+
+DOCUMENT TEXT:
+%s
+
+Reply with ONLY this JSON (no prose, no fences):
+{"nodes": [{"id": "api-gw", "label": "API Gateway", "type": "gateway", "meta": "TLS termination"}],
+ "edges": [{"from": "user", "to": "api-gw", "label": "HTTPS"}],
+ "notes": "one line on what the diagram covers / anything unclear"}
+
+Rules:
+- Node "type" is one of: user, client, external, cdn, firewall, network, gateway,
+  loadbalancer, server, application, service, api, process, component, queue,
+  cache, database, storage, dependency.
+- Edge direction = request / data flow (caller -> callee). Put the protocol,
+  port or payload in the edge "label" when the document states it.
+- Keep node labels short (the component's name). Use <= 28 nodes.
+- "meta" is a short one-line detail (technology, protocol, note) or "".
+- Preserve the layering the document implies: users / edge at the top, data
+  stores at the bottom.
+"""
+
+
+def _design_cache_path(doc_id: str):
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", doc_id)
+    return _DESIGN_DIR / f"{safe}.json"
+
+
+def save_design_cache(doc_id: str, graph: dict) -> None:
+    try:
+        _DESIGN_DIR.mkdir(parents=True, exist_ok=True)
+        _design_cache_path(doc_id).write_text(json.dumps(graph))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_design_cache(doc_id: str) -> dict | None:
+    try:
+        return json.loads(_design_cache_path(doc_id).read_text())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_DESIGN_HINTS = ("hld", "lld", "high level design", "high-level design",
+                 "low level design", "low-level design", "design document",
+                 "design doc", "architecture", "solution design", "sdd")
+
+
+def _is_design_doc(d: dict) -> bool:
+    if (d.get("category") or "").lower() == "design":
+        return True
+    blob = " ".join([str(d.get("title") or ""), str(d.get("filename") or ""),
+                     str(d.get("keywords") or "")]).lower()
+    return any(k in blob for k in _DESIGN_HINTS)
+
+
+def list_design_docs() -> list[dict]:
+    """KB documents that look like a design (HLD/LLD/architecture), with whether
+    a diagram has already been generated + cached for each."""
+    out = []
+    for d in db.kb_list_docs():
+        if not _is_design_doc(d):
+            continue
+        out.append({"id": d["id"], "title": d["title"], "server": d["server"],
+                    "os": d["os"], "category": d["category"],
+                    "created_at": d["created_at"],
+                    "has_diagram": _design_cache_path(d["id"]).exists()})
+    return out
+
+
+def _sanitize_flow_graph(graph: dict) -> dict:
+    """Like _sanitize_graph but for a logical design flow: no forced 'server'
+    node, a wider node vocabulary, and a generic 'component' fallback type."""
+    nodes, ids = [], set()
+    for n in (graph.get("nodes") if isinstance(graph, dict) else None) or []:
+        if not isinstance(n, dict):
+            continue
+        nid = str(n.get("id") or n.get("label") or "").strip()
+        if not nid or nid in ids:
+            continue
+        t = str(n.get("type") or "component").lower()
+        if t not in _FLOW_NODE_TYPES:
+            t = "component"
+        ids.add(nid)
+        nodes.append({"id": nid, "label": str(n.get("label") or nid)[:60],
+                      "type": t, "meta": str(n.get("meta") or "")[:80]})
+    edges = []
+    for e in (graph.get("edges") or []):
+        if not isinstance(e, dict):
+            continue
+        f, t = str(e.get("from") or "").strip(), str(e.get("to") or "").strip()
+        if f in ids and t in ids and f != t:
+            edges.append({"from": f, "to": t, "label": str(e.get("label") or "")[:40]})
+    return {"nodes": nodes[:28], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
+
+
+async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
+    """Render a flow/architecture diagram from an uploaded HLD/LLD document.
+    Uses a cached diagram (no tokens) unless regenerate=True, in which case it
+    re-extracts with AI and re-caches."""
+    doc = await asyncio.to_thread(db.kb_get_doc, doc_id)
+    if not doc:
+        return {"ok": False, "error": "document not found"}
+    if not regenerate:
+        cached = load_design_cache(doc_id)
+        if cached and cached.get("nodes"):
+            cached.update({"ok": True, "source": "design", "kind": "design",
+                           "doc_id": doc_id})
+            cached["notes"] = (cached.get("notes") or "") + " · stored diagram (press ↻ to regenerate)."
+            return cached
+    body = (doc.get("body") or "")
+    if len(body.strip()) < 20:
+        return {"ok": False, "error": "the document has no extractable text to diagram"}
+    graph, err, usage = await _haiku_json(
+        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:12000]), timeout_s=120)
+    _record_usage(usage)
+    if not graph:
+        return {"ok": False, "error": err or "could not extract a diagram from the document",
+                "model": KB_MODEL, "model_label": KB_MODEL_LABEL}
+    g = _sanitize_flow_graph(graph)
+    if not g["nodes"]:
+        return {"ok": False, "error": "no components could be identified in the document",
+                "ai_error": err}
+    g.update({"ok": True, "source": "design", "kind": "design", "doc_id": doc_id,
+              "server": doc.get("title") or doc_id, "cached_at": time.time(),
+              "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "ai_error": err})
+    save_design_cache(doc_id, g)
+    return g
 
 
 def _overall_status(checks: dict) -> str:

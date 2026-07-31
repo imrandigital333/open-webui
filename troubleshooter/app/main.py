@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.90.0"
+APP_VERSION = "2.91.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -683,6 +683,22 @@ async def kb_architecture(server: str, ai: bool = False):
     if not server.strip():
         raise HTTPException(status_code=400, detail="server is required")
     return await knowledge.architecture(server.strip(), use_ai=ai)
+
+
+@app.get("/api/kb/design-docs")
+async def kb_design_docs():
+    """List uploaded HLD/LLD/design documents that can be rendered as a flow
+    diagram, and whether each already has a cached diagram."""
+    return {"docs": await asyncio.to_thread(knowledge.list_design_docs)}
+
+
+@app.get("/api/kb/design-diagram")
+async def kb_design_diagram(doc_id: str, regenerate: bool = False):
+    """Flow/architecture diagram extracted from an HLD/LLD document. Served from
+    the cached diagram unless regenerate=1 (which re-extracts with AI)."""
+    if not doc_id.strip():
+        raise HTTPException(status_code=400, detail="doc_id is required")
+    return await knowledge.design_diagram(doc_id.strip(), regenerate=regenerate)
 
 
 @app.get("/api/kb/search")
