@@ -26,16 +26,21 @@
                  linear-gradient(180deg, #f8fafd, #eef2f8);
     --overlay: rgba(255,255,255,.92); --chip: rgba(0,0,0,.05); --shadow: rgba(30,41,59,.18);
   }
-  /* BIAL — Bangalore airport brand: crimson primary, teal secondary */
+  /* BIAL — white background; brand colours (crimson, teal, gold) used only as
+     accents */
   :root[data-theme="bial"] {
-    --bg: #f6efe9; --panel: #ffffff; --panel2: #f8f1ec; --border: #e6d6ca;
-    --text: #2a1c17; --muted: #7c6a60; --accent: #c8102e; --accent2: #e0485c;
-    --ok: #2e7d32; --warn: #b7791f; --err: #c62828; --purple: #00838f;
-    --canvas-bg: radial-gradient(1200px 500px at 20% -10%, rgba(200,16,46,.08), transparent 60%),
-                 radial-gradient(900px 500px at 100% 110%, rgba(0,131,143,.09), transparent 55%),
-                 linear-gradient(180deg, #fdf6f1, #f4e9e1);
-    --overlay: rgba(255,251,248,.94); --chip: rgba(122,20,30,.06); --shadow: rgba(84,20,16,.18);
+    --bg: #ffffff; --panel: #ffffff; --panel2: #f4f6f9; --border: #e3e7ee;
+    --text: #1e2732; --muted: #6a7482; --accent: #c8102e; --accent2: #e34a5f;
+    --ok: #2e8b57; --warn: #e0891e; --err: #c8102e; --purple: #0090a8;
+    --canvas-bg: radial-gradient(1000px 460px at 15% -10%, rgba(200,16,46,.06), transparent 60%),
+                 radial-gradient(900px 460px at 100% 110%, rgba(0,144,168,.06), transparent 55%),
+                 #ffffff;
+    --overlay: rgba(255,255,255,.94); --chip: rgba(15,23,42,.05); --shadow: rgba(15,23,42,.14);
   }
+  /* lift white cards off the white background in the light-based themes */
+  :root[data-theme="light"] .panel, :root[data-theme="bial"] .panel,
+  :root[data-theme="light"] header, :root[data-theme="bial"] header {
+    box-shadow: 0 1px 3px var(--shadow); }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
