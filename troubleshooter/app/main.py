@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.94.0"
+APP_VERSION = "2.95.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -701,15 +701,34 @@ async def kb_design_diagram(doc_id: str, regenerate: bool = False):
     return await knowledge.design_diagram(doc_id.strip(), regenerate=regenerate)
 
 
+@app.get("/api/kb/design-query")
+async def kb_design_query(q: str = "", server: str = "", regenerate: bool = False,
+                          broad: bool = False):
+    """Build one architecture diagram synthesised across MULTIPLE knowledge-base
+    sources relevant to the query (or the whole organisation when broad=1).
+    Cached by (server, query) so re-asking costs no tokens."""
+    return await knowledge.design_from_query(q.strip(), server.strip(),
+                                             regenerate=regenerate, broad=broad)
+
+
 class DesignLayoutRequest(BaseModel):
-    doc_id: str = Field(..., min_length=1, max_length=64)
+    doc_id: str = Field("", max_length=64)
+    query_key: str = Field("", max_length=64)
     layout: dict = Field(default_factory=dict)
 
 
 @app.post("/api/kb/design-layout")
 async def kb_design_layout(req: DesignLayoutRequest):
-    """Persist operator-dragged node positions for a design diagram."""
-    ok = await asyncio.to_thread(knowledge.save_design_layout, req.doc_id.strip(), req.layout)
+    """Persist operator-dragged node positions for a design diagram (either a
+    single-document diagram via doc_id, or a cross-document one via query_key)."""
+    if req.query_key.strip():
+        ok = await asyncio.to_thread(knowledge.save_query_design_layout,
+                                     req.query_key.strip(), req.layout)
+    elif req.doc_id.strip():
+        ok = await asyncio.to_thread(knowledge.save_design_layout,
+                                     req.doc_id.strip(), req.layout)
+    else:
+        ok = False
     return {"ok": ok}
 
 

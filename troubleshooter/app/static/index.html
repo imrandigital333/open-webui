@@ -1244,6 +1244,11 @@
           <button class="ci-run" id="kbArchAiBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Draft a map with AI when the device can't be reached">✨ AI draft <span class="kb-model-chip" id="kbArchModel"></span></button>
           <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
         </div>
+        <div class="kb-side-sec">
+          <div class="kb-side-h">🏛️ Organisation view</div>
+          <div class="hint" style="margin:2px 0 7px">One architecture synthesised across everything in the knowledge base — how systems connect org-wide.</div>
+          <button class="ci-run" style="width:100%;background:var(--panel2);color:var(--accent2)" onclick="kbBuildOrgArch(false)" title="Synthesise a whole-organisation architecture from all stored knowledge (uses AI, cached after)">🏛️ Build org-wide architecture</button>
+        </div>
         <details class="kb-side-sec" id="kbDesignSec" open style="display:none">
           <summary class="kb-side-h">📐 Design diagrams <span class="count" id="kbDesignCount">0</span></summary>
           <div class="hint" style="margin:6px 0">Flow diagrams extracted from your HLD / LLD design docs.</div>
@@ -3022,6 +3027,38 @@ async function kbShowDesign(docId, regenerate, auto) {
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 
+// build one architecture diagram synthesised across MULTIPLE KB sources for a
+// question (or the whole organisation when broad=true)
+async function kbShowDesignQuery(query, server, regenerate, auto, broad) {
+  const msg = $('kbArchMsg');
+  kbArchSelId = null; $('kbArchDetail').style.display = 'none';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = regenerate ? 'Rebuilding design across all sources…' : (auto ? 'Synthesising a design from the knowledge base…' : 'Building design…');
+  if (!auto) $('kbArchCanvas').innerHTML = `<div class="empty">Synthesising a design across the knowledge base…</div>`;
+  $('kbArchNotes').textContent = '';
+  try {
+    const qs = `q=${encodeURIComponent(query || '')}&server=${encodeURIComponent(server || '')}`
+      + (regenerate ? '&regenerate=1' : '') + (broad ? '&broad=1' : '');
+    const g = await (await fetch(`/api/kb/design-query?${qs}`)).json();
+    if (!g.ok) {
+      if (auto) { msg.textContent = ''; if (!kbArchData) $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+      else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (g.error || g.detail || 'failed'); $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER; }
+    } else {
+      kbArchData = g; kbRenderArch(g);
+      msg.style.color = 'var(--ok)'; msg.textContent = `✓ design · ${g.nodes.length} components · ${(g.sources || []).length} source(s)`;
+      $('kbArchNotes').innerHTML = (g.ai_error ? '⚠ ' + escapeHtml(g.ai_error) + ' — ' : '') + escapeHtml(g.notes || '')
+        + (g.sources && g.sources.length ? ` · <b>sources:</b> ${g.sources.map(escapeHtml).join(', ')}` : '')
+        + ' <span style="color:var(--muted)">· click a component for full details · drag to rearrange</span>';
+      if (regenerate || !g.cached) { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
+    }
+  } catch (e) { if (!auto) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } }
+}
+
+// whole-organisation architecture: synthesise across everything in the KB
+function kbBuildOrgArch(regenerate) {
+  kbShowDesignQuery('', '', !!regenerate, false, true);
+}
+
 function kbRenderUsage(ov) {
   const u = ov.usage || {}, st = ov.stats || {};
   $('kbModelChip').textContent = ov.model_label || 'Haiku';
@@ -3172,8 +3209,9 @@ async function kbSend() {
     if (r.ok === false) { kbMsg('✕ ' + (r.error || 'failed'), 'bot'); }
     else kbMsg(r.answer || '(no answer)', 'bot', { teach: r.mode === 'teach', sources: r.sources });
     // show a relevant design in the canvas for the thing asked about (a server
-    // query already drew its map above; otherwise render the cited design doc)
-    if (!validTarget && r.diagram_doc_id) kbShowDesign(r.diagram_doc_id, false, true);
+    // query already drew its map above; otherwise synthesise a cross-document
+    // design for exactly this question)
+    if (!validTarget && r.diagram_query) kbShowDesignQuery(r.diagram_query, r.diagram_server || '', false, true);
     if (r.mode === 'teach') loadKnowledge();   // refresh tree + usage after learning
     else { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
   } catch (e) { thinking.remove(); kbMsg('✕ ' + e.message, 'bot'); }
@@ -3280,8 +3318,11 @@ function kbArchHeader(g) {
   const sub = isDesign
     ? (when ? '📐 diagram generated ' + escapeHtml(when) : 'design flow diagram')
     : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
-  const regen = isDesign && g.doc_id
-    ? `<button class="arch-regen" title="Re-extract the diagram from the document (uses AI)" onclick="kbShowDesign('${escapeHtml(g.doc_id)}', true)">↻ Regenerate</button>` : '';
+  let regen = '';
+  if (isDesign && g.query !== undefined)
+    regen = `<button class="arch-regen" title="Rebuild the design across all sources (uses AI)" onclick="kbShowDesignQuery(${JSON.stringify(g.query)}, ${JSON.stringify(g.server_scope || '')}, true, false, ${g.broad ? 'true' : 'false'})">↻ Regenerate</button>`;
+  else if (isDesign && g.doc_id)
+    regen = `<button class="arch-regen" title="Re-extract the diagram from the document (uses AI)" onclick="kbShowDesign('${escapeHtml(g.doc_id)}', true)">↻ Regenerate</button>`;
   return `<div class="arch-topbar">
     <div class="arch-tb-l">
       <span class="arch-tb-ic">${isDesign ? '📐' : '🗺️'}</span>
@@ -3429,14 +3470,15 @@ function kbArchWireDrag(g) {
       el.classList.remove('dragging'); const c = centers[el.dataset.nid], moved = drag.moved; drag = null;
       if (!moved) { kbArchSelect(+el.dataset.i); return; }
       g.layout = g.layout || {}; g.layout[el.dataset.nid] = { cx: c.x, cy: c.y };
-      if (g.kind === 'design' && g.doc_id) kbSaveDesignLayout(g.doc_id, g.layout);
+      if (g.kind === 'design' && (g.query_key || g.doc_id)) kbSaveDesignLayout(g, g.layout);
     });
   });
 }
 
-async function kbSaveDesignLayout(docId, layout) {
+async function kbSaveDesignLayout(g, layout) {
+  const body = g.query_key ? { query_key: g.query_key, layout } : { doc_id: g.doc_id, layout };
   try { await fetch('/api/kb/design-layout', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ doc_id: docId, layout }) }); } catch { /* best-effort */ }
+    body: JSON.stringify(body) }); } catch { /* best-effort */ }
 }
 
 // update the selected-node highlight without re-rendering (keeps drag + no re-animation)

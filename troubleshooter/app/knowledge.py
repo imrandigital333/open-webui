@@ -372,33 +372,11 @@ QUESTION: %s
 """
 
 
-async def _pick_diagram_doc(hits: list, docs: dict) -> str:
-    """Choose a document among the retrieved hits to render as a diagram in the
-    canvas — so asking about a topic also shows its design. Prefer a doc that
-    already has a cached diagram (free), then a design/architecture doc, then the
-    top hit if its body is substantial enough to plausibly diagram."""
-    order = []
-    for h in hits:
-        did = h.get("doc_id")
-        if did and did in docs and did not in order:
-            order.append(did)
-    for did in order:                               # already-generated diagram → free
-        if _design_cache_path(did).exists():
-            return did
-    for did in order:                               # a design / architecture doc
-        if _is_design_doc(docs[did]):
-            return did
-    if order:                                       # else the single top hit, if substantial
-        full = await asyncio.to_thread(db.kb_get_doc, order[0])
-        if full and len(str(full.get("body") or "")) >= 600:
-            return order[0]
-    return ""
-
-
 async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
     message = (message or "").strip()
     if not message:
         return {"ok": False, "error": "Empty message"}
+    orig_query = message      # what the operator actually typed — drives the canvas design
     # A bare server identifier ("10.70.5.44" / "BIALSRV-GENCL2") means "tell me
     # about this server" — never store it as a fact. Scope the query to that
     # server and broaden it so we surface its OS, services, ports, connections
@@ -449,16 +427,17 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
         '\n\nReply with ONLY this JSON: {"answer": "your answer with [citations]"}')
     _record_usage(usage)
     sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
-    diagram_doc_id = await _pick_diagram_doc(hits, docs)   # show a relevant design in the canvas
+    # the canvas builds a fresh cross-document design for THIS question
+    diagram_query = orig_query
     if not data:
         # fall back to returning the raw top chunks
         return {"mode": "ask", "ok": True, "sources": sources,
-                "diagram_doc_id": diagram_doc_id,
+                "diagram_query": diagram_query, "diagram_server": server,
                 "answer": "Closest knowledge I have:\n\n" +
                           "\n\n".join(f"• {h['text'][:400]}" for h in hits[:3]),
                 "ai_error": err}
     return {"mode": "ask", "ok": True, "sources": sources,
-            "diagram_doc_id": diagram_doc_id,
+            "diagram_query": diagram_query, "diagram_server": server,
             "answer": str(data.get("answer") or "").strip() or "(no answer)"}
 
 
@@ -1119,6 +1098,124 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
               "server": doc.get("title") or doc_id, "cached_at": time.time(),
               "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "ai_error": err})
     save_design_cache(doc_id, g)
+    return g
+
+
+# ---------- cross-document design (synthesised from the whole knowledge base) ----------
+
+_QUERY_DESIGN_DIR = BASE_DIR / "data" / "query_designs"
+
+_DESIGN_QUERY_PROMPT = """You are producing ONE DETAILED ARCHITECTURE / DATA-FLOW DIAGRAM that answers the
+request below, SYNTHESISED FROM MULTIPLE knowledge-base entries (design docs,
+server inventories, live topologies, configs and notes from across the whole
+organisation). Do NOT restrict yourself to a single document — combine them into
+one coherent picture and show how components across the different sources connect
+to each other. Merge the same component mentioned in several sources into a
+single node. Use ONLY facts present in the entries; never invent anything.
+
+REQUEST: %s
+
+KNOWLEDGE ENTRIES (from multiple sources — each chunk is prefixed with its source title):
+%s
+
+Reply with ONLY this JSON (no prose, no fences):
+{"nodes": [{"id": "commserve", "label": "CommServe", "type": "server",
+            "meta": "RHEL 9.6 · NDC", "details": "Master scheduler; coordinates MediaAgents; HA pair NDC/MCR."}],
+ "edges": [{"from": "mediaagent", "to": "commserve", "label": "coordination"}],
+ "notes": "one line on coverage / anything unclear"}
+
+Rules:
+- Node "type" is one of: user, client, external, cdn, firewall, network, gateway,
+  loadbalancer, server, application, service, api, process, component, queue,
+  cache, database, storage, dependency.
+- "details" is a FULL multi-sentence description of the component drawn from ALL
+  the sources that mention it (purpose, tech/version, sizing, config, interfaces,
+  HA/DR, security). Do not summarise away detail.
+- Edge direction = request / data flow (caller -> callee); label with the
+  protocol / port / payload when stated.
+- Include EVERY relevant component across the sources (up to 40). Preserve the
+  layering: users / edge at the top, data stores at the bottom.
+"""
+
+
+def _query_design_key(query: str, server: str) -> str:
+    return hashlib.sha1(f"{server}||{(query or '').strip().lower()}".encode()).hexdigest()[:16]
+
+
+def _query_design_path(key: str):
+    return _QUERY_DESIGN_DIR / f"{key}.json"
+
+
+def save_query_design(key: str, graph: dict) -> None:
+    try:
+        _QUERY_DESIGN_DIR.mkdir(parents=True, exist_ok=True)
+        _query_design_path(key).write_text(json.dumps(graph))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_query_design(key: str) -> dict | None:
+    try:
+        return json.loads(_query_design_path(key).read_text())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_query_design_layout(key: str, layout: dict) -> bool:
+    g = load_query_design(key)
+    if not g:
+        return False
+    clean = {}
+    for nid, p in (layout or {}).items():
+        try:
+            clean[str(nid)] = {"cx": float(p["cx"]), "cy": float(p["cy"])}
+        except Exception:  # noqa: BLE001
+            continue
+    g["layout"] = clean
+    save_query_design(key, g)
+    return True
+
+
+async def design_from_query(query: str, server: str = "", regenerate: bool = False,
+                            broad: bool = False) -> dict:
+    """Build a single architecture diagram that spans MULTIPLE knowledge-base
+    sources relevant to `query` (or the whole organisation when broad=True).
+    Cached by (server, query) so re-asking the same thing costs no tokens."""
+    title = ("Organisation architecture" if broad and not query.strip()
+             else (query.strip() or "Architecture"))
+    key = _query_design_key(query if not broad else f"__ORG__::{query}", server)
+    if not regenerate:
+        cached = load_query_design(key)
+        if cached and cached.get("nodes"):
+            cached.update({"ok": True, "source": "design", "kind": "design",
+                           "query": query, "query_key": key, "broad": broad,
+                           "server": cached.get("server") or title})
+            cached["notes"] = (cached.get("notes") or "") + " · stored (press ↻ to rebuild)."
+            return cached
+    rq = query.strip() or "overall organisation architecture and how the systems connect"
+    hits = await retrieve(rq, server, top_k=(30 if broad else 14))
+    if not hits:
+        return {"ok": False, "error": "no relevant knowledge to build a design from yet"}
+    docs = {d["id"]: d for d in await asyncio.to_thread(db.kb_list_docs)}
+    ctx = "\n".join(f"[{docs.get(h['doc_id'], {}).get('title', 'entry')}] {h['text']}"
+                    for h in hits)[:40000]
+    sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
+    graph, err, usage = await _haiku_json(
+        _DESIGN_QUERY_PROMPT % (title, ctx), timeout_s=180)
+    _record_usage(usage)
+    if not graph:
+        return {"ok": False, "error": err or "could not build a design",
+                "model": KB_MODEL, "model_label": KB_MODEL_LABEL}
+    g = _sanitize_flow_graph(graph)
+    if not g["nodes"]:
+        return {"ok": False, "error": "no components could be identified", "ai_error": err}
+    g.update({"ok": True, "source": "design", "kind": "design", "query": query,
+              "query_key": key, "broad": broad, "server": title, "server_scope": server,
+              "cached_at": time.time(), "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
+              "sources": sources, "ai_error": err,
+              "notes": (str(graph.get("notes") or "") +
+                        f" · synthesised from {len(sources)} source(s).")})
+    save_query_design(key, g)
     return g
 
 
