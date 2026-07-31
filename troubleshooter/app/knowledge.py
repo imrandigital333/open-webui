@@ -1113,13 +1113,14 @@ def _sanitize_flow_graph(graph: dict) -> dict:
     return {"nodes": nodes[:60], "edges": edges, "notes": str(graph.get("notes") or "")[:200]}
 
 
-async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
+async def design_diagram(doc_id: str, regenerate: bool = False, brief: str = "") -> dict:
     """Render a flow/architecture diagram from an uploaded HLD/LLD document.
     Uses a cached diagram (no tokens) unless regenerate=True, in which case it
-    re-extracts with AI and re-caches."""
+    re-extracts with AI and re-caches. `brief` optionally steers depth/scope."""
     doc = await asyncio.to_thread(db.kb_get_doc, doc_id)
     if not doc:
         return {"ok": False, "error": "document not found"}
+    brief = (brief or "").strip()
     key = "doc:" + doc_id
     if not regenerate:
         cached = await asyncio.to_thread(db.design_cache_get, key)
@@ -1131,8 +1132,11 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
     body = (doc.get("body") or "")
     if len(body.strip()) < 20:
         return {"ok": False, "error": "the document has no extractable text to diagram"}
-    graph, err, usage = await _haiku_json(
-        _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:60000]), timeout_s=240)
+    prompt = _DESIGN_PROMPT % (doc.get("title") or doc_id, body[:60000])
+    if brief:
+        prompt += ("\n\nOPERATOR INSTRUCTIONS — follow these for the depth, number of layers "
+                   f"and focus of the diagram:\n{brief[:600]}")
+    graph, err, usage = await _haiku_json(prompt, timeout_s=240)
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not extract a diagram from the document",
@@ -1143,7 +1147,7 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
                 "ai_error": err}
     title = doc.get("title") or doc_id
     g.update({"ok": True, "source": "design", "kind": "design", "doc_id": doc_id,
-              "query_key": key, "server": title, "cached_at": time.time(),
+              "query_key": key, "server": title, "brief": brief, "cached_at": time.time(),
               "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "ai_error": err})
     await asyncio.to_thread(db.design_cache_put, key, title, g)
     return g

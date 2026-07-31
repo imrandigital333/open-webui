@@ -679,7 +679,9 @@
   .arch-empty-ic { font-size: 40px; opacity: .85; }
   .arch-empty-h { font-weight: 800; font-size: 16px; margin-top: 10px; color: var(--text); }
   .arch-empty-p { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.5; }
-  .arch-empty-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-width: 320px; margin-inline: auto; }
+  .arch-empty-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-width: 360px; margin-inline: auto; }
+  .kb-gen-brief { display: block; width: 100%; max-width: 460px; margin: 14px auto 0; min-height: 64px;
+    resize: vertical; font-size: 12.5px; line-height: 1.45; }
   /* "agent is drawing" animation shown while a design generates */
   .arch-drawing { display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 10px; padding: 40px 20px; min-height: 300px; text-align: center; }
@@ -3073,6 +3075,13 @@ function kbBrief() { const el = $('kbDesignBrief'); return el ? el.value.trim() 
 // one is available, otherwise the canvas offers a "Generate" button. Designs are
 // permanent and shared, so once built nobody regenerates them.
 let kbPendingGen = null;
+// the operator's design idea, typed either in the Map-tab box or the Generate
+// card, is synced into #kbDesignBrief so every generate path picks it up
+function kbGenerateFromCard() {
+  const el = $('kbGenBriefInline'), box = $('kbDesignBrief');
+  if (el && box) box.value = el.value;
+  if (kbPendingGen) kbPendingGen();
+}
 function kbRunPendingGen() { if (kbPendingGen) kbPendingGen(); }
 function kbShowNoDesign(label) {
   const z = $('kbArchZoomCtl'); if (z) z.style.display = 'none';
@@ -3080,8 +3089,9 @@ function kbShowNoDesign(label) {
   $('kbArchCanvas').innerHTML = `<div class="arch-empty">
     <div class="arch-empty-ic">🎨</div>
     <div class="arch-empty-h">No existing design diagram found${label ? ` for “${escapeHtml(label)}”` : ''}</div>
-    <div class="arch-empty-p">Nothing has been generated for this yet. Generating uses AI once — then it's stored permanently and free for everyone.</div>
-    <div class="arch-empty-btns"><button class="ci-run" style="background:var(--accent2);color:#0b0620;font-weight:700" onclick="kbRunPendingGen()">🎨 Generate design</button></div>
+    <div class="arch-empty-p">Describe how you want it (optional) — depth, number of layers, what to focus on — then generate. It's built once with AI, then stored permanently and free for everyone.</div>
+    <textarea id="kbGenBriefInline" class="kb-gen-brief" placeholder="e.g. 5 detailed layers: edge → network → hosts → services → data; show every VM &amp; network path; call out HA/DR">${escapeHtml(kbBrief())}</textarea>
+    <div class="arch-empty-btns"><button class="ci-run" style="background:var(--accent2);color:#0b0620;font-weight:700" onclick="kbGenerateFromCard()">🎨 Generate design</button></div>
   </div>`;
 }
 function kbRenderStoredDesign(g, hint) {
@@ -3136,7 +3146,9 @@ async function kbShowDesign(docId, regenerate, auto) {
   const zc0 = $('kbArchZoomCtl'); if (zc0) zc0.style.display = 'none';
   $('kbArchNotes').textContent = '';
   try {
-    const g = await (await fetch(`/api/kb/design-diagram?doc_id=${encodeURIComponent(docId)}${regenerate ? '&regenerate=1' : ''}`)).json();
+    const brief = kbBrief();
+    if (brief) regenerate = true;   // a brief means "build it this way" → rebuild
+    const g = await (await fetch(`/api/kb/design-diagram?doc_id=${encodeURIComponent(docId)}${regenerate ? '&regenerate=1' : ''}${brief ? `&brief=${encodeURIComponent(brief)}` : ''}`)).json();
     if (!g.ok) {
       if (kbArchData) kbRenderArch(kbArchData); else $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER;
       if (auto) msg.textContent = '';
@@ -3490,9 +3502,9 @@ function kbArchHeader(g) {
     : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
   let regen = '';
   if (isDesign && g.query !== undefined)
-    regen = `<button class="arch-regen" title="Rebuild the design across all sources (uses AI)" onclick="kbShowDesignQuery(${JSON.stringify(g.query)}, ${JSON.stringify(g.server_scope || '')}, true, false, ${g.broad ? 'true' : 'false'})">↻ Regenerate</button>`;
+    regen = `<button class="arch-regen" title="Rebuild across all sources — applies the brief in 🎨 Design options (uses AI)" onclick="kbShowDesignQuery(${JSON.stringify(g.query)}, ${JSON.stringify(g.server_scope || '')}, true, false, ${g.broad ? 'true' : 'false'})">↻ Regenerate</button>`;
   else if (isDesign && g.doc_id)
-    regen = `<button class="arch-regen" title="Re-extract the diagram from the document (uses AI)" onclick="kbShowDesign('${escapeHtml(g.doc_id)}', true)">↻ Regenerate</button>`;
+    regen = `<button class="arch-regen" title="Re-extract the diagram — applies the brief in 🎨 Design options (uses AI)" onclick="kbShowDesign('${escapeHtml(g.doc_id)}', true)">↻ Regenerate</button>`;
   return `<div class="arch-topbar">
     <div class="arch-tb-l">
       <span class="arch-tb-ic">${isDesign ? '📐' : '🗺️'}</span>
