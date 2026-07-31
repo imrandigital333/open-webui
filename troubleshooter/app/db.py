@@ -146,6 +146,18 @@ kb_usage_t = Table(
     Column("model", String(80)),
 )
 
+# Generated architecture/design diagrams, cached PERMANENTLY and SHARED across
+# all users, keyed by the resolved component/topic (see knowledge._design_key).
+design_cache_t = Table(
+    "design_cache", metadata,
+    Column("key", String(160), primary_key=True),
+    Column("title", String(300)),
+    Column("graph", Text),                         # JSON graph {nodes, edges, ...}
+    Column("layout", Text, nullable=True),         # JSON {id: {cx, cy}} operator drag positions
+    Column("created_at", Float),
+    Column("updated_at", Float, index=True),
+)
+
 _engine = None
 _fts_ok = False   # SQLite FTS5 full-text index available? (set in init)
 
@@ -545,6 +557,55 @@ def kb_stats() -> dict:
             select(func.count(func.distinct(kb_docs_t.c.server)))
             .where(kb_docs_t.c.server != "")).scalar() or 0
     return {"docs": int(docs), "chunks": int(chunks), "servers": int(servers)}
+
+
+def design_cache_get(key: str) -> dict | None:
+    """Return a stored design graph (with its layout merged in) or None."""
+    with engine().connect() as conn:
+        r = conn.execute(select(design_cache_t).where(design_cache_t.c.key == key)).first()
+    if not r:
+        return None
+    try:
+        g = json.loads(r.graph or "{}")
+    except Exception:  # noqa: BLE001
+        return None
+    if r.layout:
+        try:
+            g["layout"] = json.loads(r.layout)
+        except Exception:  # noqa: BLE001
+            pass
+    g["_cached"] = True
+    return g
+
+
+def design_cache_put(key: str, title: str, graph: dict) -> None:
+    """Insert or update a shared design diagram (permanent, all users)."""
+    payload = json.dumps(graph)
+    layout = json.dumps(graph.get("layout")) if graph.get("layout") else None
+    now = time.time()
+    with engine().begin() as conn:
+        exists = conn.execute(
+            select(design_cache_t.c.key).where(design_cache_t.c.key == key)).first()
+        if exists:
+            conn.execute(update(design_cache_t).where(design_cache_t.c.key == key).values(
+                title=title[:300], graph=payload, updated_at=now))
+        else:
+            conn.execute(design_cache_t.insert().values(
+                key=key, title=title[:300], graph=payload, layout=layout,
+                created_at=now, updated_at=now))
+
+
+def design_cache_set_layout(key: str, layout: dict) -> bool:
+    with engine().begin() as conn:
+        r = conn.execute(update(design_cache_t).where(design_cache_t.c.key == key).values(
+            layout=json.dumps(layout or {}), updated_at=time.time()))
+        return (r.rowcount or 0) > 0
+
+
+def design_cache_has(key: str) -> bool:
+    with engine().connect() as conn:
+        return conn.execute(
+            select(design_cache_t.c.key).where(design_cache_t.c.key == key)).first() is not None
 
 
 def kb_usage_get() -> dict:

@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.98.0"
+APP_VERSION = "2.99.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -701,19 +701,28 @@ async def kb_design_diagram(doc_id: str, regenerate: bool = False):
     return await knowledge.design_diagram(doc_id.strip(), regenerate=regenerate)
 
 
+@app.get("/api/kb/design-peek")
+async def kb_design_peek(q: str = "", server: str = "", doc_id: str = "",
+                         broad: bool = False):
+    """Return an EXISTING stored design for this component/topic without building
+    one (no AI tokens). {ok:true, exists:false} when nothing is stored yet."""
+    return await knowledge.design_peek(q.strip(), server.strip(),
+                                       broad=broad, doc_id=doc_id.strip())
+
+
 @app.get("/api/kb/design-query")
 async def kb_design_query(q: str = "", server: str = "", regenerate: bool = False,
                           broad: bool = False):
     """Build one architecture diagram synthesised across MULTIPLE knowledge-base
-    sources relevant to the query (or the whole organisation when broad=1).
-    Cached by (server, query) so re-asking costs no tokens."""
+    sources relevant to the query (or the whole organisation when broad=1), and
+    store it permanently in the shared cache. Reused (no tokens) once built."""
     return await knowledge.design_from_query(q.strip(), server.strip(),
                                              regenerate=regenerate, broad=broad)
 
 
 class DesignLayoutRequest(BaseModel):
     doc_id: str = Field("", max_length=64)
-    query_key: str = Field("", max_length=64)
+    query_key: str = Field("", max_length=200)
     layout: dict = Field(default_factory=dict)
 
 

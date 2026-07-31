@@ -28,9 +28,8 @@ from .inventory import BASE_DIR, load_inventory
 # cached live service maps (so a server re-renders from the last probe without
 # reconnecting; refreshed only when the operator runs a new live probe)
 _LIVE_DIR = BASE_DIR / "data" / "live_maps"
-# cached design diagrams extracted from HLD/LLD documents (generated once with
-# AI, then re-rendered from storage with no further tokens)
-_DESIGN_DIR = BASE_DIR / "data" / "design_maps"
+# (design diagrams are cached in the shared DB — see db.design_cache_* — so they
+# are permanent and reused by every user)
 
 
 def _live_cache_path(server: str):
@@ -983,41 +982,69 @@ Rules:
 """
 
 
-def _design_cache_path(doc_id: str):
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", doc_id)
-    return _DESIGN_DIR / f"{safe}.json"
+# Designs are cached PERMANENTLY in the shared database (db.design_cache_*),
+# keyed by the RESOLVED component/topic — so every user reuses the same diagram
+# and re-phrasings of the same thing don't regenerate (no extra tokens).
+_DESIGN_KEY_STOP = set(
+    "tell me about show show me give give me the a an of for what which who is are "
+    "was were please design designs diagram diagrams architecture arch view map my "
+    "our your this that these those and or to in on with without details detail "
+    "complete full info information overall all how does do can could would explain "
+    "list get find server servers".split())
 
 
-def save_design_cache(doc_id: str, graph: dict) -> None:
-    try:
-        _DESIGN_DIR.mkdir(parents=True, exist_ok=True)
-        _design_cache_path(doc_id).write_text(json.dumps(graph))
-    except Exception:  # noqa: BLE001
-        pass
+def _normalise_topic(q: str) -> str:
+    toks = [t for t in re.findall(r"[a-z0-9._:-]+", (q or "").lower())
+            if t not in _DESIGN_KEY_STOP and len(t) > 1]
+    return " ".join(dict.fromkeys(sorted(toks)))[:130]
 
 
-def load_design_cache(doc_id: str) -> dict | None:
-    try:
-        return json.loads(_design_cache_path(doc_id).read_text())
-    except Exception:  # noqa: BLE001
-        return None
+def _design_key(query: str = "", server: str = "", broad: bool = False,
+                doc_id: str = "") -> str:
+    """Canonical, resolution-based cache key. A bare/known server → srv:<name>;
+    a whole-org view → org:all; a specific document → doc:<id>; otherwise the
+    normalised topic (filler words stripped, order-independent)."""
+    if doc_id:
+        return "doc:" + doc_id
+    if broad:
+        return "org:all"
+    ref = _match_server_ref((query or "").strip())
+    if ref:
+        return "srv:" + ref.lower()
+    topic = _normalise_topic(query)
+    srv = (server or "").strip().lower()
+    if srv:
+        return "srv:" + srv + (("|" + topic) if topic else "")
+    return "q:" + (topic or "general")
 
 
 def save_design_layout(doc_id: str, layout: dict) -> bool:
-    """Persist operator-dragged node positions into the cached design diagram so
-    the custom arrangement survives a reload."""
-    g = load_design_cache(doc_id)
-    if not g:
-        return False
+    clean = _clean_layout(layout)
+    return db.design_cache_set_layout("doc:" + doc_id, clean)
+
+
+def _clean_layout(layout: dict) -> dict:
     clean = {}
     for nid, p in (layout or {}).items():
         try:
             clean[str(nid)] = {"cx": float(p["cx"]), "cy": float(p["cy"])}
         except Exception:  # noqa: BLE001
             continue
-    g["layout"] = clean
-    save_design_cache(doc_id, g)
-    return True
+    return clean
+
+
+async def design_peek(query: str = "", server: str = "", broad: bool = False,
+                      doc_id: str = "") -> dict:
+    """Return an EXISTING stored design for this component/topic WITHOUT building
+    one (no tokens). {ok:True, exists:False} when nothing is stored yet."""
+    key = _design_key(query, server, broad, doc_id)
+    g = await asyncio.to_thread(db.design_cache_get, key)
+    if g and g.get("nodes"):
+        g.update({"ok": True, "exists": True, "source": "design", "kind": "design",
+                  "query": query, "query_key": key, "broad": broad,
+                  "doc_id": doc_id or g.get("doc_id", "")})
+        return g
+    return {"ok": True, "exists": False, "query_key": key}
 
 
 _DESIGN_HINTS = ("hld", "lld", "high level design", "high-level design",
@@ -1043,7 +1070,7 @@ def list_design_docs() -> list[dict]:
         out.append({"id": d["id"], "title": d["title"], "server": d["server"],
                     "os": d["os"], "category": d["category"],
                     "created_at": d["created_at"],
-                    "has_diagram": _design_cache_path(d["id"]).exists()})
+                    "has_diagram": db.design_cache_has("doc:" + d["id"])})
     return out
 
 
@@ -1093,11 +1120,12 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
     doc = await asyncio.to_thread(db.kb_get_doc, doc_id)
     if not doc:
         return {"ok": False, "error": "document not found"}
+    key = "doc:" + doc_id
     if not regenerate:
-        cached = load_design_cache(doc_id)
+        cached = await asyncio.to_thread(db.design_cache_get, key)
         if cached and cached.get("nodes"):
             cached.update({"ok": True, "source": "design", "kind": "design",
-                           "doc_id": doc_id})
+                           "doc_id": doc_id, "query_key": key})
             cached["notes"] = (cached.get("notes") or "") + " · stored diagram (press ↻ to regenerate)."
             return cached
     body = (doc.get("body") or "")
@@ -1113,16 +1141,15 @@ async def design_diagram(doc_id: str, regenerate: bool = False) -> dict:
     if not g["nodes"]:
         return {"ok": False, "error": "no components could be identified in the document",
                 "ai_error": err}
+    title = doc.get("title") or doc_id
     g.update({"ok": True, "source": "design", "kind": "design", "doc_id": doc_id,
-              "server": doc.get("title") or doc_id, "cached_at": time.time(),
+              "query_key": key, "server": title, "cached_at": time.time(),
               "model": KB_MODEL, "model_label": KB_MODEL_LABEL, "ai_error": err})
-    save_design_cache(doc_id, g)
+    await asyncio.to_thread(db.design_cache_put, key, title, g)
     return g
 
 
 # ---------- cross-document design (synthesised from the whole knowledge base) ----------
-
-_QUERY_DESIGN_DIR = BASE_DIR / "data" / "query_designs"
 
 _DESIGN_QUERY_PROMPT = """You are producing ONE DETAILED ARCHITECTURE / DATA-FLOW DIAGRAM that answers the
 request below, SYNTHESISED FROM MULTIPLE knowledge-base entries (design docs,
@@ -1164,54 +1191,21 @@ Rules:
 """
 
 
-def _query_design_key(query: str, server: str) -> str:
-    return hashlib.sha1(f"{server}||{(query or '').strip().lower()}".encode()).hexdigest()[:16]
-
-
-def _query_design_path(key: str):
-    return _QUERY_DESIGN_DIR / f"{key}.json"
-
-
-def save_query_design(key: str, graph: dict) -> None:
-    try:
-        _QUERY_DESIGN_DIR.mkdir(parents=True, exist_ok=True)
-        _query_design_path(key).write_text(json.dumps(graph))
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def load_query_design(key: str) -> dict | None:
-    try:
-        return json.loads(_query_design_path(key).read_text())
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def save_query_design_layout(key: str, layout: dict) -> bool:
-    g = load_query_design(key)
-    if not g:
-        return False
-    clean = {}
-    for nid, p in (layout or {}).items():
-        try:
-            clean[str(nid)] = {"cx": float(p["cx"]), "cy": float(p["cy"])}
-        except Exception:  # noqa: BLE001
-            continue
-    g["layout"] = clean
-    save_query_design(key, g)
-    return True
+    return db.design_cache_set_layout(key, _clean_layout(layout))
 
 
 async def design_from_query(query: str, server: str = "", regenerate: bool = False,
                             broad: bool = False) -> dict:
     """Build a single architecture diagram that spans MULTIPLE knowledge-base
     sources relevant to `query` (or the whole organisation when broad=True).
-    Cached by (server, query) so re-asking the same thing costs no tokens."""
+    Cached PERMANENTLY in the shared DB, keyed by the resolved component/topic,
+    so re-asking (in any wording) costs no tokens for anyone."""
     title = ("Organisation architecture" if broad and not query.strip()
              else (query.strip() or "Architecture"))
-    key = _query_design_key(query if not broad else f"__ORG__::{query}", server)
+    key = _design_key(query, server, broad)
     if not regenerate:
-        cached = load_query_design(key)
+        cached = await asyncio.to_thread(db.design_cache_get, key)
         if cached and cached.get("nodes"):
             cached.update({"ok": True, "source": "design", "kind": "design",
                            "query": query, "query_key": key, "broad": broad,
@@ -1241,7 +1235,7 @@ async def design_from_query(query: str, server: str = "", regenerate: bool = Fal
               "sources": sources, "ai_error": err,
               "notes": (str(graph.get("notes") or "") +
                         f" · synthesised from {len(sources)} source(s).")})
-    save_query_design(key, g)
+    await asyncio.to_thread(db.design_cache_put, key, title, g)
     return g
 
 
