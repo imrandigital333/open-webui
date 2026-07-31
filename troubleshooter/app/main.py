@@ -25,7 +25,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "2.99.0"
+APP_VERSION = "3.0.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -712,12 +712,14 @@ async def kb_design_peek(q: str = "", server: str = "", doc_id: str = "",
 
 @app.get("/api/kb/design-query")
 async def kb_design_query(q: str = "", server: str = "", regenerate: bool = False,
-                          broad: bool = False):
+                          broad: bool = False, brief: str = ""):
     """Build one architecture diagram synthesised across MULTIPLE knowledge-base
     sources relevant to the query (or the whole organisation when broad=1), and
-    store it permanently in the shared cache. Reused (no tokens) once built."""
+    store it permanently in the shared cache. `brief` steers depth/scope.
+    Reused (no tokens) once built."""
     return await knowledge.design_from_query(q.strip(), server.strip(),
-                                             regenerate=regenerate, broad=broad)
+                                             regenerate=regenerate, broad=broad,
+                                             brief=brief.strip())
 
 
 class DesignLayoutRequest(BaseModel):

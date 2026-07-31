@@ -1196,11 +1196,13 @@ def save_query_design_layout(key: str, layout: dict) -> bool:
 
 
 async def design_from_query(query: str, server: str = "", regenerate: bool = False,
-                            broad: bool = False) -> dict:
+                            broad: bool = False, brief: str = "") -> dict:
     """Build a single architecture diagram that spans MULTIPLE knowledge-base
     sources relevant to `query` (or the whole organisation when broad=True).
-    Cached PERMANENTLY in the shared DB, keyed by the resolved component/topic,
-    so re-asking (in any wording) costs no tokens for anyone."""
+    `brief` is an optional operator instruction steering depth/scope. Cached
+    PERMANENTLY in the shared DB, keyed by the resolved component/topic, so
+    re-asking (in any wording) costs no tokens for anyone."""
+    brief = (brief or "").strip()
     title = ("Organisation architecture" if broad and not query.strip()
              else (query.strip() or "Architecture"))
     key = _design_key(query, server, broad)
@@ -1220,8 +1222,11 @@ async def design_from_query(query: str, server: str = "", regenerate: bool = Fal
     ctx = "\n".join(f"[{docs.get(h['doc_id'], {}).get('title', 'entry')}] {h['text']}"
                     for h in hits)[:60000]
     sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
-    graph, err, usage = await _haiku_json(
-        _DESIGN_QUERY_PROMPT % (title, ctx), timeout_s=180)
+    prompt = _DESIGN_QUERY_PROMPT % (title, ctx)
+    if brief:
+        prompt += ("\n\nOPERATOR INSTRUCTIONS — follow these for the depth, number of layers "
+                   f"and focus of the diagram:\n{brief[:600]}")
+    graph, err, usage = await _haiku_json(prompt, timeout_s=180)
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not build a design",
@@ -1231,10 +1236,11 @@ async def design_from_query(query: str, server: str = "", regenerate: bool = Fal
         return {"ok": False, "error": "no components could be identified", "ai_error": err}
     g.update({"ok": True, "source": "design", "kind": "design", "query": query,
               "query_key": key, "broad": broad, "server": title, "server_scope": server,
-              "cached_at": time.time(), "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
-              "sources": sources, "ai_error": err,
+              "brief": brief, "cached_at": time.time(), "model": KB_MODEL,
+              "model_label": KB_MODEL_LABEL, "sources": sources, "ai_error": err,
               "notes": (str(graph.get("notes") or "") +
-                        f" · synthesised from {len(sources)} source(s).")})
+                        f" · synthesised from {len(sources)} source(s)."
+                        + (" · custom brief applied" if brief else ""))})
     await asyncio.to_thread(db.design_cache_put, key, title, g)
     return g
 

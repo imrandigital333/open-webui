@@ -653,6 +653,18 @@
   .arch-leg { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--muted);
     text-transform: capitalize; }
   .arch-leg .ic { font-size: 12px; }
+  /* layer show/hide chips */
+  .arch-layers { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
+  .arch-layers .ll { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
+    text-transform: uppercase; margin-right: 2px; }
+  .arch-layer { width: auto; flex: 0 0 auto; font-size: 10.5px; font-weight: 700; padding: 3px 9px;
+    border-radius: 999px; cursor: pointer; white-space: nowrap;
+    color: var(--accent2); background: rgba(163,113,247,.14); border: 1px solid rgba(163,113,247,.45); }
+  .arch-layer:hover { background: rgba(163,113,247,.26); }
+  .arch-layer.off { color: var(--muted); background: transparent; border-color: var(--border);
+    text-decoration: line-through; opacity: .7; }
+  .arch-layer.all { color: var(--muted); background: var(--panel2); border-color: var(--border); }
   /* swim-lane bands + labels */
   .arch-lane { fill: rgba(255,255,255,.012); }
   .arch-lane.alt { fill: rgba(255,255,255,.030); }
@@ -1288,6 +1300,11 @@
             onclick="kbBuildArchLive()" title="Connect to the server, discover its live services & connections, and store them to the knowledge base">🔎 Live probe — connect &amp; map</button>
           <button class="ci-run" id="kbArchAiBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Draft a map with AI when the device can't be reached">✨ AI draft <span class="kb-model-chip" id="kbArchModel"></span></button>
           <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
+        </div>
+        <div class="kb-side-sec">
+          <div class="kb-side-h">🎨 Design options</div>
+          <div class="hint" style="margin:2px 0 6px">Optional brief — steer how detailed / what to focus on. Applied when you Generate or ↻ Regenerate.</div>
+          <textarea id="kbDesignBrief" style="min-height:52px" placeholder="e.g. 5 detailed layers: edge → network → hosts → services → data; show every VM and network path; call out HA/DR"></textarea>
         </div>
         <div class="kb-side-sec">
           <div class="kb-side-h">🏛️ Organisation view</div>
@@ -3051,6 +3068,7 @@ async function kbLoadDesignDocs() {
 }
 
 const KB_ARCH_PLACEHOLDER = '<div class="empty">Pick a server, or ask the assistant about one, to view its service map.</div>';
+function kbBrief() { const el = $('kbDesignBrief'); return el ? el.value.trim() : ''; }
 
 // Never auto-spend tokens: asking a question shows an EXISTING stored design if
 // one is available, otherwise the canvas offers a "Generate" button. Designs are
@@ -3146,8 +3164,12 @@ async function kbShowDesignQuery(query, server, regenerate, auto, broad) {
   const zc = $('kbArchZoomCtl'); if (zc) zc.style.display = 'none';
   $('kbArchNotes').textContent = '';
   try {
+    const brief = kbBrief();
+    // a brief means "build it this way" → force a rebuild so it actually applies
+    if (brief) regenerate = true;
     const qs = `q=${encodeURIComponent(query || '')}&server=${encodeURIComponent(server || '')}`
-      + (regenerate ? '&regenerate=1' : '') + (broad ? '&broad=1' : '');
+      + (regenerate ? '&regenerate=1' : '') + (broad ? '&broad=1' : '')
+      + (brief ? `&brief=${encodeURIComponent(brief)}` : '');
     const g = await (await fetch(`/api/kb/design-query?${qs}`)).json();
     if (!g.ok) {
       // restore whatever was showing (a prior diagram, else the placeholder)
@@ -3460,6 +3482,12 @@ function kbArchHeader(g) {
   const mt = h.machine_type ? `<span class="arch-mt ${mtCls}" title="${escapeHtml(h.hardware || '')}">${mtIcon} ${escapeHtml(h.machine_type)}${h.virtualization && h.virtualization !== 'Bare metal' ? ' · ' + escapeHtml(h.virtualization) : ''}</span>` : '';
   const types = [...new Set((g.nodes || []).map(n => n.type))];
   const legend = types.map(t => `<span class="arch-leg"><span class="ic">${ARCH_ICON[t] || '•'}</span>${escapeHtml(t)}</span>`).join('');
+  // layer show/hide: a chip per tier (layer) present; click to toggle
+  const hidden = new Set(g._hidden || []);
+  const presentTiers = [...new Set((g.nodes || []).map(n => ARCH_TIER[n.type] ?? 6))].sort((a, b) => a - b);
+  const layerChips = presentTiers.length > 1 ? presentTiers.map(t =>
+    `<button class="arch-layer${hidden.has(t) ? ' off' : ''}" onclick="kbArchToggleLayer(${t})">${escapeHtml(ARCH_TIER_LABEL[t] || ('Layer ' + t))}</button>`).join('') : '';
+  const layerBar = layerChips ? `<div class="arch-layers"><span class="ll">Layers:</span>${layerChips}<button class="arch-layer all" onclick="kbArchShowAllLayers()">show all</button></div>` : '';
   const sub = isDesign
     ? (when ? '📐 diagram generated ' + escapeHtml(when) : 'design flow diagram')
     : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
@@ -3479,7 +3507,22 @@ function kbArchHeader(g) {
       ${mt}${regen}
     </div>
     <div class="arch-legend">${legend}</div>
+    ${layerBar}
   </div>`;
+}
+
+// show/hide a whole layer (tier) after generation
+function kbArchToggleLayer(t) {
+  const g = kbArchData; if (!g) return;
+  const s = new Set(g._hidden || []);
+  s.has(t) ? s.delete(t) : s.add(t);
+  g._hidden = [...s];
+  kbRenderArch(g, { animate: false });
+}
+function kbArchShowAllLayers() {
+  const g = kbArchData; if (!g) return;
+  g._hidden = [];
+  kbRenderArch(g, { animate: false });
 }
 
 function kbRenderArch(g, opts) {
@@ -3511,8 +3554,19 @@ function kbRenderArch(g, opts) {
   }
   const animate = !(opts && opts.animate === false);
   const layout = g.layout || {};
+  // layer filter: hide nodes (and their edges) whose tier the operator turned off
+  nodes.forEach((n, i) => { n._i = i; });               // stable index into g.nodes
+  const hiddenTiers = new Set(g._hidden || []);
+  const vis = nodes.filter(n => !hiddenTiers.has(ARCH_TIER[n.type] ?? 6));
+  if (!vis.length) {
+    $('kbArchCanvas').innerHTML = kbArchHeader(g) + `<div class="arch-empty">
+      <div class="arch-empty-ic">🫥</div>
+      <div class="arch-empty-h">All layers are hidden</div>
+      <div class="arch-empty-p">Turn a layer back on above, or press <b>show all</b>.</div></div>`;
+    return;
+  }
   const rows = {}, tierOf = {};
-  nodes.forEach((n, i) => { n._i = i; const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
+  vis.forEach(n => { const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
   const tiers = Object.keys(rows).map(Number).sort((a, b) => a - b);
   // balanced sizing: modest, consistent radii and generous spacing so circles
   // don't crowd or hide each other
@@ -3550,7 +3604,7 @@ function kbRenderArch(g, opts) {
   });
   let nd = '';
   // draw expanded containers last so their in-diagram item list sits on top
-  const orderNodes = [...nodes].sort((a, b) => (expanded.has(a.id) ? 1 : 0) - (expanded.has(b.id) ? 1 : 0));
+  const orderNodes = [...vis].sort((a, b) => (expanded.has(a.id) ? 1 : 0) - (expanded.has(b.id) ? 1 : 0));
   orderNodes.forEach(n => {
     const p = pos[n.id], meta = clip(n.meta, 20), lbl = clip(n.label, 18);
     const health = n.status ? ' h-' + n.status : '', sel = n.id === kbArchSelId ? ' sel' : '';
