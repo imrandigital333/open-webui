@@ -146,6 +146,41 @@ kb_usage_t = Table(
     Column("model", String(80)),
 )
 
+# ---------- authentication & RBAC ----------
+users_t = Table(
+    "users", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("username", String(120), unique=True, index=True),
+    Column("display_name", String(160)),
+    Column("email", String(200)),
+    Column("auth_mode", String(20)),               # 'local' | 'ad'
+    Column("password_hash", Text, nullable=True),  # only for local users
+    Column("role", String(60), index=True),
+    Column("enabled", Integer),                    # 1/0
+    Column("must_change", Integer),                # force password change at next login
+    Column("failed_count", Integer),
+    Column("locked_until", Float, nullable=True),
+    Column("created_at", Float),
+    Column("last_login", Float, nullable=True),
+)
+
+auth_sessions_t = Table(
+    "auth_sessions", metadata,
+    Column("token", String(64), primary_key=True),
+    Column("user_id", String(32), index=True),
+    Column("created_at", Float),
+    Column("expires_at", Float, index=True),
+    Column("ip", String(64), nullable=True),
+)
+
+roles_t = Table(
+    "roles", metadata,
+    Column("name", String(60), primary_key=True),
+    Column("description", String(300)),
+    Column("pages", Text),                         # JSON list of page keys ("*" = all)
+    Column("builtin", Integer),                    # 1 = shipped default (admin)
+)
+
 # Generated architecture/design diagrams, cached PERMANENTLY and SHARED across
 # all users, keyed by the resolved component/topic (see knowledge._design_key).
 design_cache_t = Table(
@@ -606,6 +641,145 @@ def design_cache_has(key: str) -> bool:
     with engine().connect() as conn:
         return conn.execute(
             select(design_cache_t.c.key).where(design_cache_t.c.key == key)).first() is not None
+
+
+# ---------- users / auth sessions / roles ----------
+
+def _user_row(r) -> dict:
+    return {"id": r.id, "username": r.username, "display_name": r.display_name or "",
+            "email": r.email or "", "auth_mode": r.auth_mode or "local",
+            "role": r.role or "viewer", "enabled": bool(r.enabled),
+            "must_change": bool(r.must_change), "failed_count": r.failed_count or 0,
+            "locked_until": r.locked_until, "created_at": r.created_at,
+            "last_login": r.last_login, "has_password": bool(r.password_hash)}
+
+
+def user_get(user_id: str) -> dict | None:
+    with engine().connect() as conn:
+        r = conn.execute(select(users_t).where(users_t.c.id == user_id)).first()
+        return _user_row(r) if r else None
+
+
+def user_get_by_name(username: str) -> dict | None:
+    with engine().connect() as conn:
+        r = conn.execute(select(users_t).where(
+            users_t.c.username == (username or "").strip().lower())).first()
+        return _user_row(r) if r else None
+
+
+def user_password_hash(user_id: str) -> str | None:
+    with engine().connect() as conn:
+        r = conn.execute(select(users_t.c.password_hash).where(users_t.c.id == user_id)).first()
+        return r[0] if r else None
+
+
+def user_list() -> list[dict]:
+    with engine().connect() as conn:
+        return [_user_row(r) for r in conn.execute(
+            select(users_t).order_by(users_t.c.username))]
+
+
+def user_count() -> int:
+    from sqlalchemy import func
+    with engine().connect() as conn:
+        return int(conn.execute(select(func.count()).select_from(users_t)).scalar() or 0)
+
+
+def user_create(u: dict) -> None:
+    with engine().begin() as conn:
+        conn.execute(users_t.insert().values(
+            id=u["id"], username=u["username"].strip().lower(),
+            display_name=u.get("display_name", ""), email=u.get("email", ""),
+            auth_mode=u.get("auth_mode", "local"), password_hash=u.get("password_hash"),
+            role=u.get("role", "viewer"), enabled=1 if u.get("enabled", True) else 0,
+            must_change=1 if u.get("must_change") else 0, failed_count=0,
+            locked_until=None, created_at=time.time(), last_login=None))
+
+
+def user_update(user_id: str, fields: dict) -> None:
+    allowed = {"display_name", "email", "auth_mode", "password_hash", "role",
+               "enabled", "must_change", "failed_count", "locked_until", "last_login"}
+    vals = {k: v for k, v in fields.items() if k in allowed}
+    if "enabled" in vals:
+        vals["enabled"] = 1 if vals["enabled"] else 0
+    if "must_change" in vals:
+        vals["must_change"] = 1 if vals["must_change"] else 0
+    if not vals:
+        return
+    with engine().begin() as conn:
+        conn.execute(update(users_t).where(users_t.c.id == user_id).values(**vals))
+
+
+def user_delete(user_id: str) -> None:
+    with engine().begin() as conn:
+        conn.execute(delete(users_t).where(users_t.c.id == user_id))
+        conn.execute(delete(auth_sessions_t).where(auth_sessions_t.c.user_id == user_id))
+
+
+def auth_session_create(token: str, user_id: str, expires_at: float, ip: str = "") -> None:
+    with engine().begin() as conn:
+        conn.execute(auth_sessions_t.insert().values(
+            token=token, user_id=user_id, created_at=time.time(),
+            expires_at=expires_at, ip=ip))
+
+
+def auth_session_get(token: str) -> dict | None:
+    with engine().connect() as conn:
+        r = conn.execute(select(auth_sessions_t).where(
+            auth_sessions_t.c.token == token)).first()
+    if not r:
+        return None
+    return {"token": r.token, "user_id": r.user_id, "created_at": r.created_at,
+            "expires_at": r.expires_at, "ip": r.ip}
+
+
+def auth_session_delete(token: str) -> None:
+    with engine().begin() as conn:
+        conn.execute(delete(auth_sessions_t).where(auth_sessions_t.c.token == token))
+
+
+def auth_sessions_purge_expired() -> None:
+    with engine().begin() as conn:
+        conn.execute(delete(auth_sessions_t).where(auth_sessions_t.c.expires_at < time.time()))
+
+
+def role_list() -> list[dict]:
+    with engine().connect() as conn:
+        rows = list(conn.execute(select(roles_t).order_by(roles_t.c.name)))
+    out = []
+    for r in rows:
+        try:
+            pages = json.loads(r.pages or "[]")
+        except Exception:  # noqa: BLE001
+            pages = []
+        out.append({"name": r.name, "description": r.description or "",
+                    "pages": pages, "builtin": bool(r.builtin)})
+    return out
+
+
+def role_get(name: str) -> dict | None:
+    for r in role_list():
+        if r["name"] == name:
+            return r
+    return None
+
+
+def role_upsert(name: str, description: str, pages: list, builtin: bool = False) -> None:
+    payload = json.dumps(pages or [])
+    with engine().begin() as conn:
+        exists = conn.execute(select(roles_t.c.name).where(roles_t.c.name == name)).first()
+        if exists:
+            conn.execute(update(roles_t).where(roles_t.c.name == name).values(
+                description=description[:300], pages=payload))
+        else:
+            conn.execute(roles_t.insert().values(
+                name=name, description=description[:300], pages=payload,
+                builtin=1 if builtin else 0))
+
+
+def role_delete(name: str) -> None:
+    with engine().begin() as conn:
+        conn.execute(delete(roles_t).where(roles_t.c.name == name))
 
 
 def kb_usage_get() -> dict:

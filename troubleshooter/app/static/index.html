@@ -1130,9 +1130,51 @@
     main { grid-template-columns: 1fr; }
     .resizer { display: none; }
   }
+  /* ---- login gate ---- */
+  .auth-gate { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center;
+    justify-content: center; background:
+      radial-gradient(1000px 500px at 30% 0%, rgba(56,139,253,.14), transparent 60%),
+      linear-gradient(180deg, #0b0f1a, #070a12); }
+  .auth-card { width: 360px; max-width: 90vw; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; padding: 30px 28px; box-shadow: 0 20px 60px rgba(0,0,0,.5); text-align: center; }
+  .auth-logo { font-size: 34px; color: var(--accent2); margin-bottom: 8px; }
+  .auth-card h2 { font-size: 20px; }
+  .auth-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+  .auth-form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+  .auth-form input { width: 100%; }
+  .auth-form .primary { margin-top: 4px; }
+  .auth-err { color: var(--err); font-size: 12.5px; min-height: 16px; }
+  .auth-who { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  /* ---- users & access tables ---- */
+  .acc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .acc-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .acc-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .acc-table .hint { font-size: 11px; }
 </style>
 </head>
 <body>
+<div id="authGate" class="auth-gate" style="display:none">
+  <div class="auth-card">
+    <div class="auth-logo">◎</div>
+    <h2 id="authTitle" style="margin:0">Sign in</h2>
+    <div class="auth-sub">AI Troubleshooter</div>
+    <form id="loginForm" class="auth-form" onsubmit="authDoLogin(event)">
+      <input id="authUser" placeholder="Username" autocomplete="username">
+      <input id="authPass" type="password" placeholder="Password" autocomplete="current-password">
+      <button class="primary" type="submit">Sign in</button>
+      <div class="auth-err" id="authErr"></div>
+    </form>
+    <form id="pwForm" class="auth-form" style="display:none" onsubmit="authDoChangePw(event)">
+      <div class="auth-sub" id="pwWhy" style="margin-bottom:2px">Set a new password to continue.</div>
+      <input id="pwCurrent" type="password" placeholder="Current password" autocomplete="current-password">
+      <input id="pwNew" type="password" placeholder="New password (min 8 chars)" autocomplete="new-password">
+      <input id="pwNew2" type="password" placeholder="Confirm new password" autocomplete="new-password">
+      <button class="primary" type="submit">Update password</button>
+      <div class="auth-err" id="pwErr"></div>
+    </form>
+  </div>
+</div>
 <header>
   <div class="logo">◎</div>
   <div>
@@ -1147,7 +1189,10 @@
     <button id="navKnowledge">Knowledge</button>
     <button id="navSettings">Settings</button>
   </nav>
-  <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span></div>
+  <div class="right"><span id="dsHealth"></span> <span id="version" style="opacity:.6"></span>
+    <span id="authWho" class="auth-who" style="display:none"></span>
+    <button id="logoutBtn" class="ghost" style="display:none;width:auto;padding:6px 12px" onclick="authLogout()">Logout</button>
+  </div>
 </header>
 
 <div id="viewOverview">
@@ -1372,6 +1417,8 @@
         <span class="sn-ic">🛠️</span><span>Change management<span class="sn-sub">change API & defaults</span></span></button>
       <button class="set-navb" data-cat="scripts" onclick="setCategory('scripts')">
         <span class="sn-ic">📜</span><span>Script library<span class="sn-sub">agent diagnostics</span></span></button>
+      <button class="set-navb" data-cat="access" data-admin-only onclick="setCategory('access')">
+        <span class="sn-ic">🔐</span><span>Users &amp; Access<span class="sn-sub">accounts, roles, AD</span></span></button>
     </nav>
     <div class="set-body">
       <section class="set-cat" data-cat="servers">
@@ -1456,6 +1503,60 @@
           border:1px solid var(--border); border-radius:8px; padding:10px 12px;
           max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
       </div>
+      </section>
+      <section class="set-cat" data-cat="access" data-admin-only hidden>
+        <div class="panel">
+          <h2>User accounts <button class="link" style="float:right" onclick="userForm()">+ add user</button></h2>
+          <div class="hint" style="margin-bottom:10px">Create local accounts now; switch a user to <b>AD</b> once Active Directory is configured below. Passwords are PBKDF2-hashed and never returned to the browser.</div>
+          <div id="userList"><div class="empty">Loading…</div></div>
+          <div id="userFormPanel" style="display:none; margin-top:12px; border-top:1px solid var(--border); padding-top:12px">
+            <h3 id="userFormTitle" style="margin:0 0 8px">Add user</h3>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 14px">
+              <div><label>Username *</label><input id="u_username" maxlength="120"></div>
+              <div><label>Display name</label><input id="u_display" maxlength="160"></div>
+              <div><label>Email</label><input id="u_email" maxlength="200"></div>
+              <div><label>Role *</label><select id="u_role"></select></div>
+              <div><label>Authentication</label><select id="u_mode" onchange="userModeFields()">
+                <option value="local">Local (password)</option><option value="ad">Active Directory</option></select></div>
+              <div><label>Status</label><select id="u_enabled"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
+              <div id="u_pwWrap" style="grid-column:1/-1"><label id="u_pwLabel">Initial password *</label>
+                <input id="u_password" type="password" maxlength="256" placeholder="min 8 characters">
+                <label style="display:inline-flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" id="u_mustchange" checked style="width:auto">Require password change at next login</label></div>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+              <button class="primary" style="width:auto" onclick="userSave()">Save user</button>
+              <button class="ghost" style="width:auto" onclick="$('userFormPanel').style.display='none'">Cancel</button>
+              <span class="hint" id="userMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px">
+          <h2>Roles &amp; page access <button class="link" style="float:right" onclick="roleAdd()">+ add role</button></h2>
+          <div class="hint" style="margin-bottom:10px">Tick which pages each role can open. <b>Admin</b> always has full access. Backend-enforced.</div>
+          <div id="roleMatrix"><div class="empty">Loading…</div></div>
+          <div class="hint" id="roleMsg" style="margin-top:8px"></div>
+        </div>
+
+        <div class="panel" style="margin-top:16px">
+          <h2>Active Directory (LDAP) <span class="tag" id="adState" style="float:right"></span></h2>
+          <div class="hint" style="margin-bottom:10px">Optional — configure now, enable when ready. Users with <b>AD</b> authentication are verified against these settings at login. The bind password is stored server-side (chmod 600) and never sent back.</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 14px">
+            <div style="grid-column:1/-1"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="ad_enabled" style="width:auto">Enable Active Directory authentication</label></div>
+            <div><label>LDAP server URL</label><input id="ad_server" placeholder="ldaps://dc01.bial.local"></div>
+            <div><label>Port</label><input id="ad_port" type="number" placeholder="636"></div>
+            <div><label>Base DN</label><input id="ad_base_dn" placeholder="DC=bial,DC=local"></div>
+            <div><label>User DN template</label><input id="ad_user_dn" placeholder="{username}@bial.local"></div>
+            <div><label>Bind service account (optional)</label><input id="ad_bind_user" placeholder="svc-ldap@bial.local"></div>
+            <div><label>Bind password</label><input id="ad_bind_pw" type="password" placeholder="••••••••"></div>
+            <div><label>Default role for new AD users</label><select id="ad_default_role"></select></div>
+            <div><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin-top:24px"><input type="checkbox" id="ad_use_ssl" style="width:auto">Use SSL/TLS</label></div>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+            <button class="primary" style="width:auto" onclick="adSave()">Save AD settings</button>
+            <span class="hint" id="adMsg"></span>
+          </div>
+        </div>
       </section>
       <section class="set-cat" data-cat="itsm" hidden>
       <div class="panel">
@@ -3009,6 +3110,156 @@ function setCategory(cat) {
     s.hidden = s.dataset.cat !== cat);
   document.querySelectorAll('#setNav .set-navb').forEach(b =>
     b.classList.toggle('active', b.dataset.cat === cat));
+  if (cat === 'access') loadAccess();
+}
+
+/* ---------- settings: Users & Access (admin) ---------- */
+let ACCESS_ROLES = [], ACCESS_PAGES = [];
+async function loadAccess() { await loadRolesAdmin(); loadUsers(); loadAdConfig(); }
+
+function roleOptions(sel, current) {
+  const el = $(sel); if (!el) return;
+  el.innerHTML = ACCESS_ROLES.map(r => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`).join('');
+  if (current) el.value = current;
+}
+async function loadRolesAdmin() {
+  const d = await (await fetch('/api/admin/roles')).json();
+  ACCESS_ROLES = d.roles || []; ACCESS_PAGES = d.pages || [];
+  renderRoleMatrix();
+}
+function renderRoleMatrix() {
+  const head = '<tr><th>Role</th>' + ACCESS_PAGES.map(p => `<th title="${escapeHtml(p.key)}">${escapeHtml(p.label)}</th>`).join('') + '<th></th></tr>';
+  const rows = ACCESS_ROLES.map(r => {
+    const all = (r.pages || []).includes('*') || r.name === 'admin';
+    const cells = ACCESS_PAGES.map(p => {
+      const on = all || (r.pages || []).includes(p.key);
+      const dis = (r.name === 'admin') ? 'disabled' : '';
+      return `<td style="text-align:center"><input type="checkbox" ${on ? 'checked' : ''} ${dis} data-role="${escapeHtml(r.name)}" data-page="${escapeHtml(p.key)}" style="width:auto"></td>`;
+    }).join('');
+    const actions = r.name === 'admin' ? '<span class="hint">full access</span>'
+      : `<button class="link" onclick="roleSave('${escapeHtml(r.name)}')">save</button>${r.builtin ? '' : ` · <button class="link" style="color:var(--err)" onclick="roleDelete('${escapeHtml(r.name)}')">delete</button>`}`;
+    return `<tr><td><b>${escapeHtml(r.name)}</b><div class="hint">${escapeHtml(r.description || '')}</div></td>${cells}<td style="white-space:nowrap">${actions}</td></tr>`;
+  }).join('');
+  $('roleMatrix').innerHTML = `<table class="acc-table">${head}${rows}</table>`;
+}
+async function roleSave(name) {
+  const pages = [...document.querySelectorAll(`#roleMatrix input[data-role="${CSS.escape(name)}"]:checked`)].map(c => c.dataset.page);
+  const role = ACCESS_ROLES.find(r => r.name === name) || {};
+  const r = await fetch('/api/admin/roles', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description: role.description || '', pages }) });
+  const msg = $('roleMsg'); const d = await r.json();
+  if (r.ok) { msg.style.color = 'var(--ok)'; msg.textContent = `✓ saved “${name}”`; loadRolesAdmin(); }
+  else { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); }
+}
+async function roleAdd() {
+  const name = prompt('New role name (letters, numbers, _ or -):'); if (!name) return;
+  const desc = prompt('Short description:') || '';
+  const r = await fetch('/api/admin/roles', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name.trim(), description: desc, pages: [] }) });
+  const d = await r.json();
+  if (r.ok) loadRolesAdmin(); else alert(d.detail || 'Could not create role.');
+}
+async function roleDelete(name) {
+  if (!confirm(`Delete role “${name}”?`)) return;
+  const r = await fetch('/api/admin/roles/' + encodeURIComponent(name), { method: 'DELETE' });
+  const d = await r.json();
+  if (r.ok) loadRolesAdmin(); else alert(d.detail || 'Could not delete role.');
+}
+
+async function loadUsers() {
+  const d = await (await fetch('/api/admin/users')).json();
+  const rows = (d.users || []).map(u => {
+    const status = !u.enabled ? '<span class="tag" style="color:var(--err)">disabled</span>'
+      : (u.locked_until && u.locked_until * 1000 > Date.now()) ? '<span class="tag" style="color:var(--warn)">locked</span>'
+      : (u.must_change ? '<span class="tag" style="color:var(--warn)">must change pw</span>' : '<span class="tag" style="color:var(--ok)">active</span>');
+    return `<tr>
+      <td><b>${escapeHtml(u.username)}</b>${u.display_name ? `<div class="hint">${escapeHtml(u.display_name)}</div>` : ''}</td>
+      <td>${escapeHtml(u.role)}</td>
+      <td>${u.auth_mode === 'ad' ? 'AD' : 'Local'}</td>
+      <td>${status}</td>
+      <td style="white-space:nowrap">
+        <button class="link" onclick='userForm(${JSON.stringify(u)})'>edit</button>
+        ${u.auth_mode === 'local' ? ` · <button class="link" onclick="userReset('${u.id}','${escapeHtml(u.username)}')">reset pw</button>` : ''}
+         · <button class="link" style="color:var(--err)" onclick="userDelete('${u.id}','${escapeHtml(u.username)}')">delete</button>
+      </td></tr>`;
+  }).join('');
+  $('userList').innerHTML = `<table class="acc-table"><tr><th>User</th><th>Role</th><th>Auth</th><th>Status</th><th></th></tr>${rows}</table>`;
+}
+let _editUserId = null;
+function userModeFields() { $('u_pwWrap').style.display = $('u_mode').value === 'local' && !_editUserId ? '' : 'none'; }
+function userForm(u) {
+  _editUserId = u && u.id ? u.id : null;
+  roleOptions('u_role', u ? u.role : (ACCESS_ROLES[0] && ACCESS_ROLES[0].name));
+  $('userFormTitle').textContent = _editUserId ? `Edit ${u.username}` : 'Add user';
+  $('u_username').value = u ? u.username : ''; $('u_username').disabled = !!_editUserId;
+  $('u_display').value = u ? u.display_name : '';
+  $('u_email').value = u ? u.email : '';
+  $('u_mode').value = u ? u.auth_mode : 'local';
+  $('u_enabled').value = u ? (u.enabled ? '1' : '0') : '1';
+  $('u_password').value = '';
+  $('userMsg').textContent = '';
+  userModeFields();
+  $('userFormPanel').style.display = '';
+}
+async function userSave() {
+  const msg = $('userMsg'); msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  try {
+    let r, d;
+    if (_editUserId) {
+      r = await fetch('/api/admin/users/' + _editUserId, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: $('u_display').value, email: $('u_email').value,
+          role: $('u_role').value, auth_mode: $('u_mode').value, enabled: $('u_enabled').value === '1' }) });
+    } else {
+      r = await fetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: $('u_username').value, display_name: $('u_display').value,
+          email: $('u_email').value, role: $('u_role').value, auth_mode: $('u_mode').value,
+          password: $('u_password').value, enabled: $('u_enabled').value === '1',
+          must_change: $('u_mustchange').checked }) });
+    }
+    d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    $('userFormPanel').style.display = 'none'; loadUsers();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+}
+async function userReset(id, name) {
+  const pw = prompt(`New password for ${name} (min 8 chars). They'll be asked to change it at next login:`);
+  if (!pw) return;
+  const r = await fetch('/api/admin/users/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_password: pw }) });
+  const d = await r.json();
+  if (r.ok) { loadUsers(); alert('Password reset.'); } else alert(d.detail || 'Failed.');
+}
+async function userDelete(id, name) {
+  if (!confirm(`Delete user “${name}”?`)) return;
+  const r = await fetch('/api/admin/users/' + id, { method: 'DELETE' });
+  const d = await r.json();
+  if (r.ok) loadUsers(); else alert(d.detail || 'Could not delete user.');
+}
+
+async function loadAdConfig() {
+  const c = await (await fetch('/api/admin/ad-config')).json();
+  $('ad_enabled').checked = !!c.enabled;
+  $('ad_server').value = c.server || ''; $('ad_port').value = c.port || 636;
+  $('ad_base_dn').value = c.base_dn || ''; $('ad_user_dn').value = c.user_dn_template || '';
+  $('ad_bind_user').value = c.bind_user || ''; $('ad_bind_pw').value = c.bind_password === '__stored__' ? '__stored__' : '';
+  $('ad_use_ssl').checked = c.use_ssl !== false;
+  roleOptions('ad_default_role', c.default_role || 'viewer');
+  $('adState').textContent = c.enabled ? (c.ldap3_available ? 'enabled' : 'enabled — ldap3 missing') : 'disabled';
+  $('adState').style.color = c.enabled ? (c.ldap3_available ? 'var(--ok)' : 'var(--warn)') : 'var(--muted)';
+}
+async function adSave() {
+  const msg = $('adMsg'); msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  const body = { enabled: $('ad_enabled').checked, server: $('ad_server').value.trim(),
+    port: parseInt($('ad_port').value) || 636, base_dn: $('ad_base_dn').value.trim(),
+    user_dn_template: $('ad_user_dn').value.trim(), bind_user: $('ad_bind_user').value.trim(),
+    use_ssl: $('ad_use_ssl').checked, default_role: $('ad_default_role').value };
+  const pw = $('ad_bind_pw').value;
+  if (pw && pw !== '__stored__') body.bind_password = pw;
+  try {
+    const r = await fetch('/api/admin/ad-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) { const d = await r.json(); msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved'; loadAdConfig();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 
 /* ---------- views ---------- */
@@ -3858,6 +4109,7 @@ function kbArchAsk(label) {
 }
 
 function switchView(view) {
+  if (AUTH && !authCan(view)) view = (AUTH.pages && AUTH.pages[0]) || 'overview';
   const views = { overview: 'viewOverview', incidents: 'viewIncidents', work: 'viewWork',
                   changes: 'viewChanges', knowledge: 'viewKnowledge', settings: 'viewSettings' };
   const nav = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
@@ -6468,17 +6720,98 @@ async function onLiveEnd(ev, session, id) {
 
 $('startBtn').onclick = startSession;
 $('panelToggle').onclick = () => $('viewWork').classList.toggle('hide-left');
-fetch('/api/version').then(r => r.json()).then(v =>
-  $('version').textContent = ` · v${v.version} (${v.commit})`);
-loadInventory(); loadDatasources(); refreshSessions(); loadFleet(); loadOvSummary();
-setInterval(() => {
-  refreshSessions();
-  if ($('viewOverview').style.display !== 'none') loadFleet();
-}, 15000);
-// incidents/changes come from SummitAI — refresh them on a slower cadence
-setInterval(() => {
-  if ($('viewOverview').style.display !== 'none') loadOvSummary();
-}, 60000);
+
+/* ================= authentication & access ================= */
+let AUTH = null;   // { user, is_admin, pages:[...], all_pages:[...] }
+const NAV_IDS = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
+                  changes: 'navChanges', knowledge: 'navKnowledge', settings: 'navSettings' };
+function authCan(page) { return !!AUTH && (AUTH.is_admin || (AUTH.pages || []).includes(page)); }
+
+function authShowGate(mode) {   // 'login' | 'change'
+  $('authGate').style.display = 'flex';
+  $('loginForm').style.display = mode === 'change' ? 'none' : 'flex';
+  $('pwForm').style.display = mode === 'change' ? 'flex' : 'none';
+  $('authTitle').textContent = mode === 'change' ? 'Change password' : 'Sign in';
+  if (mode === 'change') { $('pwCurrent').style.display = (AUTH && AUTH.user.must_change) ? 'none' : ''; setTimeout(() => $('pwNew').focus(), 50); }
+  else setTimeout(() => $('authUser').focus(), 50);
+}
+function authHideGate() { $('authGate').style.display = 'none'; }
+
+async function authDoLogin(e) {
+  e.preventDefault();
+  const err = $('authErr'); err.textContent = '';
+  try {
+    const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('authUser').value, password: $('authPass').value }) });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) { err.textContent = d.error || 'Sign-in failed.'; return; }
+    AUTH = d; $('authPass').value = '';
+    if (d.user.must_change) { authShowGate('change'); }
+    else { authHideGate(); startApp(); }
+  } catch (ex) { err.textContent = ex.message; }
+}
+
+async function authDoChangePw(e) {
+  e.preventDefault();
+  const err = $('pwErr'); err.textContent = '';
+  if ($('pwNew').value !== $('pwNew2').value) { err.textContent = 'The two new passwords do not match.'; return; }
+  try {
+    const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: $('pwCurrent').value, new_password: $('pwNew').value }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.detail || 'Could not change password.'; return; }
+    $('pwCurrent').value = $('pwNew').value = $('pwNew2').value = '';
+    AUTH = await (await fetch('/api/auth/me')).json();
+    authHideGate(); startApp();
+  } catch (ex) { err.textContent = ex.message; }
+}
+
+async function authLogout() {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+  AUTH = null; location.reload();
+}
+
+function applyAccess() {
+  Object.entries(NAV_IDS).forEach(([page, id]) => {
+    const b = $(id); if (b) b.style.display = authCan(page) ? '' : 'none';
+  });
+  $('authWho').style.display = ''; $('logoutBtn').style.display = '';
+  $('authWho').textContent = `${AUTH.user.display_name || AUTH.user.username} · ${AUTH.user.role}`;
+  // hide admin-only Settings categories from non-admins (defensive; Settings tab already hidden)
+  document.querySelectorAll('[data-admin-only]').forEach(el => el.style.display = AUTH.is_admin ? '' : 'none');
+}
+
+let _appStarted = false;
+function startApp() {
+  applyAccess();
+  const first = (AUTH.pages && AUTH.pages[0]) || 'overview';
+  switchView(authCan('overview') ? 'overview' : first);
+  if (_appStarted) return;   // one-time data bootstrap + timers
+  _appStarted = true;
+  fetch('/api/version').then(r => r.json()).then(v =>
+    $('version').textContent = ` · v${v.version} (${v.commit})`).catch(() => {});
+  loadInventory(); loadDatasources();
+  if (authCan('work')) refreshSessions();
+  if (authCan('overview')) { loadFleet(); loadOvSummary(); }
+  setInterval(() => {
+    if (authCan('work')) refreshSessions();
+    if (authCan('overview') && $('viewOverview').style.display !== 'none') loadFleet();
+  }, 15000);
+  setInterval(() => {
+    if (authCan('overview') && $('viewOverview').style.display !== 'none') loadOvSummary();
+  }, 60000);
+}
+
+async function bootAuth() {
+  try {
+    const r = await fetch('/api/auth/me');
+    if (r.status === 401) { authShowGate('login'); return; }
+    AUTH = await r.json();
+    if (AUTH.user && AUTH.user.must_change) { authShowGate('change'); return; }
+    authHideGate(); startApp();
+  } catch (ex) { authShowGate('login'); }
+}
+bootAuth();
 </script>
 </body>
 </html>

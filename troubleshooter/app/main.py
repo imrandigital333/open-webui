@@ -10,11 +10,12 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
+                               StreamingResponse)
 from pydantic import BaseModel, Field
 
-from . import (changeplan, cmdreview, db, discovery, healthprobe, itsm,
+from . import (auth, changeplan, cmdreview, db, discovery, healthprobe, itsm,
                knowledge, orchestrator, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
@@ -25,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.5.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -51,7 +52,10 @@ RETENTION_DAYS = int(os.environ.get("TROUBLESHOOTER_RETENTION_DAYS", "90"))
 
 
 def _actor(request: Request) -> str:
-    """Operator identity from the SSO/reverse proxy, if one is in front."""
+    """Operator identity — the signed-in user, else a fronting SSO proxy header."""
+    user = getattr(request.state, "user", None)
+    if user:
+        return user.get("username") or user.get("id") or "user"
     return (
         request.headers.get("X-Remote-User")
         or request.headers.get("X-Forwarded-User")
@@ -59,9 +63,49 @@ def _actor(request: Request) -> str:
     )
 
 
+# ---------- auth enforcement ----------
+
+# paths reachable without a session
+_PUBLIC_PATHS = {"/", "/api/version", "/api/auth/login", "/favicon.ico",
+                 "/openapi.json", "/docs", "/redoc"}
+# endpoints a user with must_change=1 may still call (to change their password)
+_MUST_CHANGE_OK = {"/api/auth/me", "/api/auth/logout", "/api/auth/change-password"}
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    path = request.url.path
+    request.state.user = None
+    # let the SPA shell, static assets and public API endpoints through
+    if path in _PUBLIC_PATHS or not path.startswith("/api/"):
+        return await call_next(request)
+
+    token = request.cookies.get(auth.COOKIE_NAME)
+    user = await asyncio.to_thread(auth.user_from_token, token)
+    if not user:
+        return JSONResponse({"error": "authentication required", "code": "unauthenticated"},
+                            status_code=401)
+    request.state.user = user
+
+    if user.get("must_change") and path not in _MUST_CHANGE_OK:
+        return JSONResponse({"error": "password change required", "code": "must_change"},
+                            status_code=403)
+
+    need = auth.required_permission(request.method, path)
+    if need == "admin" and not auth.is_admin(user):
+        return JSONResponse({"error": "administrator access required", "code": "forbidden"},
+                            status_code=403)
+    if need and need != "admin" and not auth.can_access(user, need):
+        return JSONResponse({"error": f"your role cannot access '{need}'", "code": "forbidden"},
+                            status_code=403)
+    return await call_next(request)
+
+
 @app.on_event("startup")
 async def _startup():
     await asyncio.to_thread(db.init_db)
+    await asyncio.to_thread(auth.ensure_bootstrap)
+    await asyncio.to_thread(db.auth_sessions_purge_expired)
 
     async def retention_loop():
         while True:
@@ -102,6 +146,245 @@ async def index():
 @app.get("/api/version")
 async def version():
     return {"version": APP_VERSION, "commit": GIT_COMMIT}
+
+
+# ---------- authentication ----------
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+def _me_payload(user: dict) -> dict:
+    return {"authenticated": True,
+            "user": {"id": user["id"], "username": user["username"],
+                     "display_name": user["display_name"], "email": user["email"],
+                     "role": user["role"], "auth_mode": user["auth_mode"],
+                     "must_change": user["must_change"]},
+            "is_admin": auth.is_admin(user),
+            "pages": list(auth.PAGE_KEYS) if auth.is_admin(user) else auth.pages_for_role(user["role"]),
+            "all_pages": auth.PAGES}
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest, request: Request):
+    ip = request.client.host if request.client else ""
+    res = await asyncio.to_thread(auth.authenticate, req.username, req.password, ip)
+    if not res.get("ok"):
+        return JSONResponse({"ok": False, "error": res.get("error")}, status_code=401)
+    user = res["user"]
+    token = await asyncio.to_thread(auth.create_session, user["id"], ip)
+    await asyncio.to_thread(db.audit, user["username"], "login", {"ip": ip})
+    resp = JSONResponse(_me_payload(user))
+    resp.set_cookie(auth.COOKIE_NAME, token, httponly=True, samesite="lax",
+                    secure=(request.url.scheme == "https"), max_age=auth.SESSION_TTL, path="/")
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    token = request.cookies.get(auth.COOKIE_NAME)
+    await asyncio.to_thread(auth.destroy_session, token)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE_NAME, path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        return JSONResponse({"authenticated": False}, status_code=401)
+    return _me_payload(user)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field("", max_length=256)
+    new_password: str = Field(..., min_length=1, max_length=256)
+
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(req: ChangePasswordRequest, request: Request):
+    user = request.state.user
+    if user["auth_mode"] != "local":
+        raise HTTPException(status_code=400, detail="AD accounts change their password in AD.")
+    # verify current password unless this is a forced first-login change
+    if not user["must_change"]:
+        stored = await asyncio.to_thread(db.user_password_hash, user["id"])
+        if not (stored and auth.verify_password(req.current_password, stored)):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    err = auth.password_ok(req.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    await asyncio.to_thread(db.user_update, user["id"],
+                            {"password_hash": auth.hash_password(req.new_password),
+                             "must_change": False})
+    await asyncio.to_thread(db.audit, user["username"], "password_changed", None)
+    return {"ok": True}
+
+
+# ---------- administration: users, roles, AD config (admin only via middleware) ----------
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=120)
+    display_name: str = Field("", max_length=160)
+    email: str = Field("", max_length=200)
+    auth_mode: str = Field("local", pattern="^(local|ad)$")
+    role: str = Field("viewer", max_length=60)
+    password: str = Field("", max_length=256)
+    enabled: bool = True
+    must_change: bool = True
+
+
+@app.get("/api/admin/users")
+async def admin_users():
+    return {"users": await asyncio.to_thread(db.user_list)}
+
+
+@app.post("/api/admin/users")
+async def admin_user_create(req: UserCreateRequest, request: Request):
+    uname = req.username.strip().lower()
+    if await asyncio.to_thread(db.user_get_by_name, uname):
+        raise HTTPException(status_code=409, detail="A user with that username already exists.")
+    if not await asyncio.to_thread(db.role_get, req.role):
+        raise HTTPException(status_code=400, detail="Unknown role.")
+    pw_hash = None
+    if req.auth_mode == "local":
+        if not req.password:
+            raise HTTPException(status_code=400, detail="A local user needs an initial password.")
+        err = auth.password_ok(req.password)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        pw_hash = auth.hash_password(req.password)
+    import uuid as _uuid
+    uid = _uuid.uuid4().hex[:16]
+    await asyncio.to_thread(db.user_create, {
+        "id": uid, "username": uname, "display_name": req.display_name,
+        "email": req.email, "auth_mode": req.auth_mode, "password_hash": pw_hash,
+        "role": req.role, "enabled": req.enabled,
+        "must_change": req.must_change if req.auth_mode == "local" else False})
+    await asyncio.to_thread(db.audit, _actor(request), "user_created",
+                            {"username": uname, "role": req.role})
+    return {"ok": True, "id": uid}
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = Field(None, max_length=160)
+    email: str | None = Field(None, max_length=200)
+    role: str | None = Field(None, max_length=60)
+    auth_mode: str | None = Field(None, pattern="^(local|ad)$")
+    enabled: bool | None = None
+    new_password: str | None = Field(None, max_length=256)
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_user_update(user_id: str, req: UserUpdateRequest, request: Request):
+    user = await asyncio.to_thread(db.user_get, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    fields: dict = {}
+    for k in ("display_name", "email", "auth_mode"):
+        v = getattr(req, k)
+        if v is not None:
+            fields[k] = v
+    if req.role is not None:
+        if not await asyncio.to_thread(db.role_get, req.role):
+            raise HTTPException(status_code=400, detail="Unknown role.")
+        # don't allow removing the last admin
+        if user["role"] == "admin" and req.role != "admin":
+            admins = [u for u in await asyncio.to_thread(db.user_list)
+                      if u["role"] == "admin" and u["enabled"]]
+            if len(admins) <= 1:
+                raise HTTPException(status_code=400, detail="Cannot remove the last administrator.")
+        fields["role"] = req.role
+    if req.enabled is not None:
+        if not req.enabled and user["role"] == "admin":
+            admins = [u for u in await asyncio.to_thread(db.user_list)
+                      if u["role"] == "admin" and u["enabled"]]
+            if len(admins) <= 1:
+                raise HTTPException(status_code=400, detail="Cannot disable the last administrator.")
+        fields["enabled"] = req.enabled
+        if req.enabled:
+            fields["failed_count"] = 0
+            fields["locked_until"] = None
+    if req.new_password:
+        err = auth.password_ok(req.new_password)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        fields["password_hash"] = auth.hash_password(req.new_password)
+        fields["must_change"] = True
+        fields["auth_mode"] = "local"
+    await asyncio.to_thread(db.user_update, user_id, fields)
+    await asyncio.to_thread(db.audit, _actor(request), "user_updated",
+                            {"username": user["username"], "fields": list(fields)})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_user_delete(user_id: str, request: Request):
+    user = await asyncio.to_thread(db.user_get, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user["role"] == "admin":
+        admins = [u for u in await asyncio.to_thread(db.user_list) if u["role"] == "admin"]
+        if len(admins) <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last administrator.")
+    if request.state.user and request.state.user["id"] == user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    await asyncio.to_thread(db.user_delete, user_id)
+    await asyncio.to_thread(db.audit, _actor(request), "user_deleted", {"username": user["username"]})
+    return {"ok": True}
+
+
+@app.get("/api/admin/roles")
+async def admin_roles():
+    return {"roles": await asyncio.to_thread(db.role_list), "pages": auth.PAGES}
+
+
+class RoleRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60, pattern="^[A-Za-z0-9_-]+$")
+    description: str = Field("", max_length=300)
+    pages: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/admin/roles")
+async def admin_role_upsert(req: RoleRequest, request: Request):
+    if req.name == "admin":
+        raise HTTPException(status_code=400, detail="The admin role always has full access and can't be edited.")
+    pages = [p for p in req.pages if p in auth.PAGE_KEYS]
+    await asyncio.to_thread(db.role_upsert, req.name, req.description, pages, False)
+    await asyncio.to_thread(db.audit, _actor(request), "role_saved",
+                            {"role": req.name, "pages": pages})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/roles/{name}")
+async def admin_role_delete(name: str, request: Request):
+    if name == "admin":
+        raise HTTPException(status_code=400, detail="The admin role cannot be deleted.")
+    users = [u for u in await asyncio.to_thread(db.user_list) if u["role"] == name]
+    if users:
+        raise HTTPException(status_code=400,
+                            detail=f"{len(users)} user(s) still have this role. Reassign them first.")
+    await asyncio.to_thread(db.role_delete, name)
+    await asyncio.to_thread(db.audit, _actor(request), "role_deleted", {"role": name})
+    return {"ok": True}
+
+
+@app.get("/api/admin/ad-config")
+async def admin_ad_get():
+    return await asyncio.to_thread(auth.public_ad_config)
+
+
+@app.post("/api/admin/ad-config")
+async def admin_ad_save(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid config.")
+    await asyncio.to_thread(auth.save_ad_config, body)
+    await asyncio.to_thread(db.audit, _actor(request), "ad_config_saved",
+                            {"enabled": bool(body.get("enabled"))})
+    return await asyncio.to_thread(auth.public_ad_config)
 
 
 @app.get("/api/ai/health")

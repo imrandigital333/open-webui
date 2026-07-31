@@ -20,4 +20,8 @@ python-pptx>=0.6.23       # .pptx
 # Only needed if the inventory contains platform: windows servers; Linux-only
 # deployments can skip it (the WinRM paths degrade with a clear message).
 pywinrm>=0.4.3
+# Optional: Active Directory / LDAP login. Only needed if you set users to
+# 'ad' authentication and enable AD in Settings → Users & Access. Local login
+# works without it. (Password hashing for local accounts uses the stdlib.)
+# ldap3>=2.9
 # For PostgreSQL in production, additionally: pip install "psycopg[binary]"
