@@ -754,7 +754,7 @@
   .arch-node circle { fill: var(--panel2); stroke: var(--border); stroke-width: 2; transition: stroke .15s, filter .15s; }
   .arch-node:hover circle { stroke: var(--accent); }
   .arch-node.sel circle { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 6px rgba(56,139,253,.5)); }
-  .arch-node .ic { font-size: 15px; }
+  .arch-node .ic { font-size: 13px; }
   .arch-node .lbl { fill: var(--text); font: 700 12px sans-serif; }
   .arch-node .meta { fill: var(--muted); font: 10px var(--mono); }
   .arch-node.t-server circle { fill: rgba(56,139,253,.12); stroke: var(--accent2); }
@@ -3395,23 +3395,26 @@ const ARCH_ICON = { user: '👤', client: '👥', external: '🌐', cdn: '🌍',
 // technology-aware icons: match real products/OSes in the label/meta/details so
 // a VM, an ESXi host, PostgreSQL, Redis, a firewall etc. each look right
 const TECH_ICON = [
-  [/\b(esxi|vsphere|vcenter|hypervisor)\b/, '💠'], [/\b(vmware|vm|virtual machine|guest vm)\b/, '💻'],
-  [/\bwindows|win(dows)? server|wsus\b/, '🪟'], [/\b(rhel|red hat|centos|ubuntu|debian|suse|linux|unix|aix)\b/, '🐧'],
-  [/\b(postgre|postgres)\b/, '🐘'], [/\b(mysql|mariadb)\b/, '🐬'], [/\bmongo/, '🍃'],
-  [/\b(oracle|db2|mssql|sql server|sybase|sql)\b/, '🛢️'],
-  [/\b(redis|memcache|cache)\b/, '⚡'], [/\b(kafka|rabbit|activemq|jms|mq|queue|broker)\b/, '📨'],
-  [/\b(elastic|elasticsearch|solr|opensearch)\b/, '🔎'],
-  [/\b(nginx|apache|httpd|iis|web server|tomcat|jboss|weblogic|webapp)\b/, '🌐'],
-  [/\b(java|jvm)\b/, '☕'], [/\bnode\.?js|express\b/, '🟢'],
-  [/\b(docker|kubernetes|k8s|openshift|container|pod)\b/, '🐳'],
-  [/\b(f5|haproxy|netscaler|load ?balanc|vip)\b/, '⚖️'],
-  [/\b(firewall|palo alto|fortinet|checkpoint|fortigate|asa)\b/, '🧱'],
-  [/\btape\b/, '📼'], [/\b(commvault|veeam|netbackup|spectrum protect|rubrik|networker|backup|mediaagent|commserve)\b/, '💾'],
-  [/\b(san|nas|netapp|isilon|v5000|lun|volume|datastore|storage)\b/, '💽'],
-  [/\bdns\b/, '🧭'], [/\b(ldap|active directory|kerberos|\bad\b|domain controller)\b/, '🪪'],
-  [/\b(smtp|exchange|mail|email)\b/, '✉️'],
-  [/\b(splunk|grafana|prometheus|zabbix|nagios|monitor)\b/, '📈'],
-  [/\b(cloudflare|akamai|cdn)\b/, '🌍'], [/\b(api gateway|apigee|kong|gateway)\b/, '🚪'],
+  [/\b(esxi|esx|vsphere|vcenter|hypervisor|vsan)\b/, '💠'], [/\b(vmware|vm|vms|virtual machine|guest)\b/, '💻'],
+  [/\b(windows|win server|wsus|hyper-v)\b/, '🪟'], [/\b(rhel|red hat|centos|ubuntu|debian|suse|linux|unix|aix|solaris)\b/, '🐧'],
+  [/\b(postgre|postgres)\b/, '🐘'], [/\b(mysql|mariadb)\b/, '🐬'], [/\bmongo/, '🍃'], [/\bcassandra\b/, '🟢'],
+  [/\b(oracle|db2|mssql|sql server|sybase|database|\bdb\b|rdbms|sql)\b/, '🛢️'],
+  [/\b(redis|memcache|cache)\b/, '⚡'], [/\b(kafka|rabbit|activemq|jms|\bmq\b|queue|broker|topic)\b/, '📨'],
+  [/\b(elastic|elasticsearch|solr|opensearch|logstash)\b/, '🔎'],
+  [/\b(nginx|apache|httpd|iis|web server|webserver|tomcat|jboss|weblogic|webapp|website|portal|frontend)\b/, '🌐'],
+  [/\b(java|jvm|spring)\b/, '☕'], [/\b(node\.?js|express|npm)\b/, '🟢'], [/\b(\.net|dotnet|iis)\b/, '🔷'], [/\bpython\b/, '🐍'],
+  [/\b(docker|kubernetes|k8s|openshift|rancher|container|pod|helm)\b/, '🐳'],
+  [/\b(f5|haproxy|netscaler|load ?balanc|\blb\b|vip|ingress)\b/, '⚖️'],
+  [/\b(firewall|palo alto|fortinet|fortigate|checkpoint|\basa\b|waf)\b/, '🧱'],
+  [/\b(router|switch|vlan|subnet|network|lan|wan|core sw)\b/, '🌐'],
+  [/\btape\b/, '📼'], [/\b(commvault|veeam|netbackup|spectrum protect|rubrik|networker|backup|mediaagent|commserve|vsa)\b/, '💾'],
+  [/\b(san|nas|netapp|isilon|v5000|lun|volume|datastore|storage|filesystem|nfs|smb)\b/, '💽'],
+  [/\bdns\b/, '🧭'], [/\b(ldap|active directory|kerberos|\bad\b|domain controller|\bsso\b|identity|iam)\b/, '🪪'],
+  [/\b(smtp|exchange|mail|email|o365|outlook)\b/, '✉️'],
+  [/\b(splunk|grafana|prometheus|zabbix|nagios|solarwinds|monitor|observability|apm)\b/, '📈'],
+  [/\b(cloudflare|akamai|cdn)\b/, '🌍'], [/\b(api ?gateway|apigee|kong|gateway|reverse proxy|proxy)\b/, '🚪'],
+  [/\b(scheduler|cron|batch|job|worker|agent|daemon|service)\b/, '⚙️'], [/\b(vpn|ipsec|tls|ssl|certificate)\b/, '🔒'],
+  [/\b(user|users|client|browser|customer|operator|admin)\b/, '👤'],
 ];
 function kbNodeIcon(n) {
   const s = `${n.label || ''} ${n.meta || ''} ${n.type || ''} ${n.details || ''}`.toLowerCase();
@@ -3596,9 +3599,9 @@ function kbRenderArch(g, opts) {
   const rows = {}, tierOf = {};
   vis.forEach(n => { const t = ARCH_TIER[n.type] ?? 6; (rows[t] = rows[t] || []).push(n); });
   const tiers = Object.keys(rows).map(Number).sort((a, b) => a - b);
-  // balanced sizing: modest, consistent radii and generous spacing so circles
-  // don't crowd or hide each other
-  const CW = 174, RGY = 156, PAD = 36, LANE = 96, R = 24, RS = 29;
+  // compact sizing: small consistent nodes + tighter grid so a broad design
+  // fits on one screen
+  const CW = 148, RGY = 128, PAD = 28, LANE = 80, R = 18, RS = 22;
   const expanded = new Set(g._expanded || []);
   let W = Math.max(...tiers.map(t => rows[t].length * CW), 320) + PAD * 2 + LANE;
   let H = tiers.length * RGY + PAD * 2;
@@ -3683,8 +3686,12 @@ function kbRenderArch(g, opts) {
     <rect x="0" y="0" width="${W}" height="${H}" fill="url(#arGrid)"/>
     ${lanes}<g ${sketch ? 'filter="url(#arSketch)"' : ''}>${ed}</g>${nd}</svg></div>`;
   kbArchWireDrag(g, W, H);
-  // zoom: reset to fit for a fresh diagram, show the control, enable ctrl+wheel
-  kbArchBaseW = W; kbArchBaseH = H; kbArchZoom = 1; kbArchApplyZoom();
+  // zoom: fit the whole design to the canvas width so it's visible in one
+  // screen; show the control, enable ctrl+wheel
+  kbArchBaseW = W; kbArchBaseH = H;
+  const _cw = ($('kbArchCanvas') && $('kbArchCanvas').clientWidth) || W;
+  kbArchZoom = W > _cw - 10 ? Math.max(0.35, +((_cw - 10) / W).toFixed(2)) : 1;
+  kbArchApplyZoom();
   const ctl = $('kbArchZoomCtl'); if (ctl) ctl.style.display = 'flex';
   const canvas = $('kbArchCanvas');
   if (canvas && !canvas._zoomWired) {
