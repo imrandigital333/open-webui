@@ -540,16 +540,29 @@
   .kb-usage { display: flex; flex-wrap: wrap; gap: 8px; }
   /* new workspace: left slide-bar (controls+chat+upload+library) · right full canvas */
   .kb-workspace { display: flex; gap: 14px; align-items: stretch; height: calc(100vh - 200px); min-height: 460px; }
-  .kb-side { flex: 0 0 360px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+  .kb-side { flex: 0 0 360px; display: flex; flex-direction: column; gap: 10px; overflow: hidden;
              transition: margin-left .2s, opacity .2s; }
   .kb-side.hide { display: none; }
+  /* tabbed sidebar: only one pane visible so the chat gets full height */
+  .kb-tabs { display: flex; gap: 4px; flex: 0 0 auto; background: var(--panel2);
+             padding: 4px; border-radius: 10px; }
+  .kb-tab { flex: 1; padding: 7px 6px; border: none; border-radius: 7px; background: transparent;
+            color: var(--muted); font-weight: 700; font-size: 12px; cursor: pointer; }
+  .kb-tab:hover { color: var(--text); }
+  .kb-tab.active { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+  .kb-tab .count { display: inline-block; margin-left: 3px; font-size: 10px; color: var(--muted); }
+  .kb-tabpane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px;
+                overflow-y: auto; }
+  .kb-tabpane[hidden] { display: none; }
   .kb-side-sec { border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
-                 padding: 10px 12px; }
+                 padding: 10px 12px; flex: 0 0 auto; }
   .kb-side-h { font-weight: 700; font-size: 12.5px; margin-bottom: 4px; cursor: default; }
   details.kb-side-sec > summary.kb-side-h { cursor: pointer; list-style: revert; margin-bottom: 0; }
   details.kb-side-sec[open] > summary.kb-side-h { margin-bottom: 8px; }
-  .kb-side .kb-chat-panel { flex: 1; display: flex; flex-direction: column; min-height: 240px; }
-  .kb-side .kb-chat-body { flex: 1; max-height: none; }
+  .kb-side .kb-chat-panel { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0;
+                            overflow: hidden; border: 1px solid var(--border); border-radius: 10px;
+                            background: var(--panel); padding: 10px 12px; }
+  .kb-side .kb-chat-body { flex: 1 1 auto; min-height: 0; max-height: none; }
   .kb-canvas-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .kb-canvas-wrap .kb-arch-stage { flex: 1; min-height: 0; }
   .kb-canvas-wrap .kb-arch-canvas { max-height: none; height: 100%; }
@@ -651,9 +664,19 @@
   .arch-empty-h { font-weight: 800; font-size: 16px; margin-top: 10px; color: var(--text); }
   .arch-empty-p { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.5; }
   .arch-empty-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-width: 320px; margin-inline: auto; }
-  .kb-arch-detail { flex: 0 0 260px; border: 1px solid var(--border); border-radius: 10px;
-    background: var(--panel2); padding: 12px 14px; max-height: 62vh; overflow: auto; }
-  .kb-arch-detail h4 { margin: 0 0 2px; font-size: 14px; }
+  .kb-arch-detail { flex: 0 0 280px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel2); padding: 12px 14px; max-height: 62vh; overflow: auto; position: relative; }
+  .kb-detail-x { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; line-height: 22px;
+    text-align: center; border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+    color: var(--muted); cursor: pointer; font-size: 16px; padding: 0; }
+  .kb-detail-x:hover { color: var(--text); background: var(--panel2); }
+  .kb-arch-detail h4 { margin: 0 26px 2px 0; font-size: 14px; }
+  .kb-rag-hit { border-top: 1px solid var(--border); padding: 6px 0; }
+  .kb-rag-hit:first-child { border-top: none; }
+  .kb-rag-t { font-size: 11.5px; font-weight: 700; color: var(--text); }
+  .kb-rag-cat { color: var(--accent2); text-transform: capitalize; font-weight: 600; }
+  .kb-rag-x { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word; }
   .kb-arch-detail .k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); font-weight: 700; margin-top: 10px; }
   .kb-arch-detail .v { font-size: 12.5px; margin-top: 2px; word-break: break-word; }
@@ -1180,21 +1203,15 @@
   </div>
   <div class="kb-workspace" id="kbWorkspace">
     <aside class="kb-side" id="kbSide">
-      <div class="kb-side-sec">
-        <div class="kb-side-h">Service map</div>
-        <select id="kbArchServer" style="width:100%;margin:0 0 6px" onchange="kbShowArch()"></select>
-        <button class="ci-run" id="kbArchLiveBtn" style="width:100%;background:var(--ok);color:#03210f;font-weight:700"
-          onclick="kbBuildArchLive()" title="Connect to the server, discover its live services & connections, and store them to the knowledge base">🔎 Live probe — connect &amp; map</button>
-        <button class="ci-run" id="kbArchAiBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Draft a map with AI when the device can't be reached">✨ AI draft <span class="kb-model-chip" id="kbArchModel"></span></button>
-        <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
+      <div class="kb-tabs" role="tablist">
+        <button class="kb-tab active" data-tab="chat" onclick="kbTab('chat')">💬 Chat</button>
+        <button class="kb-tab" data-tab="map" onclick="kbTab('map')">🗺️ Map</button>
+        <button class="kb-tab" data-tab="data" onclick="kbTab('data')">📚 Data <span class="count" id="kbDocCount">0</span></button>
       </div>
-      <details class="kb-side-sec" id="kbDesignSec" style="display:none">
-        <summary class="kb-side-h">📐 Design diagrams <span class="count" id="kbDesignCount">0</span></summary>
-        <div class="hint" style="margin:6px 0">Flow diagrams extracted from your HLD / LLD design docs.</div>
-        <div id="kbDesignList"></div>
-      </details>
-      <div class="kb-side-sec kb-chat-panel">
-        <div class="kb-side-h"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid;vertical-align:-6px" id="kbAva"></span>
+
+      <!-- CHAT -->
+      <div class="kb-tabpane kb-chat-panel" data-pane="chat">
+        <div class="kb-side-h" style="padding-bottom:6px"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid;vertical-align:-6px" id="kbAva"></span>
           Assistant <span class="kb-model-chip" id="kbModelChip"></span></div>
         <div id="kbChatBody" class="kb-chat-body"></div>
         <div class="kb-chat-in">
@@ -1204,28 +1221,49 @@
           <button class="ci-run" onclick="kbSend()">Send</button>
         </div>
       </div>
-      <details class="kb-side-sec" open>
-        <summary class="kb-side-h">Add knowledge</summary>
-        <div id="kbDrop" class="kb-drop" style="margin-top:8px">
-          <div><b>Drop files</b> or <label class="link" for="kbFile">choose</label>
-            <input type="file" id="kbFile" multiple style="display:none"
-              accept=".txt,.md,.markdown,.log,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.xml,.rtf,.pdf,.docx,.doc,.xlsx,.xls,.pptx"></div>
-          <div class="hint">text · PDF · Word · Excel · PowerPoint · bulk</div>
-          <div id="kbProg" class="kb-prog" style="display:none"><div class="kb-prog-bar"><i></i></div><span></span></div>
+
+      <!-- MAP -->
+      <div class="kb-tabpane" data-pane="map" hidden>
+        <div class="kb-side-sec">
+          <div class="kb-side-h">Service map</div>
+          <select id="kbArchServer" style="width:100%;margin:0 0 6px" onchange="kbShowArch()"></select>
+          <button class="ci-run" id="kbArchLiveBtn" style="width:100%;background:var(--ok);color:#03210f;font-weight:700"
+            onclick="kbBuildArchLive()" title="Connect to the server, discover its live services & connections, and store them to the knowledge base">🔎 Live probe — connect &amp; map</button>
+          <button class="ci-run" id="kbArchAiBtn" style="width:100%;margin-top:6px;background:var(--panel2);color:var(--accent2)" onclick="kbBuildArch(true)" title="Draft a map with AI when the device can't be reached">✨ AI draft <span class="kb-model-chip" id="kbArchModel"></span></button>
+          <div class="hint" id="kbArchMsg" style="margin-top:5px"></div>
         </div>
-        <textarea id="kbText" style="min-height:64px;margin-top:8px" placeholder="…or paste notes / config / a fact to remember"></textarea>
-        <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
-          <input id="kbTitle" placeholder="optional title" style="flex:1;margin:0">
-          <button class="primary" style="width:auto;margin:0" id="kbAddBtn" onclick="kbAddText()">Store</button>
-        </div>
-        <div id="kbAddMsg" class="hint" style="margin-top:6px"></div>
-      </details>
-      <details class="kb-side-sec">
-        <summary class="kb-side-h">Library <span class="count" id="kbDocCount">0</span></summary>
-        <div class="hint" id="kbTreeStats" style="margin:6px 0"></div>
-        <input id="kbFilter" placeholder="filter…" style="margin-bottom:8px" oninput="kbRenderTree()">
-        <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
-      </details>
+        <details class="kb-side-sec" id="kbDesignSec" open style="display:none">
+          <summary class="kb-side-h">📐 Design diagrams <span class="count" id="kbDesignCount">0</span></summary>
+          <div class="hint" style="margin:6px 0">Flow diagrams extracted from your HLD / LLD design docs.</div>
+          <div id="kbDesignList"></div>
+        </details>
+      </div>
+
+      <!-- DATA -->
+      <div class="kb-tabpane" data-pane="data" hidden>
+        <details class="kb-side-sec" open>
+          <summary class="kb-side-h">Add knowledge</summary>
+          <div id="kbDrop" class="kb-drop" style="margin-top:8px">
+            <div><b>Drop files</b> or <label class="link" for="kbFile">choose</label>
+              <input type="file" id="kbFile" multiple style="display:none"
+                accept=".txt,.md,.markdown,.log,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.xml,.rtf,.pdf,.docx,.doc,.xlsx,.xls,.pptx"></div>
+            <div class="hint">text · PDF · Word · Excel · PowerPoint · bulk</div>
+            <div id="kbProg" class="kb-prog" style="display:none"><div class="kb-prog-bar"><i></i></div><span></span></div>
+          </div>
+          <textarea id="kbText" style="min-height:64px;margin-top:8px" placeholder="…or paste notes / config / a fact to remember"></textarea>
+          <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+            <input id="kbTitle" placeholder="optional title" style="flex:1;margin:0">
+            <button class="primary" style="width:auto;margin:0" id="kbAddBtn" onclick="kbAddText()">Store</button>
+          </div>
+          <div id="kbAddMsg" class="hint" style="margin-top:6px"></div>
+        </details>
+        <details class="kb-side-sec" open>
+          <summary class="kb-side-h">Library</summary>
+          <div class="hint" id="kbTreeStats" style="margin:6px 0"></div>
+          <input id="kbFilter" placeholder="filter…" style="margin-bottom:8px" oninput="kbRenderTree()">
+          <div id="kbTree"><div class="empty">Nothing stored yet.</div></div>
+        </details>
+      </div>
     </aside>
     <div class="kb-canvas-wrap">
       <div class="kb-arch-stage">
@@ -2916,6 +2954,16 @@ async function loadKnowledge() {
   kbLoadDesignDocs();
 }
 
+// tabbed sidebar — show one pane at a time so the chat has full height
+function kbTab(name) {
+  document.querySelectorAll('#kbSide .kb-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('#kbSide .kb-tabpane').forEach(p => {
+    const on = p.dataset.pane === name;
+    p.hidden = !on;
+    p.style.display = on ? 'flex' : 'none';
+  });
+}
+
 // design diagrams (HLD/LLD) — list uploaded design docs and render their flow
 async function kbLoadDesignDocs() {
   try {
@@ -3339,22 +3387,53 @@ function kbArchSelect(i) {
     cfg = `<div class="k">Configuration</div><div class="v">${r.map(x => `<b>${escapeHtml(x[0])}:</b> ${escapeHtml(x[1])}`).join('<br>')}</div>`
       + (mounts ? `<div class="k">Storage / mounts</div><div class="v" style="font-family:var(--mono);font-size:11px">${mounts}</div>` : '');
   }
-  d.innerHTML = `<h4>${ARCH_ICON[n.type] || '•'} ${escapeHtml(n.label)}</h4>
+  const scope = isServer ? nm : ($('kbArchServer').value || '');
+  d.innerHTML = `<button class="kb-detail-x" title="Close" onclick="kbArchDetailClose()">×</button>
+    <h4>${ARCH_ICON[n.type] || '•'} ${escapeHtml(n.label)}</h4>
     <div class="v" style="color:var(--muted);text-transform:capitalize">${escapeHtml(n.type)}</div>
     ${n.meta ? `<div class="k">Detail</div><div class="v">${escapeHtml(n.meta)}</div>` : ''}
     ${n.status ? `<div class="k">Health</div><div class="v arch-badge ${escapeHtml(n.status)}">${HS[n.status] || n.status}</div>` : ''}
     ${cfg}
     <div class="k">Connections</div><div class="v">${kbArchConns(g, n.id) || 'none recorded'}</div>
+    <div class="k">From the knowledge base</div>
+    <div class="v" id="kbArchRag"><span class="hint">Looking it up…</span></div>
     <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
-      <button class="ci-run" onclick="kbArchAsk('${escapeHtml(nm)}')">Ask about this</button>
+      <button class="ci-run" onclick="kbArchAsk('${escapeHtml(nm)}')">💬 Ask the assistant (full answer)</button>
       ${isServer ? `<button class="ci-run" style="background:var(--panel2);color:var(--ok)" onclick="kbBuildArchLive('${escapeHtml(nm)}')">🔎 Live probe &amp; map</button>
       <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="healthCheck('${escapeHtml(nm)}')">🩺 Health check</button>
       <button class="ci-run" style="background:var(--panel2);color:var(--text)" onclick="investigate('${escapeHtml(nm)}')">🔍 Investigate</button>` : ''}
     </div>`;
+  kbArchRagLookup(n.label, scope);            // pull stored KB facts inline (no tokens)
+}
+
+// fetch what the knowledge base already knows about this node and show it in the
+// detail panel — lexical search, so it costs no AI tokens
+async function kbArchRagLookup(label, server) {
+  const box = $('kbArchRag'); if (!box) return;
+  try {
+    const q = encodeURIComponent(label || '');
+    const r = await (await fetch(`/api/kb/search?q=${q}&server=${encodeURIComponent(server || '')}`)).json();
+    const hits = (r.hits || []).slice(0, 4);
+    if (!hits.length) {
+      box.innerHTML = `<span class="hint">Nothing stored yet. Use <b>Ask the assistant</b> or add a document in the Data tab.</span>`;
+      return;
+    }
+    box.innerHTML = hits.map(h => `<div class="kb-rag-hit">
+      <div class="kb-rag-t">📄 ${escapeHtml(h.title || 'entry')}${h.category ? ` · <span class="kb-rag-cat">${escapeHtml(h.category)}</span>` : ''}</div>
+      <div class="kb-rag-x">${escapeHtml((h.text || '').slice(0, 320))}${(h.text || '').length > 320 ? '…' : ''}</div>
+    </div>`).join('');
+  } catch (e) { box.innerHTML = `<span class="hint">Lookup failed: ${escapeHtml(e.message)}</span>`; }
+}
+
+function kbArchDetailClose() {
+  kbArchSelId = null;
+  const d = $('kbArchDetail'); if (d) d.style.display = 'none';
+  if (kbArchData) kbRenderArch(kbArchData);   // clear the selected-node highlight
 }
 
 function kbArchAsk(label) {
   if (!label) return;
+  kbTab('chat');
   const s = $('kbArchServer').value; if (s) $('kbChatServer').value = s;
   $('kbChatIn').value = 'Tell me about ' + label;
   kbSend();
