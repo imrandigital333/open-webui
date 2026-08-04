@@ -1230,6 +1230,14 @@
   .bulk-result.err { border-color: var(--err-bd); background: var(--err-bg); color: var(--err); }
   .bulk-fail { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 11.5px; max-height: 180px; overflow: auto; }
   .bulk-fail li { margin: 2px 0; }
+  .integ-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    margin-bottom: 12px; background: var(--panel); box-shadow: 0 1px 3px var(--shadow); }
+  .integ-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .integ-ic { width: 40px; height: 40px; flex: 0 0 40px; display: flex; align-items: center;
+    justify-content: center; font-size: 22px; border-radius: 10px; background: var(--chip);
+    border: 1px solid var(--border); }
+  .integ-card label { display: block; margin: 8px 0 3px; font-size: 12px; color: var(--muted); }
+  .integ-card input[type="text"], .integ-card input:not([type]) { width: 100%; }
 </style>
 </head>
 <body>
@@ -1539,6 +1547,8 @@
         <span class="sn-ic">🛠️</span><span>Change management<span class="sn-sub">change API & defaults</span></span></button>
       <button class="set-navb" data-cat="scripts" onclick="setCategory('scripts')">
         <span class="sn-ic">📜</span><span>Script library<span class="sn-sub">agent diagnostics</span></span></button>
+      <button class="set-navb" data-cat="integrations" data-admin-only onclick="setCategory('integrations')">
+        <span class="sn-ic">🧩</span><span>Integrations<span class="sn-sub">VMware · Commvault · SolarWinds · Zabbix</span></span></button>
       <button class="set-navb" data-cat="access" data-admin-only onclick="setCategory('access')">
         <span class="sn-ic">🔐</span><span>Users &amp; Access<span class="sn-sub">accounts, roles, AD</span></span></button>
     </nav>
@@ -1634,6 +1644,13 @@
           border:1px solid var(--border); border-radius:8px; padding:10px 12px;
           max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
       </div>
+      </section>
+      <section class="set-cat" data-cat="integrations" data-admin-only hidden>
+        <div class="panel">
+          <h2>Infrastructure & monitoring integrations</h2>
+          <div class="hint" style="margin-bottom:12px">Connection settings for the layers we read logs &amp; inventory from for a holistic view. Configure now; each layer's collector goes live once wired up and you enable it. Secrets are stored server-side (chmod 600) and never sent back.</div>
+          <div id="integList"><div class="empty">Loading…</div></div>
+        </div>
       </section>
       <section class="set-cat" data-cat="access" data-admin-only hidden>
         <div class="panel">
@@ -3242,6 +3259,49 @@ function setCategory(cat) {
   document.querySelectorAll('#setNav .set-navb').forEach(b =>
     b.classList.toggle('active', b.dataset.cat === cat));
   if (cat === 'access') loadAccess();
+  if (cat === 'integrations') loadIntegrations();
+}
+
+/* ---------- settings: infrastructure integrations ---------- */
+async function loadIntegrations() {
+  const d = await (await fetch('/api/admin/integrations')).json();
+  const cfg = d.config || {};
+  $('integList').innerHTML = (d.layers || []).map(l => {
+    const c = cfg[l.key] || {};
+    return `<div class="integ-card">
+      <div class="integ-head">
+        <span class="integ-ic">${l.icon}</span>
+        <div style="flex:1"><b>${escapeHtml(l.label)}</b><div class="hint">${escapeHtml(l.hint)}</div></div>
+        <span class="tag" id="integState_${l.key}" style="${c.enabled ? 'color:var(--ok)' : 'color:var(--muted)'}">${c.enabled ? 'enabled' : 'disabled'}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px">
+        <div style="grid-column:1/-1"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="integ_${l.key}_enabled" ${c.enabled ? 'checked' : ''} style="width:auto">Enable this integration</label></div>
+        <div style="grid-column:1/-1"><label>${escapeHtml(l.host_label)}</label><input id="integ_${l.key}_host" value="${escapeHtml(c.host || '')}"></div>
+        <div><label>Username / API user</label><input id="integ_${l.key}_user" value="${escapeHtml(c.user || '')}"></div>
+        <div><label>Password / API token</label><input id="integ_${l.key}_secret" type="password" value="${c.secret === '__stored__' ? '__stored__' : ''}"></div>
+        <div style="grid-column:1/-1"><label>Notes</label><input id="integ_${l.key}_notes" value="${escapeHtml(c.notes || '')}"></div>
+        <div><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin-top:22px"><input type="checkbox" id="integ_${l.key}_tls" ${c.verify_tls !== false ? 'checked' : ''} style="width:auto">Verify TLS</label></div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button class="primary" style="width:auto" onclick="saveIntegration('${l.key}')">Save</button>
+        <span class="hint" id="integMsg_${l.key}"></span>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function saveIntegration(key) {
+  const msg = $('integMsg_' + key); msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  const body = { key, enabled: $('integ_' + key + '_enabled').checked,
+    host: $('integ_' + key + '_host').value.trim(), user: $('integ_' + key + '_user').value.trim(),
+    notes: $('integ_' + key + '_notes').value.trim(), verify_tls: $('integ_' + key + '_tls').checked };
+  const sec = $('integ_' + key + '_secret').value;
+  if (sec && sec !== '__stored__') body.secret = sec;
+  try {
+    const r = await fetch('/api/admin/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved'; loadIntegrations();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 
 /* ---------- settings: Users & Access (admin) ---------- */

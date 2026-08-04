@@ -15,8 +15,8 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel, Field
 
-from . import (auth, changeplan, cmdreview, db, discovery, healthprobe, itsm,
-               knowledge, orchestrator, winexec)
+from . import (auth, changeplan, cmdreview, db, discovery, healthprobe,
+               integrations, itsm, knowledge, orchestrator, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.10.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -369,6 +369,35 @@ async def admin_role_delete(name: str, request: Request):
     await asyncio.to_thread(db.role_delete, name)
     await asyncio.to_thread(db.audit, _actor(request), "role_deleted", {"role": name})
     return {"ok": True}
+
+
+@app.get("/api/admin/integrations")
+async def admin_integrations_get():
+    return {"layers": integrations.LAYERS,
+            "config": await asyncio.to_thread(integrations.public_config)}
+
+
+class IntegrationRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=40)
+    enabled: bool = False
+    host: str = Field("", max_length=300)
+    user: str = Field("", max_length=200)
+    secret: str = Field("", max_length=512)
+    verify_tls: bool = True
+    notes: str = Field("", max_length=500)
+
+
+@app.post("/api/admin/integrations")
+async def admin_integrations_save(req: IntegrationRequest, request: Request):
+    if req.key not in integrations.LAYER_KEYS:
+        raise HTTPException(status_code=400, detail="Unknown integration.")
+    try:
+        pub = await asyncio.to_thread(integrations.save_layer, req.key, req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await asyncio.to_thread(db.audit, _actor(request), "integration_saved",
+                            {"layer": req.key, "enabled": req.enabled})
+    return {"ok": True, "config": pub}
 
 
 @app.get("/api/admin/ad-config")
