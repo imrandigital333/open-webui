@@ -1622,11 +1622,13 @@
         <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
           <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
           <button class="ghost" id="testServerBtn">Test connection</button>
-          <button class="ghost" id="discoverServerBtn" title="Connect (SSH for Linux, WinRM for Windows) and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
+          <button class="ghost" id="discoverServerBtn" title="Basic data collection — connect (SSH for Linux, WinRM for Windows) and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
+          <button class="ghost" id="deepScanServerBtn" title="Detailed data gathering for architecture & detailed review — packages, dependencies, firewall, scheduled jobs, storage. Stored to the knowledge base so the bot can answer deep questions.">⌗ Deep scan</button>
           <button class="ghost danger" id="deleteServerBtn">Delete</button>
         </div>
         <div class="hint" id="invMsg" style="margin-top:8px"></div>
         <div id="discoveryPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
+        <div id="deepPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
       </div>
         </div><!-- right column -->
         </div><!-- inventory grid -->
@@ -3282,12 +3284,33 @@ async function loadIntegrations() {
         <div style="grid-column:1/-1"><label>Notes</label><input id="integ_${l.key}_notes" value="${escapeHtml(c.notes || '')}"></div>
         <div><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin-top:22px"><input type="checkbox" id="integ_${l.key}_tls" ${c.verify_tls !== false ? 'checked' : ''} style="width:auto">Verify TLS</label></div>
       </div>
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="primary" style="width:auto" onclick="saveIntegration('${l.key}')">Save</button>
+        <button class="ghost" style="width:auto" title="Basic data collection — live reachability probe of the configured endpoint" onclick="discoverLayer('${l.key}','basic')">⦿ Test reachability</button>
+        <button class="ghost" style="width:auto" title="Detailed data gathering — register this layer (role, endpoint, reachability, data scope) into the knowledge base for the bot" onclick="discoverLayer('${l.key}','detailed')">⌗ Deep scan</button>
         <span class="hint" id="integMsg_${l.key}"></span>
       </div>
+      <div id="integScan_${l.key}" class="bulk-result" style="display:none;margin-top:8px"></div>
     </div>`;
   }).join('');
+}
+async function discoverLayer(key, mode) {
+  const box = $('integScan_' + key);
+  box.style.display = ''; box.className = 'bulk-result';
+  box.innerHTML = `<span class="spinner"></span> ${mode === 'detailed' ? 'deep scan' : 'probing'} ${escapeHtml(key)}…`;
+  try {
+    const r = await fetch(`/api/admin/integrations/${encodeURIComponent(key)}/discover`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+    const d = await r.json();
+    if (!d.ok) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(d.error || 'failed'); return; }
+    box.className = 'bulk-result ' + (d.reachable ? 'ok' : 'warn');
+    const scope = (d.scope || []).length ? `<div style="margin-top:4px"><b>Will collect once wired:</b> ${d.scope.map(escapeHtml).join(', ')}</div>` : '';
+    const stored = d.stored_doc_id ? '<div style="margin-top:4px">✓ Registered in the knowledge base for the bot.</div>'
+      : (d.kb_error ? '<div style="margin-top:4px">⚠ KB store failed: ' + escapeHtml(d.kb_error) + '</div>' : '');
+    box.innerHTML = `${d.reachable ? '✓' : '⚠'} ${escapeHtml(d.detail || '')}`
+      + `<div style="margin-top:4px;color:var(--muted)">Collector status: pending — connection ${d.reachable ? 'verified' : 'configured'}, log/inventory collection goes live once the collector is wired.</div>`
+      + (mode === 'detailed' ? scope + stored : '');
+  } catch (e) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(e.message); }
 }
 async function saveIntegration(key) {
   const msg = $('integMsg_' + key); msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
@@ -6123,8 +6146,10 @@ function editServer(name) {
   $('deleteServerBtn').style.display = name ? '' : 'none';
   $('testServerBtn').style.display = name ? '' : 'none';
   $('discoverServerBtn').style.display = name ? '' : 'none';
+  $('deepScanServerBtn').style.display = name ? '' : 'none';
   $('discoveryPanel').style.display = 'none';
-  if (name) loadDiscovery(name);
+  $('deepPanel').style.display = 'none';
+  if (name) { loadDiscovery(name); loadDetail(name); }
   $('f_name').value = s.name || '';
   $('f_host').value = s.host || '';
   $('f_platform').value = s.platform === 'windows' ? 'windows' : 'linux';
@@ -6255,6 +6280,43 @@ async function runDiscovery() {
   } catch (e) { panel.innerHTML = '✕ ' + escapeHtml(e.message); }
 }
 $('discoverServerBtn').onclick = runDiscovery;
+
+/* ---------- server DEEP scan (detailed data gathering → knowledge base) ---------- */
+function renderDetail(d) {
+  const panel = $('deepPanel');
+  if (!d || d.ok === false) {
+    if (d && d.error && d.error !== 'no deep scan yet') {
+      panel.style.display = ''; panel.innerHTML = `<div style="color:var(--err)">✕ ${escapeHtml(d.error)}</div>`;
+    } else { panel.style.display = 'none'; }
+    return;
+  }
+  panel.style.display = '';
+  const when = new Date(d.ts * 1000).toLocaleString();
+  const rep = d.report || '';
+  panel.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <b>⌗ Detailed architecture scan</b><span class="hint" style="margin:0">${when}</span>
+      <button class="link" style="margin-left:auto" onclick="runDeepScan()">re-scan</button></div>
+    <div class="bulk-result ok" style="margin:0 0 8px">${d.stored_doc_id
+        ? '✓ Stored to the knowledge base (device data) — the knowledge bot can now use this for architecture &amp; detailed reviews.'
+        : (d.kb_error ? '⚠ Scanned, but KB store failed: ' + escapeHtml(d.kb_error) : 'Scan complete.')}</div>
+    <details${rep ? '' : ' hidden'}><summary style="cursor:pointer;color:var(--muted)">view collected detail</summary>
+      <pre style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:11.5px;margin:6px 0 0;max-height:340px;overflow:auto">${escapeHtml(rep)}</pre>
+    </details>`;
+}
+async function loadDetail(name) {
+  try { renderDetail(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discovery/detailed`)).json()); }
+  catch { /* leave hidden */ }
+}
+async function runDeepScan() {
+  const name = editingName; if (!name) return;
+  const panel = $('deepPanel'); panel.style.display = '';
+  const via = $('f_platform') && $('f_platform').value === 'windows' ? 'over WinRM' : 'over SSH';
+  panel.innerHTML = `<span class="spinner"></span> deep scan — gathering architecture detail ${via} (packages, dependencies, firewall, scheduled jobs, storage)…`;
+  try {
+    renderDetail(await (await fetch(`/api/servers/${encodeURIComponent(name)}/discover/detailed`, { method: 'POST' })).json());
+  } catch (e) { panel.innerHTML = '✕ ' + escapeHtml(e.message); }
+}
+$('deepScanServerBtn').onclick = runDeepScan;
 
 /* ---------- settings: script library ---------- */
 async function loadScripts() {

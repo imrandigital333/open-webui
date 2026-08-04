@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.10.0"
+APP_VERSION = "3.11.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -398,6 +398,32 @@ async def admin_integrations_save(req: IntegrationRequest, request: Request):
     await asyncio.to_thread(db.audit, _actor(request), "integration_saved",
                             {"layer": req.key, "enabled": req.enabled})
     return {"ok": True, "config": pub}
+
+
+@app.post("/api/admin/integrations/{key}/discover")
+async def admin_integration_discover(key: str, request: Request):
+    """Probe an infrastructure layer. mode=basic → reachability only;
+    mode=detailed → also register the layer in the knowledge base."""
+    if key not in integrations.LAYER_KEYS:
+        raise HTTPException(status_code=400, detail="Unknown integration.")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    mode = "detailed" if (isinstance(body, dict) and body.get("mode") == "detailed") else "basic"
+    result = await integrations.discover_layer(key, mode)
+    if result.get("ok") and mode == "detailed" and result.get("report"):
+        try:
+            doc_id = await knowledge.store_local(
+                result["report"], server=result.get("label", key), os_="layer",
+                category="architecture", title=f"Infrastructure layer — {result.get('label', key)}",
+                source_type="layer-discovery", source_class="device_data")
+            result["stored_doc_id"] = doc_id
+        except Exception as exc:  # noqa: BLE001 — surface, don't fail the probe
+            result["kb_error"] = str(exc)[:200]
+    await asyncio.to_thread(db.audit, _actor(request), "integration_discovered",
+                            {"layer": key, "mode": mode, "reachable": result.get("reachable")})
+    return result
 
 
 @app.get("/api/admin/ad-config")
@@ -2059,6 +2085,36 @@ async def run_discovery(name: str, request: Request):
 @app.get("/api/servers/{name}/discovery")
 async def get_discovery(name: str):
     return discovery.load_facts(name) or {"ok": False, "error": "not discovered yet"}
+
+
+@app.post("/api/servers/{name}/discover/detailed")
+async def run_detailed_discovery(name: str, request: Request):
+    """Deep, read-only architecture scan (packages, dependencies, firewall,
+    scheduled jobs, storage, …). The report is stored into the knowledge base as
+    device_data so the knowledge bot can answer detailed / architecture reviews."""
+    server = load_inventory().get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not in inventory")
+    result = await discovery.discover_detailed(server)
+    if result.get("ok") and result.get("report"):
+        facts = (discovery.load_facts(name) or {}).get("facts") or {}
+        try:
+            doc_id = await knowledge.store_local(
+                result["report"], server=name, os_=facts.get("os_family", "") or "",
+                category="architecture", title=f"Detailed discovery — {name}",
+                source_type="deep-discovery", source_class="device_data")
+            result["stored_doc_id"] = doc_id
+        except Exception as exc:  # noqa: BLE001
+            result["kb_error"] = str(exc)[:200]
+    await asyncio.to_thread(db.audit, _actor(request), "server_deep_discovered",
+                            {"server": name, "ok": result.get("ok"),
+                             "stored": bool(result.get("stored_doc_id"))})
+    return result
+
+
+@app.get("/api/servers/{name}/discovery/detailed")
+async def get_detailed_discovery(name: str):
+    return discovery.load_detail(name) or {"ok": False, "error": "no deep scan yet"}
 
 
 def _get_state(session_id: str) -> orchestrator.SessionState:
