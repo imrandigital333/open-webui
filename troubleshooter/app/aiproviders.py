@@ -53,42 +53,68 @@ KINDS = ["anthropic", "openai"]
 _CONNECTOR_FIELDS = ("name", "kind", "base_url", "api_key", "verify_tls", "notes",
                      "enabled", "secret_in_vault")
 
+# A synthetic, always-available "connector" that isn't an HTTP endpoint at all —
+# it's this server's own Claude Code CLI login (claude_agent_sdk). It exists so
+# every function has a real, explicit, editable model selection instead of a
+# hidden/ambiguous "whatever the CLI defaults to" fallback. It can't be created,
+# edited, or deleted like a normal connector.
+NATIVE_CONNECTOR_ID = "__claude_native__"
+NATIVE_MODELS = [
+    {"id": "claude-opus-5", "label": "Claude Opus 5 — most capable, slower/costlier"},
+    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 — balanced (recommended)"},
+    {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 — fastest/cheapest"},
+]
+_NATIVE_MODEL_IDS = {m["id"] for m in NATIVE_MODELS}
+
+
+def _native_connector() -> dict:
+    return {"id": NATIVE_CONNECTOR_ID, "name": "Claude Code (built-in)", "kind": "claude_native",
+            "base_url": "", "api_key": "", "verify_tls": True,
+            "notes": "Uses this server's own Claude Code CLI login — no API key needed.",
+            "enabled": True, "secret_in_vault": False, "native": True}
+
+
 # Every pluggable AI use case in the platform. "agentic": True marks the one
 # function (the investigation engine) that isn't a simple one-shot completion —
-# assigning it to a connector switches orchestrator.py to a generic tool-calling
-# loop instead of the Claude Agent SDK's autonomous agent (see orchestrator.py).
+# assigning it to an external connector switches orchestrator.py to a generic
+# tool-calling loop instead of the Claude Agent SDK's autonomous agent (see
+# orchestrator.py). "default_model" is the specific model used until an admin
+# picks something else in Settings → AI Providers — every function resolves to
+# an explicit, visible choice, never an unlabeled "default".
 FUNCTIONS = [
     {"key": "kb_classify", "group": "Knowledge base", "label": "Classify uploads",
      "hint": "Tags & summarizes newly ingested documents/configs",
-     "default_label": "Claude Haiku 4.5"},
+     "default_label": "Claude Haiku 4.5", "default_model": "claude-haiku-4-5-20251001"},
     {"key": "kb_chat", "group": "Knowledge base", "label": "Chat / Q&A answering",
      "hint": "Answers operator questions from retrieved knowledge",
-     "default_label": "Claude Haiku 4.5"},
+     "default_label": "Claude Haiku 4.5", "default_model": "claude-haiku-4-5-20251001"},
     {"key": "kb_design", "group": "Knowledge base", "label": "Architecture & design diagrams",
      "hint": "Synthesizes HLD/LLD service-map diagrams from stored knowledge",
-     "default_label": "Claude Haiku 4.5"},
+     "default_label": "Claude Haiku 4.5", "default_model": "claude-haiku-4-5-20251001"},
     {"key": "change_refine", "group": "Change management", "label": "Plan refinement",
      "hint": "Turns a pasted change plan into structured steps + risk/downtime scoring",
-     "default_label": "Claude Code default"},
+     "default_label": "Claude Sonnet 5", "default_model": "claude-sonnet-5"},
     {"key": "change_generate", "group": "Change management", "label": "Plan generation",
      "hint": "Generates a full change plan from a text description",
-     "default_label": "Claude Code default"},
+     "default_label": "Claude Sonnet 5", "default_model": "claude-sonnet-5"},
     {"key": "change_recommend", "group": "Change management", "label": "CR recommendation",
      "hint": "Suggests CR attributes/outline from a description",
-     "default_label": "Claude Code default"},
+     "default_label": "Claude Sonnet 5", "default_model": "claude-sonnet-5"},
     {"key": "change_verify", "group": "Change management", "label": "Step verification",
      "hint": "Judges whether an executed change step succeeded from its output",
-     "default_label": "Claude Code default"},
+     "default_label": "Claude Haiku 4.5", "default_model": "claude-haiku-4-5-20251001"},
     {"key": "cmd_review", "group": "Command review", "label": "Ad-hoc command risk review",
      "hint": "Assesses risk/impact of an operator-typed command before it runs",
-     "default_label": "Claude Code default"},
+     "default_label": "Claude Haiku 4.5", "default_model": "claude-haiku-4-5-20251001"},
     {"key": "investigation", "group": "Core", "label": "Investigation engine",
      "hint": "The autonomous agent that connects to servers and runs the actual "
-             "troubleshooting session — reassigning this uses an experimental "
-             "generic tool-calling loop; subagent delegation is Claude-only.",
-     "default_label": "Claude Code (Claude Agent SDK)", "agentic": True},
+             "troubleshooting session — reassigning this to an external connector "
+             "uses an experimental generic tool-calling loop; subagent delegation "
+             "is Claude-only.",
+     "default_label": "Claude Sonnet 5", "default_model": "claude-sonnet-5", "agentic": True},
 ]
 FUNCTION_KEYS = {f["key"] for f in FUNCTIONS}
+_FUNCTION_BY_KEY = {f["key"]: f for f in FUNCTIONS}
 
 
 class AIProviderError(RuntimeError):
@@ -137,8 +163,9 @@ def load_connectors() -> list[dict]:
 
 
 def public_connectors() -> list[dict]:
-    """Connector list for the browser — every api_key redacted."""
-    out = []
+    """Connector list for the browser — every api_key redacted. Always leads
+    with the built-in native connector so it's a normal, selectable option."""
+    out = [_native_connector()]
     for c in load_connectors():
         c = dict(c)
         c["api_key"] = _REDACTED if (c.get("api_key") or c.get("secret_in_vault")) else ""
@@ -147,6 +174,8 @@ def public_connectors() -> list[dict]:
 
 
 def get_connector(connector_id: str) -> dict | None:
+    if connector_id == NATIVE_CONNECTOR_ID:
+        return _native_connector()
     return next((c for c in load_connectors() if c["id"] == connector_id), None)
 
 
@@ -159,6 +188,8 @@ def save_connector(data: dict) -> dict:
     """Create (no id) or update (id given) a connector. A real api_key value
     is written to Vault instead of the file when Vault is enabled — a Vault
     write failure raises rather than silently falling back to plaintext."""
+    if data.get("id") == NATIVE_CONNECTOR_ID:
+        raise ValueError("the built-in Claude Code connector can't be edited")
     raw = _read_raw()
     connectors = raw.get("connectors", [])
     cur = next((c for c in connectors if c["id"] == data.get("id")), None)
@@ -203,6 +234,8 @@ def save_connector(data: dict) -> dict:
 
 
 def delete_connector(connector_id: str) -> None:
+    if connector_id == NATIVE_CONNECTOR_ID:
+        raise ValueError("the built-in Claude Code connector can't be deleted")
     raw = _read_raw()
     raw["connectors"] = [c for c in raw.get("connectors", []) if c["id"] != connector_id]
     _write_yaml(raw)
@@ -263,13 +296,23 @@ def _write_functions(raw: dict) -> None:
 
 
 def get_assignment(function_key: str) -> dict | None:
+    """The connector+model this function actually runs on right now. If an
+    admin hasn't explicitly reassigned it, this resolves to the built-in
+    native connector + that function's default_model — never an unlabeled
+    "default"; the resolved value is always something Settings → AI Providers
+    can show and let the admin change."""
     a = _read_raw_functions().get(function_key)
-    return a if isinstance(a, dict) and a.get("connector_id") else None
+    if isinstance(a, dict) and a.get("connector_id"):
+        return a
+    fn = _FUNCTION_BY_KEY.get(function_key)
+    default_model = fn.get("default_model") if fn else None
+    if default_model:
+        return {"connector_id": NATIVE_CONNECTOR_ID, "model": default_model}
+    return None
 
 
 def get_assignments() -> dict:
-    raw = _read_raw_functions()
-    return {f["key"]: raw.get(f["key"]) for f in FUNCTIONS}
+    return {f["key"]: get_assignment(f["key"]) for f in FUNCTIONS}
 
 
 def set_assignment(function_key: str, connector_id: str | None, model: str | None) -> None:
@@ -358,6 +401,8 @@ def _list_models_raw(connector: dict, timeout_s: int = 15) -> list[dict]:
 
 
 def list_models(connector_id: str) -> list[dict]:
+    if connector_id == NATIVE_CONNECTOR_ID:
+        return NATIVE_MODELS
     connector = get_connector(connector_id)
     if not connector:
         raise AIProviderError("unknown connector")
@@ -366,6 +411,8 @@ def list_models(connector_id: str) -> list[dict]:
 
 def test_connector(connector_id: str) -> dict:
     """Lightweight connectivity check — reuses the model-list call."""
+    if connector_id == NATIVE_CONNECTOR_ID:
+        return {"ok": True, "detail": "Built-in — uses this server's own Claude Code CLI login."}
     try:
         models = list_models(connector_id)
         return {"ok": True, "detail": f"Reachable — {len(models)} model(s) available."}
@@ -378,19 +425,24 @@ def test_connector(connector_id: str) -> dict:
 async def complete_json(function_key: str, prompt: str, *, timeout_s: int = 90,
                         default_fn=None) -> tuple[dict | None, str | None, dict]:
     """Route a one-shot prompt->JSON call through whatever connector/model is
-    assigned to `function_key`, or fall back to `default_fn()` (today's Claude
-    Agent SDK call, unchanged) when unassigned. `default_fn` is an async
-    callable with the SAME (data, error, usage) return contract.
+    assigned to `function_key` (see get_assignment — this always resolves to
+    something, defaulting to the built-in native connector). The native
+    connector runs through `default_fn(model)` (today's Claude Agent SDK call,
+    unchanged, now told which model to pin). `default_fn` is an async callable
+    taking the resolved model string (or None) and returning the SAME
+    (data, error, usage) contract.
 
-    An assigned-but-broken connector is a visible error, never a silent
-    fallback to `default_fn` — the same fail-safe rule as Vault-backed
-    secrets: a misconfiguration should surface, not be masked."""
+    An assigned-but-broken EXTERNAL connector is a visible error, never a
+    silent fallback — the same fail-safe rule as Vault-backed secrets: a
+    misconfiguration should surface, not be masked."""
     assignment = get_assignment(function_key)
-    if not assignment:
+    connector_id = assignment.get("connector_id") if assignment else None
+    model = (assignment.get("model") or "") if assignment else ""
+    if not connector_id or connector_id == NATIVE_CONNECTOR_ID:
         if default_fn is None:
-            raise ValueError(f"no default_fn provided for unassigned function '{function_key}'")
-        return await default_fn()
-    connector = get_connector(assignment["connector_id"])
+            raise ValueError(f"no built-in implementation for function '{function_key}'")
+        return await default_fn(model or None)
+    connector = get_connector(connector_id)
     if not connector:
         return None, (f"Assigned AI connector '{assignment['connector_id']}' no longer exists — "
                       "reassign this function in Settings → AI Providers."), {}

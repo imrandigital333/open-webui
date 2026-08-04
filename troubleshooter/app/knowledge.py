@@ -104,8 +104,9 @@ async def _haiku_json(prompt: str, timeout_s: int = 90,
     `function_key` in Settings → AI Providers, or Claude Haiku (today's
     behavior, unchanged) when nothing is assigned."""
 
-    async def _default() -> tuple[dict | None, str | None, dict]:
-        usage = {"model": KB_MODEL}
+    async def _default(model: str | None = None) -> tuple[dict | None, str | None, dict]:
+        model = model or KB_MODEL
+        usage = {"model": model}
         try:
             from claude_agent_sdk import ClaudeAgentOptions, query
             from claude_agent_sdk.types import ResultMessage
@@ -114,7 +115,7 @@ async def _haiku_json(prompt: str, timeout_s: int = 90,
         text = ""
         try:
             async with asyncio.timeout(timeout_s):
-                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=KB_MODEL)
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=model)
                 async for message in query(prompt=prompt, options=options):
                     if isinstance(message, ResultMessage):
                         u = getattr(message, "usage", None) or {}
@@ -124,7 +125,7 @@ async def _haiku_json(prompt: str, timeout_s: int = 90,
                             "input_tokens": (u.get("input_tokens", 0) or 0) + cw + cr,
                             "output_tokens": u.get("output_tokens", 0) or 0,
                             "cache_read_tokens": cr, "cache_write_tokens": cw,
-                            "model": getattr(message, "model", None) or KB_MODEL,
+                            "model": getattr(message, "model", None) or model,
                         })
                         if message.is_error:
                             return None, f"AI error: {getattr(message, 'result', '') or message.subtype}"[:200], usage

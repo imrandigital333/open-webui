@@ -1152,27 +1152,33 @@ async def run_session(
         await state.emit("failed", {"error": state.error})
         return
 
-    # The investigation engine defaults to Claude Code (above); an admin can
-    # reassign it in Settings → AI Providers to run the experimental generic
-    # tool-calling loop against another connector instead. Resolved once, up
+    # The investigation engine always resolves to *something* now (the
+    # built-in native connector by default — see aiproviders.get_assignment).
+    # Only an EXTERNAL connector switches orchestrator.py to the experimental
+    # generic tool-calling loop; the native connector just pins which Claude
+    # model the normal Claude Agent SDK path below uses. Resolved once, up
     # front, so a broken assignment fails fast with a clear error rather than
     # partway through session setup.
     ai_assignment = aiproviders.get_assignment("investigation")
     ai_connector = None
+    ai_model = ""
     if ai_assignment:
-        ai_connector = aiproviders.get_connector(ai_assignment["connector_id"])
-        if not ai_connector:
+        resolved = aiproviders.get_connector(ai_assignment["connector_id"])
+        if not resolved:
             state.status = "failed"
             state.error = (f"Assigned AI connector '{ai_assignment['connector_id']}' no longer "
                            "exists — reassign the investigation engine in Settings → AI Providers.")
             await state.emit("failed", {"error": state.error})
             return
-        if not ai_connector.get("enabled"):
+        if not resolved.get("enabled"):
             state.status = "failed"
-            state.error = (f"Assigned AI connector '{ai_connector['name']}' is disabled — "
+            state.error = (f"Assigned AI connector '{resolved['name']}' is disabled — "
                            "enable it or reassign the investigation engine.")
             await state.emit("failed", {"error": state.error})
             return
+        ai_model = ai_assignment.get("model") or ""
+        if not resolved.get("native"):
+            ai_connector = resolved
 
     workdir = state.workdir
     (workdir / "logs").mkdir(parents=True, exist_ok=True)
@@ -1221,7 +1227,7 @@ async def run_session(
         permission_mode="acceptEdits",
         agents=_agent_definitions(),
         max_turns=max_turns,
-        model=os.environ.get("TROUBLESHOOTER_MODEL") or None,
+        model=ai_model or os.environ.get("TROUBLESHOOTER_MODEL") or None,
     )
 
     await state.emit(
@@ -1379,7 +1385,7 @@ async def run_session(
                 # the model that actually served the run (fall back to configured)
                 state.model = (getattr(message, "model", None)
                                or (usage.get("model") if isinstance(usage, dict) else None)
-                               or os.environ.get("TROUBLESHOOTER_MODEL") or None)
+                               or ai_model or os.environ.get("TROUBLESHOOTER_MODEL") or None)
                 if message.is_error:
                     state.status = "failed"
                     if message.subtype == "error_max_turns":

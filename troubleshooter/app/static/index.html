@@ -1855,11 +1855,11 @@
         <div class="panel">
           <h2>AI provider connectors
             <button class="link" style="float:right" onclick="aiConnectorForm()">+ add connector</button></h2>
-          <div class="hint" style="margin-bottom:12px">Every AI-powered function on this platform runs on
-            <b>Claude Code</b> by default — no configuration needed. Connect any other API-compatible model
-            here (direct Anthropic API, OpenAI, Azure OpenAI, Ollama, LM Studio, vLLM, or most self-hosted
-            servers) and assign it to specific functions below. Nothing changes for a function until you
-            explicitly reassign it.</div>
+          <div class="hint" style="margin-bottom:12px">Every AI-powered function on this platform runs on the
+            built-in <b>Claude Code (built-in)</b> connector with an explicit, recommended model — no setup
+            needed, and it's never a hidden "default". Connect any other API-compatible model here (direct
+            Anthropic API, OpenAI, Azure OpenAI, Ollama, LM Studio, vLLM, or most self-hosted servers) and
+            assign it to specific functions below.</div>
           <div id="aiConnectorList"><div class="empty">Loading…</div></div>
           <div id="aiConnectorFormPanel" style="display:none; margin-top:12px; border-top:1px solid var(--border); padding-top:12px">
             <h3 id="aiConnectorFormTitle" style="margin:0 0 8px">Add connector</h3>
@@ -1893,8 +1893,9 @@
         </div>
         <div class="panel" style="margin-top:16px">
           <h2>AI functions <button class="link" style="float:right" onclick="loadAiProviders()">↻ refresh</button></h2>
-          <div class="hint" style="margin-bottom:12px">Assign any connected model to a specific function.
-            Leave "Default" to keep today's behavior unchanged.</div>
+          <div class="hint" style="margin-bottom:12px">Every function shows the exact connector and model it
+            runs on right now — pick a different connector/model and Save, or click "reset" to go back to the
+            recommended default.</div>
           <div id="aiFunctionGroups"><div class="empty">Loading…</div></div>
         </div>
       </section>
@@ -3742,6 +3743,7 @@ async function vaultMigrate() {
 
 /* ---------- settings: AI providers + per-function assignment ---------- */
 let AI_CONNECTORS = [], AI_FUNCTIONS = [], AI_ASSIGNMENTS = {};
+const NATIVE_CONNECTOR_ID = '__claude_native__';
 
 async function loadAiProviders() {
   try {
@@ -3762,16 +3764,17 @@ function renderAiConnectors() {
     list.innerHTML = '<div class="empty">No connectors yet — click "+ add connector" to connect an AI provider.</div>';
     return;
   }
+  const kindLabel = (k) => k === 'anthropic' ? 'Anthropic' : (k === 'claude_native' ? 'Built-in' : 'OpenAI-compatible');
   list.innerHTML = AI_CONNECTORS.map(c => `
-    <div class="ai-connector-card">
+    <div class="ai-connector-card${c.native ? ' native' : ''}">
       <div class="acc-head">
         <b>${escapeHtml(c.name)}</b>
-        <span class="acc-kind">${c.kind === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible'}</span>
+        <span class="acc-kind">${kindLabel(c.kind)}</span>
         <span class="tag" style="margin-left:auto;${c.enabled ? 'color:var(--ok)' : 'color:var(--muted)'}">${c.enabled ? 'enabled' : 'disabled'}</span>
       </div>
-      <div class="hint">${escapeHtml(c.base_url || '')}${c.secret_in_vault ? ' · 🔒 key in Vault' : (c.api_key === '__stored__' ? ' · 📄 key stored locally' : ' · no key set')}</div>
+      <div class="hint">${c.native ? escapeHtml(c.notes) : (escapeHtml(c.base_url || '') + (c.secret_in_vault ? ' · 🔒 key in Vault' : (c.api_key === '__stored__' ? ' · 📄 key stored locally' : ' · no key set')))}</div>
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <button class="ghost" style="width:auto" onclick="aiConnectorForm('${c.id}')">Edit</button>
+        ${c.native ? '' : `<button class="ghost" style="width:auto" onclick="aiConnectorForm('${c.id}')">Edit</button>`}
         <button class="ghost" style="width:auto" onclick="aiConnectorTestQuick('${c.id}')">Test</button>
         <span class="hint" id="aiTestQuick_${c.id}"></span>
       </div>
@@ -3856,26 +3859,27 @@ function renderAiFunctions() {
     <div class="ai-fn-group">
       <h3>${escapeHtml(group)}</h3>
       ${fns.map(f => {
-        const a = AI_ASSIGNMENTS[f.key];
+        const a = AI_ASSIGNMENTS[f.key] || { connector_id: NATIVE_CONNECTOR_ID, model: f.default_model };
         const rowCls = 'ai-fn-row' + (f.agentic ? ' agentic' : '');
-        const hasAssignment = !!(a && a.connector_id);
-        const options = [`<option value="">— Default (${escapeHtml(f.default_label)})</option>`]
-          .concat(enabledConnectors.map(c => `<option value="${c.id}" ${a && a.connector_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`));
+        const isDefault = a.connector_id === NATIVE_CONNECTOR_ID && a.model === f.default_model;
+        const options = enabledConnectors.map(c =>
+          `<option value="${c.id}" ${a.connector_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`);
         return `<div class="${rowCls}" id="aiFnRow_${f.key}">
           <div class="afr-info"><b>${escapeHtml(f.label)}</b><div class="hint">${escapeHtml(f.hint)}</div></div>
           <div class="afr-controls">
             <select id="afSel_${f.key}" onchange="aiFunctionConnectorChanged('${f.key}')">${options.join('')}</select>
             <input id="afModel_${f.key}" list="afModelList_${f.key}" placeholder="model id"
-                  value="${escapeHtml((a && a.model) || '')}" style="display:${hasAssignment ? '' : 'none'}">
+                  value="${escapeHtml(a.model || '')}">
             <datalist id="afModelList_${f.key}"></datalist>
-            <button class="ghost" id="afFetchBtn_${f.key}" style="width:auto;display:${hasAssignment ? '' : 'none'}"
+            <button class="ghost" id="afFetchBtn_${f.key}" style="width:auto"
                     onclick="aiFunctionFetchModels('${f.key}')" title="Query this connector for its available models">↻ models</button>
             <button class="primary" style="width:auto" onclick="aiFunctionSave('${f.key}')">Save</button>
-            <span class="hint" id="afMsg_${f.key}"></span>
+            ${isDefault ? '' : `<button class="ghost" style="width:auto" onclick="aiFunctionReset('${f.key}')" title="Revert to the recommended default">↺ reset</button>`}
+            <span class="hint" id="afMsg_${f.key}">${isDefault ? 'recommended default' : ''}</span>
           </div>
-          ${f.agentic ? `<div class="ai-fn-warn">⚠ Experimental: reassigning this uses a generic tool-calling loop
-            (Bash/Read/Write/Grep/Glob run locally, same as today) instead of the Claude Agent SDK. Subagent
-            delegation isn't supported for non-Claude connectors — the agent works flat. Test on a Quick-depth
+          ${f.agentic ? `<div class="ai-fn-warn">⚠ Experimental: reassigning this to an external connector uses a generic
+            tool-calling loop (Bash/Read/Write/Grep/Glob run locally, same as today) instead of the Claude Agent SDK.
+            Subagent delegation isn't supported for non-Claude connectors — the agent works flat. Test on a Quick-depth
             investigation before relying on it for a real incident.</div>` : ''}
         </div>`;
       }).join('')}
@@ -3884,11 +3888,7 @@ function renderAiFunctions() {
 }
 
 function aiFunctionConnectorChanged(key) {
-  const sel = $('afSel_' + key), input = $('afModel_' + key), btn = $('afFetchBtn_' + key);
-  const show = !!sel.value;
-  input.style.display = show ? '' : 'none';
-  btn.style.display = show ? '' : 'none';
-  if (show) aiFunctionFetchModels(key);
+  aiFunctionFetchModels(key);
 }
 
 async function aiFunctionFetchModels(key) {
@@ -3907,17 +3907,26 @@ async function aiFunctionFetchModels(key) {
 
 async function aiFunctionSave(key) {
   const sel = $('afSel_' + key), input = $('afModel_' + key), msg = $('afMsg_' + key);
-  const connectorId = sel.value || null;
-  if (connectorId && !input.value.trim()) { msg.style.color = 'var(--err)'; msg.textContent = 'Enter or pick a model id.'; return; }
+  if (!input.value.trim()) { msg.style.color = 'var(--err)'; msg.textContent = 'Enter or pick a model id.'; return; }
+  await aiFunctionPut(key, sel.value, input.value.trim(), msg);
+}
+
+async function aiFunctionReset(key) {
+  await aiFunctionPut(key, null, null, $('afMsg_' + key));
+}
+
+async function aiFunctionPut(key, connectorId, model, msg) {
   msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
   try {
     const r = await fetch(`/api/admin/ai/functions/${encodeURIComponent(key)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ connector_id: connectorId, model: input.value.trim() }) });
+      body: JSON.stringify({ connector_id: connectorId, model: model || '' }) });
     const d = await r.json();
     if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
     AI_ASSIGNMENTS = d.assignments;
-    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved';
+    renderAiFunctions();
+    const row = $('afMsg_' + key);
+    if (row) { row.style.color = 'var(--ok)'; row.textContent = '✓ saved'; }
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 

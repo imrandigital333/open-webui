@@ -523,11 +523,11 @@ def _shape_refined(data: dict) -> dict | None:
 async def _one_shot_json(prompt: str, timeout_s: int = 90, function_key: str = "change_refine"):
     """Run a single-turn tool-less query, returning (parsed_json, error).
     Exactly one of the two is set. error is a short human string for the UI.
-    Runs through whatever AI connector is assigned to `function_key` in
-    Settings → AI Providers, or Claude Code's default login when unassigned
-    (today's behavior, unchanged)."""
+    Runs through whatever AI connector/model is assigned to `function_key` in
+    Settings → AI Providers (defaults to the built-in Claude Code login pinned
+    to that function's recommended model)."""
 
-    async def _default():
+    async def _default(model: str | None = None):
         text = ""
         try:
             from claude_agent_sdk import ClaudeAgentOptions, query
@@ -536,7 +536,7 @@ async def _one_shot_json(prompt: str, timeout_s: int = 90, function_key: str = "
             return None, f"Claude Agent SDK not installed on the server ({exc})", {}
         try:
             async with asyncio.timeout(timeout_s):
-                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=model)
                 async for message in query(prompt=prompt, options=options):
                     if isinstance(message, ResultMessage):
                         if message.is_error:

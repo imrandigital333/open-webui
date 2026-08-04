@@ -185,7 +185,7 @@ Reply with ONLY this JSON (no fences, no other text):
 risk rules: readonly = inspects only; modifies = changes files/services/config;
 dangerous = can destroy data, break access, or take the server down."""
 
-    async def _default():
+    async def _default(model: str | None = None):
         try:
             from claude_agent_sdk import ClaudeAgentOptions, query
             from claude_agent_sdk.types import ResultMessage
@@ -194,7 +194,7 @@ dangerous = can destroy data, break access, or take the server down."""
         text = ""
         try:
             async with asyncio.timeout(35):
-                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=model)
                 async for message in query(prompt=prompt, options=options):
                     if isinstance(message, ResultMessage) and not message.is_error:
                         text = message.result or ""
