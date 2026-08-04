@@ -1221,6 +1221,15 @@
     color: var(--muted); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   .acc-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
   .acc-table .hint { font-size: 11px; }
+  /* bulk server import */
+  .bulk-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .bulk-result { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+    margin-bottom: 10px; font-size: 12.5px; background: var(--panel2); }
+  .bulk-result.ok { border-color: var(--ok-bd); background: var(--ok-bg); }
+  .bulk-result.warn { border-color: var(--warn-bd); background: var(--warn-bg); }
+  .bulk-result.err { border-color: var(--err-bd); background: var(--err-bg); color: var(--err); }
+  .bulk-fail { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 11.5px; max-height: 180px; overflow: auto; }
+  .bulk-fail li { margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -1539,7 +1548,16 @@
     <div class="panel">
       <h2>Server inventory
         <button class="link" id="addServerBtn" style="float:right">+ add server</button></h2>
-      <div class="hint" id="invPath" style="margin-bottom:10px"></div>
+      <div class="hint" id="invPath" style="margin-bottom:8px"></div>
+      <div class="bulk-bar">
+        <button class="ghost" style="width:auto" onclick="$('bulkFile').click()">⬆ Bulk upload (CSV/Excel)</button>
+        <input type="file" id="bulkFile" accept=".csv,.xlsx,.xlsm" style="display:none"
+          onchange="bulkUpload(this.files[0]); this.value='';">
+        <span class="hint">Template:
+          <a class="link" href="/api/admin/inventory/sample?fmt=csv">CSV</a> ·
+          <a class="link" href="/api/admin/inventory/sample?fmt=xlsx">Excel</a></span>
+      </div>
+      <div id="bulkResult" class="bulk-result" style="display:none"></div>
       <div id="invList"><div class="empty">Loading…</div></div>
     </div>
     <div>
@@ -5996,6 +6014,24 @@ async function postChangeProgress() {
 /* ---------- settings: inventory manager ---------- */
 let adminServers = [];
 let editingName = null;
+
+async function bulkUpload(file) {
+  if (!file) return;
+  const box = $('bulkResult'); box.style.display = 'block';
+  box.className = 'bulk-result'; box.innerHTML = `<span class="hint">Uploading ${escapeHtml(file.name)}…</span>`;
+  try {
+    const fd = new FormData(); fd.append('file', file);
+    const r = await fetch('/api/admin/inventory/bulk', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(d.detail || 'Upload failed'); return; }
+    const failList = (d.details || []).filter(x => x.error);
+    box.className = 'bulk-result ' + (d.failed ? 'warn' : 'ok');
+    box.innerHTML = `<div><b>${d.added}</b> added · <b>${d.skipped}</b> skipped · <b>${d.failed}</b> failed <span class="hint">(of ${d.total} rows)</span></div>`
+      + (failList.length ? `<ul class="bulk-fail">${failList.map(x =>
+          `<li>Row ${x.row}${x.name ? ` (${escapeHtml(x.name)})` : ''}: ${escapeHtml(x.error)}</li>`).join('')}</ul>` : '');
+    if (d.added) { loadAdminInventory(); loadInventory(); loadFleet(); }
+  } catch (e) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(e.message); }
+}
 
 async function loadAdminInventory() {
   const data = await (await fetch('/api/admin/inventory')).json();

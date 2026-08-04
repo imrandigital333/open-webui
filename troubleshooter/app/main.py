@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.9.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -1749,6 +1749,167 @@ async def upsert_server(name: str, entry: ServerEntry, request: Request):
          "host": entry.host},
     )
     return {"ok": True, "servers": _redact_inventory(servers)}
+
+
+# ---------- bulk server import (CSV / Excel) ----------
+
+_BULK_COLUMNS = ["name", "host", "user", "platform", "port", "os", "description",
+                 "ssh_key", "winrm_password", "tags", "services"]
+_BULK_MANDATORY = ["name", "host", "user"]
+
+_SAMPLE_ROWS = [
+    ["web-01", "10.70.5.10", "svc-ops", "linux", "22", "RHEL 9", "Prod web node",
+     "/root/.ssh/id_ops", "", "web;prod", "httpd;nginx"],
+    ["dc-01", "10.70.5.20", "Administrator", "windows", "5985", "Windows Server 2022",
+     "Domain controller", "", "P@ssw0rd", "ad;prod", "ADWS;DNS"],
+]
+
+
+def _split_list(v: str) -> list[str]:
+    return [x.strip() for x in re_split_semicomma(v) if x.strip()]
+
+
+def re_split_semicomma(v: str) -> list[str]:
+    import re as _re
+    return _re.split(r"[;,]", str(v or ""))
+
+
+def _bulk_parse(filename: str, raw: bytes) -> list[dict]:
+    """Parse CSV or XLSX into a list of {column: value} row dicts (header-driven)."""
+    name = (filename or "").lower()
+    rows: list[dict] = []
+    if name.endswith((".xlsx", ".xlsm")):
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        headers = None
+        for r in ws.iter_rows(values_only=True):
+            cells = ["" if c is None else str(c).strip() for c in r]
+            if not any(cells):
+                continue
+            if headers is None:
+                headers = [c.lower().strip() for c in cells]
+                continue
+            rows.append({headers[i]: (cells[i] if i < len(cells) else "")
+                         for i in range(len(headers))})
+        wb.close()
+    else:
+        import csv
+        import io
+        text = raw.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        for r in reader:
+            rows.append({(k or "").lower().strip(): (v or "").strip()
+                         for k, v in r.items() if k})
+    return rows
+
+
+@app.get("/api/admin/inventory/sample")
+async def inventory_sample(fmt: str = "csv"):
+    """Downloadable template with the columns, an example Linux + Windows row,
+    and which fields are mandatory."""
+    if fmt == "xlsx":
+        import io
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "servers"
+        ws.append(_BULK_COLUMNS)
+        for row in _SAMPLE_ROWS:
+            ws.append(row)
+        notes = wb.create_sheet("instructions")
+        notes.append(["Mandatory columns", ", ".join(_BULK_MANDATORY)])
+        notes.append(["platform", "linux (SSH) or windows (WinRM). Default linux."])
+        notes.append(["port", "SSH default 22; WinRM default 5985."])
+        notes.append(["winrm_password", "Only for windows rows (stored server-side)."])
+        notes.append(["tags / services", "Separate multiple values with ; or ,"])
+        buf = io.BytesIO(); wb.save(buf); wb.close()
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="server-inventory-template.xlsx"'})
+    import csv
+    import io
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(_BULK_COLUMNS)
+    for row in _SAMPLE_ROWS:
+        w.writerow(row)
+    body = ("# Mandatory: name, host, user. platform = linux|windows (default linux).\n"
+            "# port: SSH 22 / WinRM 5985. winrm_password only for windows. "
+            "tags/services separated by ; or ,\n" + out.getvalue())
+    return Response(content=body, media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="server-inventory-template.csv"'})
+
+
+@app.post("/api/admin/inventory/bulk")
+async def inventory_bulk(request: Request, file: UploadFile = File(...)):
+    raw = await file.read()
+    if len(raw) > 5_000_000:
+        raise HTTPException(status_code=413, detail="File too large (max 5 MB).")
+    try:
+        rows = await asyncio.to_thread(_bulk_parse, file.filename or "", raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Could not read the file: {exc}")
+    if not rows:
+        raise HTTPException(status_code=422, detail="No data rows found (need a header row + at least one server).")
+
+    servers = load_raw_inventory()
+    existing = {s.get("name") for s in servers}
+    added, skipped, failed = 0, 0, []
+    for i, r in enumerate(rows, start=2):   # row 1 is the header in the sheet
+        nm = (r.get("name") or "").strip()
+        if not nm or nm.startswith("#"):
+            continue
+        try:
+            plat = (r.get("platform") or "linux").strip().lower() or "linux"
+            data = {
+                "name": nm, "host": (r.get("host") or "").strip(),
+                "user": (r.get("user") or "").strip(),
+                "platform": plat if plat in ("linux", "windows") else "linux",
+                "os": (r.get("os") or "").strip(),
+                "description": (r.get("description") or "").strip(),
+                "ssh_key": (r.get("ssh_key") or "").strip() or None,
+                "tags": _split_list(r.get("tags", "")),
+                "services": _split_list(r.get("services", "")),
+            }
+            port = (r.get("port") or "").strip()
+            if port:
+                data["port"] = int(port)
+            if data["platform"] == "windows":
+                if not port:
+                    data["port"] = 5985
+                data["winrm_port"] = data.get("port", 5985)
+                if (r.get("winrm_password") or "").strip():
+                    data["winrm_password"] = r["winrm_password"].strip()
+            miss = [m for m in _BULK_MANDATORY if not data.get(m)]
+            if miss:
+                raise ValueError(f"missing {', '.join(miss)}")
+            entry = ServerEntry(**data)
+        except Exception as exc:  # noqa: BLE001 - validation / parse
+            failed.append({"row": i, "name": nm, "error": str(exc)[:160]})
+            continue
+        if entry.name in existing:
+            skipped += 1
+            failed.append({"row": i, "name": nm, "error": "already in inventory (skipped)"})
+            continue
+        yaml_dict = entry.to_yaml_dict()
+        if entry.platform == "windows" and entry.winrm_password:
+            yaml_dict["winrm_password"] = entry.winrm_password
+        servers.append(yaml_dict)
+        existing.add(entry.name)
+        added += 1
+
+    if added:
+        save_inventory(servers)
+    await asyncio.to_thread(db.audit, _actor(request), "inventory_bulk_import",
+                            {"file": file.filename, "added": added, "skipped": skipped,
+                             "failed": len(failed) - skipped})
+    return {"ok": True, "added": added, "skipped": skipped,
+            "failed": len([f for f in failed if "skipped" not in f["error"]]),
+            "total": len([r for r in rows if (r.get("name") or "").strip()
+                          and not (r.get("name") or "").startswith("#")]),
+            "details": failed}
 
 
 @app.delete("/api/admin/inventory/{name}")
