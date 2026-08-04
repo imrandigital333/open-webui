@@ -1281,6 +1281,16 @@
   .vault-badge.local { color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-bd); }
   .vault-badge.none { color: var(--muted); background: var(--chip); border: 1px solid var(--border); }
   .vault-badge.err { color: var(--err); background: var(--err-bg); border: 1px solid var(--err-bd); }
+  .vault-servers-cat { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); margin-bottom: 8px; }
+  .vault-servers-cat > summary { cursor: pointer; padding: 10px 14px; display: flex; align-items: center;
+    gap: 8px; flex-wrap: wrap; list-style: none; }
+  .vault-servers-cat > summary::-webkit-details-marker { display: none; }
+  .vault-servers-cat > summary::before { content: '▸'; color: var(--muted); font-size: 11px; }
+  .vault-servers-cat[open] > summary::before { content: '▾'; }
+  .vault-servers-cat > summary .vh-label { flex: 1; font-weight: 600; }
+  .vault-servers-list { border-top: 1px solid var(--border); padding: 8px 14px; max-height: 420px; overflow-y: auto; }
+  .vault-servers-list .vault-holder { margin-bottom: 6px; }
+  .vault-servers-list .vault-holder:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -3558,6 +3568,26 @@ function vaultBadge(inVault, hasSecret, err) {
   if (hasSecret) return `<span class="vault-badge local">📄 local file</span>`;
   return `<span class="vault-badge none">— not set</span>`;
 }
+function vaultServersCategory(servers) {
+  if (!servers.length) return '';
+  let inVault = 0, local = 0, notSet = 0, err = 0;
+  servers.forEach(s => {
+    if (s.error) err++;
+    else if (s.in_vault) inVault++;
+    else if (s.has_secret) local++;
+    else notSet++;
+  });
+  const chip = (n, cls, label) => n ? `<span class="vault-badge ${cls}">${label}: ${n}</span>` : '';
+  const summary = [chip(inVault, 'in-vault', '🔒 in Vault'), chip(local, 'local', '📄 local file'),
+    chip(err, 'err', '⚠ error'), chip(notSet, 'none', '— not set')].filter(Boolean).join(' ');
+  const rows = servers.map(s => `
+    <div class="vault-holder"><span class="vh-label">${escapeHtml(s.label)}</span>${vaultBadge(s.in_vault, s.has_secret, s.error)}</div>
+  `).join('');
+  return `<details class="vault-servers-cat">
+    <summary><span class="vh-label">🖥️ Windows servers (WinRM) <span class="hint" style="margin:0">${servers.length} total</span></span>${summary}</summary>
+    <div class="vault-servers-list">${rows}</div>
+  </details>`;
+}
 async function loadVault() {
   const connTag = $('vaultConnTag'), connCard = $('vaultConnCard'), holders = $('vaultHolders');
   try {
@@ -3590,10 +3620,11 @@ async function loadVault() {
     if (h.itsm) rows.push([h.itsm.label, h.itsm.in_vault, h.itsm.has_secret, h.itsm.error]);
     if (h.ad) rows.push([h.ad.label, h.ad.in_vault, h.ad.has_secret, h.ad.error]);
     (h.integrations || []).forEach(r => rows.push([r.label, r.in_vault, r.has_secret, r.error]));
-    (h.servers || []).forEach(r => rows.push([r.label, r.in_vault, r.has_secret, r.error]));
-    holders.innerHTML = rows.map(([label, inVault, hasSecret, err]) => `
+    let html = rows.map(([label, inVault, hasSecret, err]) => `
       <div class="vault-holder"><span class="vh-label">${escapeHtml(label)}</span>${vaultBadge(inVault, hasSecret, err)}</div>
-    `).join('') || '<div class="empty">No secret-holding config yet.</div>';
+    `).join('');
+    html += vaultServersCategory(h.servers || []);
+    holders.innerHTML = html || '<div class="empty">No secret-holding config yet.</div>';
   } catch (e) {
     connCard.innerHTML = '<div class="empty">✕ ' + escapeHtml(e.message) + '</div>';
   }
