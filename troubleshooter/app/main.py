@@ -16,7 +16,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel, Field
 
-from . import (auth, changeplan, cmdreview, db, discovery, healthprobe,
+from . import (aiproviders, auth, changeplan, cmdreview, db, discovery, healthprobe,
                integrations, itsm, knowledge, orchestrator, platform_log,
                vaultclient, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
@@ -28,7 +28,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.16.0"
+APP_VERSION = "3.17.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -702,6 +702,7 @@ async def admin_vault_status():
     integ_cfg = await asyncio.to_thread(integrations.public_config)
     raw_servers = await asyncio.to_thread(load_raw_inventory)
     win_servers = [s for s in _redact_inventory(raw_servers) if str(s.get("platform", "linux")) == "windows"]
+    ai_connectors = await asyncio.to_thread(aiproviders.public_connectors)
     return {
         "vault": health,
         "holders": {
@@ -723,6 +724,11 @@ async def admin_vault_status():
                  "has_secret": s.get("winrm_password") == "__stored__", "error": ""}
                 for s in win_servers
             ],
+            "ai_providers": [
+                {"key": c["id"], "label": c["name"], "in_vault": bool(c.get("secret_in_vault")),
+                 "has_secret": c.get("api_key") == "__stored__", "error": c.get("vault_error", "")}
+                for c in ai_connectors
+            ],
         },
     }
 
@@ -738,9 +744,98 @@ async def admin_vault_migrate(request: Request):
         "ad": await asyncio.to_thread(auth.migrate_ad_to_vault),
         "integrations": await asyncio.to_thread(integrations.migrate_to_vault),
         "inventory": await asyncio.to_thread(_migrate_inventory_to_vault),
+        "ai_providers": await asyncio.to_thread(aiproviders.migrate_to_vault),
     }
     await asyncio.to_thread(db.audit, _actor(request), "secrets_migrated_to_vault", results)
     return results
+
+
+# ---------- AI providers: pluggable connectors + per-function assignment ----------
+# Every AI call site defaults to Claude Code with NO configuration — these
+# endpoints are purely additive. See aiproviders.py for the full contract.
+
+@app.get("/api/admin/ai/providers")
+async def admin_ai_providers_get():
+    return {
+        "connectors": await asyncio.to_thread(aiproviders.public_connectors),
+        "functions": aiproviders.FUNCTIONS,
+        "assignments": await asyncio.to_thread(aiproviders.get_assignments),
+    }
+
+
+class AIConnectorRequest(BaseModel):
+    # every field is Optional/None-default so a caller can send a true partial
+    # update (e.g. just {"id": ..., "enabled": false}) without needing to
+    # resend "kind" — model_dump(exclude_none=True) below then only carries
+    # fields the caller actually set, matching save_connector's semantics.
+    id: str | None = Field(None, max_length=80)
+    name: str | None = Field(None, max_length=100)
+    kind: str | None = Field(None, max_length=20)
+    base_url: str | None = Field(None, max_length=500)
+    api_key: str | None = Field(None, max_length=2000)
+    verify_tls: bool | None = None
+    notes: str | None = Field(None, max_length=500)
+    enabled: bool | None = None
+
+
+@app.post("/api/admin/ai/providers")
+async def admin_ai_provider_save(req: AIConnectorRequest, request: Request):
+    try:
+        pub = await asyncio.to_thread(aiproviders.save_connector, req.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except vaultclient.VaultError as exc:
+        raise HTTPException(status_code=502, detail=f"Vault write failed: {exc}")
+    await asyncio.to_thread(db.audit, _actor(request), "ai_connector_saved",
+                            {"id": pub["id"], "kind": pub["kind"], "enabled": pub["enabled"]})
+    return {"ok": True, "connector": pub}
+
+
+@app.delete("/api/admin/ai/providers/{connector_id}")
+async def admin_ai_provider_delete(connector_id: str, request: Request):
+    if not aiproviders.get_connector(connector_id):
+        raise HTTPException(status_code=404, detail="Connector not found")
+    await asyncio.to_thread(aiproviders.delete_connector, connector_id)
+    await asyncio.to_thread(db.audit, _actor(request), "ai_connector_deleted", {"id": connector_id})
+    return {"ok": True}
+
+
+@app.post("/api/admin/ai/providers/{connector_id}/test")
+async def admin_ai_provider_test(connector_id: str, request: Request):
+    if not aiproviders.get_connector(connector_id):
+        raise HTTPException(status_code=404, detail="Connector not found")
+    result = await asyncio.to_thread(aiproviders.test_connector, connector_id)
+    await asyncio.to_thread(db.audit, _actor(request), "ai_connector_tested",
+                            {"id": connector_id, "ok": result.get("ok")})
+    return result
+
+
+@app.get("/api/admin/ai/providers/{connector_id}/models")
+async def admin_ai_provider_models(connector_id: str):
+    if not aiproviders.get_connector(connector_id):
+        raise HTTPException(status_code=404, detail="Connector not found")
+    try:
+        models = await asyncio.to_thread(aiproviders.list_models, connector_id)
+    except aiproviders.AIProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"models": models}
+
+
+class AIFunctionAssignRequest(BaseModel):
+    connector_id: str | None = Field(None, max_length=80)
+    model: str = Field("", max_length=200)
+
+
+@app.put("/api/admin/ai/functions/{function_key}")
+async def admin_ai_function_assign(function_key: str, req: AIFunctionAssignRequest, request: Request):
+    if function_key not in aiproviders.FUNCTION_KEYS:
+        raise HTTPException(status_code=404, detail="Unknown AI function")
+    if req.connector_id and not aiproviders.get_connector(req.connector_id):
+        raise HTTPException(status_code=400, detail="Unknown connector")
+    await asyncio.to_thread(aiproviders.set_assignment, function_key, req.connector_id, req.model)
+    await asyncio.to_thread(db.audit, _actor(request), "ai_function_assigned",
+                            {"function": function_key, "connector_id": req.connector_id, "model": req.model})
+    return {"ok": True, "assignments": await asyncio.to_thread(aiproviders.get_assignments)}
 
 
 @app.get("/api/admin/ad-config")

@@ -21,7 +21,7 @@ import re
 import time
 import uuid
 
-from . import db
+from . import aiproviders, db
 from .changeplan import extract_text  # reuse the txt/md/docx/pdf extractor
 from .inventory import BASE_DIR, load_inventory
 
@@ -98,42 +98,50 @@ def _chunk(text: str, target: int = 900) -> list[str]:
 
 # ---------- Haiku one-shot with usage metering ----------
 
-async def _haiku_json(prompt: str, timeout_s: int = 90) -> tuple[dict | None, str | None, dict]:
-    usage = {"model": KB_MODEL}
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions, query
-        from claude_agent_sdk.types import ResultMessage
-    except Exception as exc:  # noqa: BLE001
-        return None, f"Claude Agent SDK not installed ({exc})", usage
-    text = ""
-    try:
-        async with asyncio.timeout(timeout_s):
-            options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=KB_MODEL)
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    u = getattr(message, "usage", None) or {}
-                    cw = u.get("cache_creation_input_tokens", 0) or 0
-                    cr = u.get("cache_read_input_tokens", 0) or 0
-                    usage.update({
-                        "input_tokens": (u.get("input_tokens", 0) or 0) + cw + cr,
-                        "output_tokens": u.get("output_tokens", 0) or 0,
-                        "cache_read_tokens": cr, "cache_write_tokens": cw,
-                        "model": getattr(message, "model", None) or KB_MODEL,
-                    })
-                    if message.is_error:
-                        return None, f"AI error: {getattr(message, 'result', '') or message.subtype}"[:200], usage
-                    text = message.result or ""
-    except TimeoutError:
-        return None, f"AI call timed out after {timeout_s}s", usage
-    except Exception as exc:  # noqa: BLE001
-        return None, f"AI call failed: {type(exc).__name__}: {exc}"[:200], usage
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None, "AI response was not JSON", usage
-    try:
-        return json.loads(m.group()), None, usage
-    except json.JSONDecodeError as exc:
-        return None, f"AI response JSON invalid ({exc})", usage
+async def _haiku_json(prompt: str, timeout_s: int = 90,
+                      function_key: str = "kb_chat") -> tuple[dict | None, str | None, dict]:
+    """Runs the prompt through whatever AI connector is assigned to
+    `function_key` in Settings → AI Providers, or Claude Haiku (today's
+    behavior, unchanged) when nothing is assigned."""
+
+    async def _default() -> tuple[dict | None, str | None, dict]:
+        usage = {"model": KB_MODEL}
+        try:
+            from claude_agent_sdk import ClaudeAgentOptions, query
+            from claude_agent_sdk.types import ResultMessage
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Claude Agent SDK not installed ({exc})", usage
+        text = ""
+        try:
+            async with asyncio.timeout(timeout_s):
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[], model=KB_MODEL)
+                async for message in query(prompt=prompt, options=options):
+                    if isinstance(message, ResultMessage):
+                        u = getattr(message, "usage", None) or {}
+                        cw = u.get("cache_creation_input_tokens", 0) or 0
+                        cr = u.get("cache_read_input_tokens", 0) or 0
+                        usage.update({
+                            "input_tokens": (u.get("input_tokens", 0) or 0) + cw + cr,
+                            "output_tokens": u.get("output_tokens", 0) or 0,
+                            "cache_read_tokens": cr, "cache_write_tokens": cw,
+                            "model": getattr(message, "model", None) or KB_MODEL,
+                        })
+                        if message.is_error:
+                            return None, f"AI error: {getattr(message, 'result', '') or message.subtype}"[:200], usage
+                        text = message.result or ""
+        except TimeoutError:
+            return None, f"AI call timed out after {timeout_s}s", usage
+        except Exception as exc:  # noqa: BLE001
+            return None, f"AI call failed: {type(exc).__name__}: {exc}"[:200], usage
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None, "AI response was not JSON", usage
+        try:
+            return json.loads(m.group()), None, usage
+        except json.JSONDecodeError as exc:
+            return None, f"AI response JSON invalid ({exc})", usage
+
+    return await aiproviders.complete_json(function_key, prompt, timeout_s=timeout_s, default_fn=_default)
 
 
 def _record_usage(usage: dict) -> None:
@@ -175,7 +183,7 @@ CONTENT (title hint: %s):
 async def classify(text: str, title_hint: str = "") -> tuple[dict, dict]:
     names = ", ".join(sorted(load_inventory().keys())) or "(none registered)"
     data, err, usage = await _haiku_json(
-        _CLASSIFY_PROMPT % (names, title_hint or "(none)", text[:6000]))
+        _CLASSIFY_PROMPT % (names, title_hint or "(none)", text[:6000]), function_key="kb_classify")
     if not data:
         # graceful fallback: keyword-only classification
         return {"title": (title_hint or " ".join(text.split()[:8]))[:120],
@@ -454,7 +462,8 @@ async def chat(message: str, server: str = "", mode: str = "auto",
         # answer prompt returns free text, not JSON — wrap so _haiku_json still
         # works by asking for a JSON envelope
         _ANSWER_PROMPT % (ctx, message) +
-        '\n\nReply with ONLY this JSON: {"answer": "your answer with [citations]"}')
+        '\n\nReply with ONLY this JSON: {"answer": "your answer with [citations]"}',
+        function_key="kb_chat")
     _record_usage(usage)
     sources = sorted({docs.get(h["doc_id"], {}).get("title", "entry") for h in hits})
     # the canvas builds a fresh cross-document design for THIS question
@@ -1169,7 +1178,7 @@ async def design_diagram(doc_id: str, regenerate: bool = False, brief: str = "")
     if brief:
         prompt += ("\n\nOPERATOR INSTRUCTIONS — follow these for the depth, number of layers "
                    f"and focus of the diagram:\n{brief[:600]}")
-    graph, err, usage = await _haiku_json(prompt, timeout_s=240)
+    graph, err, usage = await _haiku_json(prompt, timeout_s=240, function_key="kb_design")
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not extract a diagram from the document",
@@ -1263,7 +1272,7 @@ async def design_from_query(query: str, server: str = "", regenerate: bool = Fal
     if brief:
         prompt += ("\n\nOPERATOR INSTRUCTIONS — follow these for the depth, number of layers "
                    f"and focus of the diagram:\n{brief[:600]}")
-    graph, err, usage = await _haiku_json(prompt, timeout_s=180)
+    graph, err, usage = await _haiku_json(prompt, timeout_s=180, function_key="kb_design")
     _record_usage(usage)
     if not graph:
         return {"ok": False, "error": err or "could not build a design",
@@ -1394,7 +1403,8 @@ async def architecture(server_name: str, use_ai: bool = False) -> dict:
                 + (f"Discovered facts:\n{facts}\n\n" if facts else "")
                 + ("Knowledge-base entries:\n" + docs_text if docs_text else
                    "No knowledge-base entries for this server yet."))
-        graph, err, usage = await _haiku_json(_ARCH_PROMPT % (server_name, data[:9000]), timeout_s=120)
+        graph, err, usage = await _haiku_json(_ARCH_PROMPT % (server_name, data[:9000]), timeout_s=120,
+                                              function_key="kb_design")
         _record_usage(usage)
         g = _sanitize_graph(graph or _fallback_graph(srv, facts), server_name)
         g["source"] = "ai" if graph else "local"

@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import cmdreview, db
+from . import aiproviders, cmdreview, db
 from .inventory import BASE_DIR, Server
 from .scriptlib import SCRIPTLIB_DIR, ensure_scriptlib
 
@@ -836,6 +837,256 @@ def _agent_definitions():
     }
 
 
+# ---------------------------------------------------------------------------
+# Generic, provider-agnostic tool-calling loop — used ONLY when the
+# "investigation" function is explicitly reassigned in Settings → AI Providers
+# away from its default (Claude Code via the Claude Agent SDK, above). This is
+# an experimental path: it re-implements just enough of an autonomous
+# tool-calling agent to run Bash/Read/Write/Grep/Glob locally (in the session
+# workdir — the SAME thing the SDK's own Bash tool does; there is no special
+# remote-execution wrapper anywhere, see connection_section() — the model
+# composes the exact ssh/winps command string itself and runs it as a plain
+# local Bash call). Subagent delegation (the Task tool / log-collector /
+# log-analyzer above) is NOT reimplemented here — research confirms the main
+# agent already has every tool subagents have and can do all the work itself
+# flat, so this is a capability gap in delegation style, not a functional one.
+#
+# It yields real claude_agent_sdk message objects (AssistantMessage/TextBlock/
+# ToolUseBlock/ResultMessage) so run_session's existing per-message loop below
+# — phase detection, tool risk tagging, token/cost bookkeeping, report
+# salvage — needs NO changes and behaves identically regardless of which
+# stream it's consuming from.
+# ---------------------------------------------------------------------------
+
+_GENERIC_TOOLS = [
+    {"name": "bash", "description": "Run a shell command in the local session working "
+                                    "directory. To act on the remote server, run the exact "
+                                    "SSH/WinRM command prefix given in your instructions as "
+                                    "this bash command — there is no separate remote-exec tool.",
+     "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
+                    "required": ["command"]}},
+    {"name": "read_file", "description": "Read a local file (relative to the session working "
+                                         "directory unless the path is absolute).",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"}},
+                    "required": ["path"]}},
+    {"name": "write_file", "description": "Write a local file (relative to the session working "
+                                          "directory unless absolute), creating parent "
+                                          "directories as needed.",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"},
+                                                      "content": {"type": "string"}},
+                    "required": ["path", "content"]}},
+    {"name": "grep", "description": "Search for a regex pattern in local files under the "
+                                    "session working directory.",
+     "parameters": {"type": "object",
+                    "properties": {"pattern": {"type": "string"},
+                                   "path": {"type": "string",
+                                            "description": "file or directory to search, default '.'"}},
+                    "required": ["pattern"]}},
+    {"name": "glob", "description": "List local files matching a glob pattern under the "
+                                    "session working directory.",
+     "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}},
+                    "required": ["pattern"]}},
+]
+_TOOLS_OPENAI = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                                    "parameters": t["parameters"]}}
+                 for t in _GENERIC_TOOLS]
+_TOOLS_ANTHROPIC = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+                    for t in _GENERIC_TOOLS]
+
+_GENERIC_SYSTEM_PROMPT = (
+    "You are an autonomous infrastructure troubleshooting agent running in a "
+    "headless pipeline. Nobody can answer questions mid-run: never ask for "
+    "confirmation, just proceed within the stated read-only rules. You have "
+    "bash, read_file, write_file, grep and glob tools. bash runs LOCALLY in "
+    "your session working directory — to inspect or act on the remote "
+    "server, run the exact SSH/WinRM command prefix given in your task "
+    "instructions AS the bash command. When you have nothing more to do, "
+    "reply with your final summary and call no more tools."
+)
+
+
+def _resolve_local_path(workdir: Path, path: str) -> Path:
+    p = Path(path or ".")
+    return p if p.is_absolute() else (workdir / p)
+
+
+def _exec_generic_tool(workdir: Path, name: str, tool_input: dict) -> str:
+    """Runs one generic tool call locally. Never raises — errors are returned
+    as text so the agent can see and react to them, matching how a failed
+    Bash command's stderr is just more tool output, not an exception."""
+    try:
+        if name == "bash":
+            return _exec_bash_local(workdir, str(tool_input.get("command") or ""))
+        if name == "read_file":
+            try:
+                return _resolve_local_path(workdir, tool_input.get("path", "")).read_text(
+                    errors="replace")[:20000]
+            except OSError as exc:
+                return f"[error] {exc}"
+        if name == "write_file":
+            p = _resolve_local_path(workdir, tool_input.get("path", ""))
+            p.parent.mkdir(parents=True, exist_ok=True)
+            content = str(tool_input.get("content") or "")
+            p.write_text(content)
+            return f"wrote {len(content)} bytes to {tool_input.get('path')}"
+        if name == "grep":
+            return _exec_grep_local(workdir, str(tool_input.get("pattern") or ""),
+                                    str(tool_input.get("path") or "."))
+        if name == "glob":
+            try:
+                matches = sorted(str(p) for p in workdir.glob(str(tool_input.get("pattern") or "*")))
+                return "\n".join(matches[:200]) or "(no matches)"
+            except (OSError, ValueError) as exc:
+                return f"[error] {exc}"
+        return f"[error] unknown tool '{name}'"
+    except Exception as exc:  # noqa: BLE001 — a tool bug must not kill the whole session
+        return f"[error] {type(exc).__name__}: {exc}"
+
+
+def _exec_bash_local(workdir: Path, command: str, timeout_s: int = 120) -> str:
+    if not command.strip():
+        return "[error] empty command"
+    try:
+        proc = subprocess.run(["bash", "-lc", command], cwd=str(workdir), capture_output=True,
+                              text=True, timeout=timeout_s)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        return f"[exit {proc.returncode}]\n{out[:8000]}"
+    except subprocess.TimeoutExpired:
+        return f"[error] command timed out after {timeout_s}s"
+    except OSError as exc:
+        return f"[error] {exc}"
+
+
+def _exec_grep_local(workdir: Path, pattern: str, path: str) -> str:
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        return f"[error] bad pattern: {exc}"
+    base = _resolve_local_path(workdir, path)
+    if base.is_file():
+        files = [base]
+    elif base.is_dir():
+        files = [p for p in base.rglob("*") if p.is_file()]
+    else:
+        return f"[error] no such file or directory: {path}"
+    out = []
+    for f in files:
+        try:
+            for i, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+                if rx.search(line):
+                    out.append(f"{f}:{i}:{line}")
+                    if len(out) >= 200:
+                        break
+        except OSError:
+            continue
+        if len(out) >= 200:
+            break
+    return "\n".join(out) or "(no matches)"
+
+
+def _call_agentic_turn(connector: dict, model: str, system_prompt: str, messages: list) -> dict:
+    """One request/response turn against the connector's native tool-calling
+    API. Returns {"text", "tool_calls":[{"id","name","input"}],
+    "raw_assistant_message"} — the raw message is fed back into `messages`
+    verbatim on the next turn, in whatever shape that provider expects."""
+    if connector["kind"] == "openai":
+        url = connector["base_url"].rstrip("/") + "/chat/completions"
+        headers = {}
+        if connector.get("api_key"):
+            headers["Authorization"] = f"Bearer {connector['api_key']}"
+        body = {"model": model, "messages": [{"role": "system", "content": system_prompt}] + messages,
+               "tools": _TOOLS_OPENAI, "temperature": 0}
+        data = aiproviders.http_json(url, connector, headers, body, timeout_s=120)
+        choices = data.get("choices") or []
+        if not choices:
+            raise aiproviders.AIProviderError(f"{connector['name']}: no choices in response")
+        msg = choices[0].get("message") or {}
+        tool_calls = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append({"id": tc.get("id"), "name": fn.get("name"), "input": args})
+        return {"text": msg.get("content") or "", "tool_calls": tool_calls, "raw_assistant_message": msg}
+    if connector["kind"] == "anthropic":
+        base = connector.get("base_url") or "https://api.anthropic.com"
+        url = base.rstrip("/") + "/v1/messages"
+        headers = {"anthropic-version": "2023-06-01"}
+        if connector.get("api_key"):
+            headers["x-api-key"] = connector["api_key"]
+        body = {"model": model, "max_tokens": 4096, "system": system_prompt,
+               "messages": messages, "tools": _TOOLS_ANTHROPIC}
+        data = aiproviders.http_json(url, connector, headers, body, timeout_s=120)
+        content = data.get("content") or []
+        text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+        tool_calls = [{"id": p.get("id"), "name": p.get("name"), "input": p.get("input") or {}}
+                     for p in content if p.get("type") == "tool_use"]
+        return {"text": text, "tool_calls": tool_calls,
+                "raw_assistant_message": {"role": "assistant", "content": content}}
+    raise aiproviders.AIProviderError(f"unknown connector kind '{connector['kind']}'")
+
+
+def _format_tool_results_for(kind: str, tool_results: list[dict]) -> list:
+    """Messages to append after executing a round of tool calls, in whatever
+    shape the connector kind expects."""
+    if kind == "openai":
+        return [{"role": "tool", "tool_call_id": r["id"], "content": r["result"][:8000]}
+                for r in tool_results]
+    if kind == "anthropic":
+        return [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": r["id"], "content": r["result"][:8000]}
+            for r in tool_results
+        ]}]
+    return []
+
+
+async def _generic_message_stream(prompt: str, connector: dict, model: str, workdir: Path,
+                                   max_turns: int, session_id: str):
+    """Provider-agnostic drop-in for claude_agent_sdk.query() — yields the
+    same message types so the caller's existing processing loop is unchanged."""
+    from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+
+    messages: list = [{"role": "user", "content": prompt}]
+    turn = 0
+    start = time.monotonic()
+    while turn < max_turns:
+        turn += 1
+        try:
+            reply = await asyncio.to_thread(_call_agentic_turn, connector, model,
+                                            _GENERIC_SYSTEM_PROMPT, messages)
+        except aiproviders.AIProviderError as exc:
+            yield ResultMessage(subtype="error_provider", duration_ms=int((time.monotonic() - start) * 1000),
+                                duration_api_ms=0, is_error=True, num_turns=turn,
+                                session_id=session_id, result=str(exc))
+            return
+        blocks: list = []
+        if reply.get("text"):
+            blocks.append(TextBlock(text=reply["text"]))
+        tool_calls = reply.get("tool_calls") or []
+        for tc in tool_calls:
+            blocks.append(ToolUseBlock(id=tc.get("id") or uuid.uuid4().hex, name=tc["name"],
+                                       input=tc.get("input") or {}))
+        if blocks:
+            yield AssistantMessage(content=blocks, model=model or connector.get("kind", ""))
+        if not tool_calls:
+            # a turn with no tool calls is the model saying it's done — the
+            # same natural end-of-conversation signal the SDK's own agent uses
+            yield ResultMessage(subtype="success", duration_ms=int((time.monotonic() - start) * 1000),
+                                duration_api_ms=0, is_error=False, num_turns=turn,
+                                session_id=session_id, result=reply.get("text", ""))
+            return
+        messages.append(reply["raw_assistant_message"])
+        tool_results = [{"id": tc.get("id"), "name": tc["name"],
+                         "result": _exec_generic_tool(workdir, tc["name"], tc.get("input") or {})}
+                        for tc in tool_calls]
+        messages.extend(_format_tool_results_for(connector["kind"], tool_results))
+    yield ResultMessage(subtype="error_max_turns", duration_ms=int((time.monotonic() - start) * 1000),
+                        duration_api_ms=0, is_error=True, num_turns=turn,
+                        session_id=session_id, result="Ran out of investigation turns before finishing.")
+
+
 def _write_datasources_json(workdir: Path, layer_sources: list[dict]) -> None:
     """Config for the collectors CLI. Contains env var NAMES, never secrets."""
     api_sources = [ds for ds in layer_sources if ds.get("type") != "ssh"]
@@ -900,6 +1151,28 @@ async def run_session(
         )
         await state.emit("failed", {"error": state.error})
         return
+
+    # The investigation engine defaults to Claude Code (above); an admin can
+    # reassign it in Settings → AI Providers to run the experimental generic
+    # tool-calling loop against another connector instead. Resolved once, up
+    # front, so a broken assignment fails fast with a clear error rather than
+    # partway through session setup.
+    ai_assignment = aiproviders.get_assignment("investigation")
+    ai_connector = None
+    if ai_assignment:
+        ai_connector = aiproviders.get_connector(ai_assignment["connector_id"])
+        if not ai_connector:
+            state.status = "failed"
+            state.error = (f"Assigned AI connector '{ai_assignment['connector_id']}' no longer "
+                           "exists — reassign the investigation engine in Settings → AI Providers.")
+            await state.emit("failed", {"error": state.error})
+            return
+        if not ai_connector.get("enabled"):
+            state.status = "failed"
+            state.error = (f"Assigned AI connector '{ai_connector['name']}' is disabled — "
+                           "enable it or reassign the investigation engine.")
+            await state.emit("failed", {"error": state.error})
+            return
 
     workdir = state.workdir
     (workdir / "logs").mkdir(parents=True, exist_ok=True)
@@ -1054,7 +1327,13 @@ async def run_session(
         phase_re = re.compile(r"^\s*PHASE:\s*([A-Za-z]+)\s*$", re.MULTILINE)
         agent_texts: list[str] = []   # keep the agent's own words to salvage a
                                       # summary if it never writes the report files
-        async for message in query(prompt=prompt, options=options):
+        message_stream = (
+            _generic_message_stream(prompt, ai_connector, ai_assignment.get("model") or "",
+                                    workdir, max_turns, state.id)
+            if ai_connector else
+            query(prompt=prompt, options=options)
+        )
+        async for message in message_stream:
             got_first_message.set()
             if time.monotonic() > deadline:
                 raise TimeoutError(

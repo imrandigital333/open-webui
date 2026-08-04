@@ -18,6 +18,7 @@ import asyncio
 import json
 import re
 
+from . import aiproviders
 from .inventory import Server
 
 SEVERITY = {"readonly": 0, "modifies": 1, "dangerous": 2, "blocked": 3}
@@ -157,11 +158,10 @@ def classify(cmd: str, platform: str = "linux") -> tuple[str, str]:
 
 
 async def _ai_assess(cmd: str, server: Server) -> dict | None:
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions, query
-        from claude_agent_sdk.types import ResultMessage
-    except ImportError:
-        return None
+    """Runs through whatever AI connector is assigned to "cmd_review" in
+    Settings → AI Providers, or Claude Code's default login when unassigned
+    (today's behavior, unchanged). Never raises — a review must not fail on
+    an AI hiccup, so the deterministic policy verdict ships alone instead."""
     services = ", ".join(server.services) or "unknown"
     win = server.is_windows
     shell = "PowerShell (via WinRM)" if win else "shell"
@@ -184,21 +184,36 @@ Reply with ONLY this JSON (no fences, no other text):
 
 risk rules: readonly = inspects only; modifies = changes files/services/config;
 dangerous = can destroy data, break access, or take the server down."""
-    text = ""
+
+    async def _default():
+        try:
+            from claude_agent_sdk import ClaudeAgentOptions, query
+            from claude_agent_sdk.types import ResultMessage
+        except ImportError as exc:
+            return None, str(exc), {}
+        text = ""
+        try:
+            async with asyncio.timeout(35):
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+                async for message in query(prompt=prompt, options=options):
+                    if isinstance(message, ResultMessage) and not message.is_error:
+                        text = message.result or ""
+        except Exception as exc:  # noqa: BLE001 - review must not fail on AI hiccups
+            return None, str(exc), {}
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None, "not JSON", {}
+        try:
+            return json.loads(m.group()), None, {}
+        except json.JSONDecodeError as exc:
+            return None, str(exc), {}
+
     try:
-        async with asyncio.timeout(35):
-            options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage) and not message.is_error:
-                    text = message.result or ""
+        data, err, _usage = await aiproviders.complete_json("cmd_review", prompt, timeout_s=35,
+                                                             default_fn=_default)
     except Exception:  # noqa: BLE001 - review must not fail on AI hiccups
         return None
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group())
-    except json.JSONDecodeError:
+    if not data:
         return None
     if data.get("risk") not in SEVERITY:
         data["risk"] = None

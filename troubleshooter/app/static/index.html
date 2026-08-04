@@ -1291,6 +1291,25 @@
   .vault-servers-list { border-top: 1px solid var(--border); padding: 8px 14px; max-height: 420px; overflow-y: auto; }
   .vault-servers-list .vault-holder { margin-bottom: 6px; }
   .vault-servers-list .vault-holder:last-child { margin-bottom: 0; }
+  /* AI provider connectors + function assignment */
+  .ai-connector-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    margin-bottom: 12px; background: var(--panel); box-shadow: 0 1px 3px var(--shadow); }
+  .ai-connector-card .acc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .ai-connector-card .acc-head b { font-size: 14px; }
+  .ai-connector-card .acc-kind { font-size: 11px; color: var(--muted); background: var(--chip);
+    border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+  .ai-fn-group { margin-bottom: 16px; }
+  .ai-fn-group h3 { margin: 0 0 8px; font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em;
+    color: var(--muted); }
+  .ai-fn-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel); margin-bottom: 8px; flex-wrap: wrap; }
+  .ai-fn-row .afr-info { flex: 1 1 260px; min-width: 200px; }
+  .ai-fn-row .afr-info b { display: block; font-size: 13px; }
+  .ai-fn-row .afr-info .hint { margin: 2px 0 0; }
+  .ai-fn-row .afr-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ai-fn-row .afr-controls select, .ai-fn-row .afr-controls input { width: auto; min-width: 160px; }
+  .ai-fn-row.agentic { border-color: var(--warn-bd); background: var(--warn-bg); }
+  .ai-fn-warn { flex: 1 1 100%; font-size: 11.5px; color: var(--warn); margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -1608,6 +1627,8 @@
         <span class="sn-ic">📋</span><span>Logs<span class="sn-sub">activity, rotation, filters</span></span></button>
       <button class="set-navb" data-cat="vault" data-admin-only onclick="setCategory('vault')">
         <span class="sn-ic">🔑</span><span>Secrets vault<span class="sn-sub">HashiCorp Vault status</span></span></button>
+      <button class="set-navb" data-cat="ai" data-admin-only onclick="setCategory('ai')">
+        <span class="sn-ic">🧠</span><span>AI Providers<span class="sn-sub">connectors & per-function models</span></span></button>
     </nav>
     <div class="set-body">
       <section class="set-cat" data-cat="servers">
@@ -1828,6 +1849,53 @@
             <div id="vaultHolders"><div class="empty">Loading…</div></div>
             <div id="vaultMigrateResult" style="display:none;margin-top:10px"></div>
           </div>
+        </div>
+      </section>
+      <section class="set-cat" data-cat="ai" data-admin-only hidden>
+        <div class="panel">
+          <h2>AI provider connectors
+            <button class="link" style="float:right" onclick="aiConnectorForm()">+ add connector</button></h2>
+          <div class="hint" style="margin-bottom:12px">Every AI-powered function on this platform runs on
+            <b>Claude Code</b> by default — no configuration needed. Connect any other API-compatible model
+            here (direct Anthropic API, OpenAI, Azure OpenAI, Ollama, LM Studio, vLLM, or most self-hosted
+            servers) and assign it to specific functions below. Nothing changes for a function until you
+            explicitly reassign it.</div>
+          <div id="aiConnectorList"><div class="empty">Loading…</div></div>
+          <div id="aiConnectorFormPanel" style="display:none; margin-top:12px; border-top:1px solid var(--border); padding-top:12px">
+            <h3 id="aiConnectorFormTitle" style="margin:0 0 8px">Add connector</h3>
+            <input type="hidden" id="ac_id">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 14px">
+              <div style="grid-column:1/-1"><label>Name *</label>
+                <input id="ac_name" placeholder="e.g. OpenAI Prod, Local Ollama, Azure GPT-4"></div>
+              <div><label>Kind *</label>
+                <select id="ac_kind">
+                  <option value="openai">OpenAI-compatible (OpenAI, Azure, Ollama, LM Studio, vLLM…)</option>
+                  <option value="anthropic">Anthropic (direct Messages API)</option>
+                </select></div>
+              <div><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin-top:22px">
+                <input type="checkbox" id="ac_enabled" checked style="width:auto">Enabled</label></div>
+              <div style="grid-column:1/-1"><label>Base URL *<span style="font-weight:normal" id="ac_url_hint"></span></label>
+                <input id="ac_base_url" placeholder="https://api.openai.com/v1"></div>
+              <div><label>API key<span style="font-weight:normal" id="ac_key_hint"></span></label>
+                <input id="ac_api_key" type="password" placeholder="leave blank to keep the stored key"></div>
+              <div><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin-top:22px">
+                <input type="checkbox" id="ac_verify_tls" checked style="width:auto">Verify TLS</label></div>
+              <div style="grid-column:1/-1"><label>Notes</label><input id="ac_notes"></div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+              <button class="primary" id="aiConnectorSaveBtn" style="flex:1; margin-top:0">Save connector</button>
+              <button class="ghost" id="aiConnectorTestBtn">Test connection</button>
+              <button class="ghost danger" id="aiConnectorDeleteBtn">Delete</button>
+              <button class="ghost" onclick="aiConnectorFormClose()">Cancel</button>
+            </div>
+            <div class="hint" id="aiConnectorMsg" style="margin-top:8px"></div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:16px">
+          <h2>AI functions <button class="link" style="float:right" onclick="loadAiProviders()">↻ refresh</button></h2>
+          <div class="hint" style="margin-bottom:12px">Assign any connected model to a specific function.
+            Leave "Default" to keep today's behavior unchanged.</div>
+          <div id="aiFunctionGroups"><div class="empty">Loading…</div></div>
         </div>
       </section>
       <section class="set-cat" data-cat="itsm" hidden>
@@ -3409,6 +3477,7 @@ function setCategory(cat) {
   if (cat === 'integrations') loadIntegrations();
   if (cat === 'logs') loadLogsView(); else logAutoStop();
   if (cat === 'vault') loadVault();
+  if (cat === 'ai') loadAiProviders();
 }
 
 /* ---------- settings: infrastructure integrations ---------- */
@@ -3658,10 +3727,198 @@ async function vaultMigrate() {
         Object.entries(d.inventory.errors || {}).forEach(([k, e]) => lines.push(`✕ ${escapeHtml(k)} (WinRM): ${escapeHtml(e)}`));
       }
     }
+    if (d.ai_providers) {
+      if (d.ai_providers.ok === false) lines.push(`✕ AI provider keys: ${escapeHtml(d.ai_providers.error || 'failed')}`);
+      else {
+        (d.ai_providers.migrated || []).forEach(k => lines.push(`✓ ${escapeHtml(k)} (AI connector): migrated`));
+        Object.entries(d.ai_providers.errors || {}).forEach(([k, e]) => lines.push(`✕ ${escapeHtml(k)} (AI connector): ${escapeHtml(e)}`));
+      }
+    }
     box.className = 'bulk-result ok';
     box.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
     loadVault();
   } catch (e) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(e.message); }
+}
+
+/* ---------- settings: AI providers + per-function assignment ---------- */
+let AI_CONNECTORS = [], AI_FUNCTIONS = [], AI_ASSIGNMENTS = {};
+
+async function loadAiProviders() {
+  try {
+    const d = await (await fetch('/api/admin/ai/providers')).json();
+    AI_CONNECTORS = d.connectors || [];
+    AI_FUNCTIONS = d.functions || [];
+    AI_ASSIGNMENTS = d.assignments || {};
+    renderAiConnectors();
+    renderAiFunctions();
+  } catch (e) {
+    $('aiConnectorList').innerHTML = '<div class="empty">✕ ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAiConnectors() {
+  const list = $('aiConnectorList');
+  if (!AI_CONNECTORS.length) {
+    list.innerHTML = '<div class="empty">No connectors yet — click "+ add connector" to connect an AI provider.</div>';
+    return;
+  }
+  list.innerHTML = AI_CONNECTORS.map(c => `
+    <div class="ai-connector-card">
+      <div class="acc-head">
+        <b>${escapeHtml(c.name)}</b>
+        <span class="acc-kind">${c.kind === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible'}</span>
+        <span class="tag" style="margin-left:auto;${c.enabled ? 'color:var(--ok)' : 'color:var(--muted)'}">${c.enabled ? 'enabled' : 'disabled'}</span>
+      </div>
+      <div class="hint">${escapeHtml(c.base_url || '')}${c.secret_in_vault ? ' · 🔒 key in Vault' : (c.api_key === '__stored__' ? ' · 📄 key stored locally' : ' · no key set')}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button class="ghost" style="width:auto" onclick="aiConnectorForm('${c.id}')">Edit</button>
+        <button class="ghost" style="width:auto" onclick="aiConnectorTestQuick('${c.id}')">Test</button>
+        <span class="hint" id="aiTestQuick_${c.id}"></span>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function aiConnectorTestQuick(id) {
+  const box = $('aiTestQuick_' + id);
+  box.style.color = 'var(--muted)'; box.textContent = 'testing…';
+  try {
+    const r = await fetch(`/api/admin/ai/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    const d = await r.json();
+    box.style.color = d.ok ? 'var(--ok)' : 'var(--err)';
+    box.textContent = (d.ok ? '✓ ' : '✕ ') + d.detail;
+  } catch (e) { box.style.color = 'var(--err)'; box.textContent = '✕ ' + e.message; }
+}
+
+function aiConnectorForm(id) {
+  const panel = $('aiConnectorFormPanel');
+  panel.style.display = '';
+  $('aiConnectorMsg').textContent = '';
+  const c = id ? AI_CONNECTORS.find(x => x.id === id) : null;
+  $('ac_id').value = c ? c.id : '';
+  $('aiConnectorFormTitle').textContent = c ? `Edit ${c.name}` : 'Add connector';
+  $('ac_name').value = c ? c.name : '';
+  $('ac_kind').value = c ? c.kind : 'openai';
+  $('ac_enabled').checked = c ? !!c.enabled : true;
+  $('ac_base_url').value = c ? (c.base_url || '') : '';
+  $('ac_api_key').value = '';
+  $('ac_api_key').placeholder = c && c.api_key === '__stored__' ? 'leave blank to keep the stored key' : 'API key';
+  $('ac_verify_tls').checked = c ? c.verify_tls !== false : true;
+  $('ac_notes').value = c ? (c.notes || '') : '';
+  $('aiConnectorDeleteBtn').style.display = c ? '' : 'none';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function aiConnectorFormClose() { $('aiConnectorFormPanel').style.display = 'none'; }
+
+$('aiConnectorSaveBtn').onclick = async () => {
+  const id = $('ac_id').value;
+  const body = { name: $('ac_name').value.trim(), kind: $('ac_kind').value,
+    base_url: $('ac_base_url').value.trim(), verify_tls: $('ac_verify_tls').checked,
+    notes: $('ac_notes').value.trim(), enabled: $('ac_enabled').checked };
+  if (id) body.id = id;
+  const key = $('ac_api_key').value;
+  if (key) body.api_key = key;
+  const msg = $('aiConnectorMsg');
+  if (!body.name || !body.base_url) { msg.style.color = 'var(--err)'; msg.textContent = 'Name and Base URL are required.'; return; }
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/admin/ai/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved';
+    aiConnectorFormClose();
+    loadAiProviders();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+};
+$('aiConnectorTestBtn').onclick = async () => {
+  const id = $('ac_id').value, msg = $('aiConnectorMsg');
+  if (!id) { msg.textContent = 'Save the connector first, then test it.'; return; }
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Testing…';
+  const r = await fetch(`/api/admin/ai/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+  const d = await r.json();
+  msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)';
+  msg.textContent = (d.ok ? '✓ ' : '✕ ') + d.detail;
+};
+$('aiConnectorDeleteBtn').onclick = async () => {
+  const id = $('ac_id').value;
+  if (!id) return;
+  if (!(await uiConfirm('Delete this AI connector? Any function assigned to it will revert to the default.'))) return;
+  await fetch(`/api/admin/ai/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  aiConnectorFormClose();
+  loadAiProviders();
+};
+
+function renderAiFunctions() {
+  const groups = {};
+  AI_FUNCTIONS.forEach(f => { (groups[f.group] = groups[f.group] || []).push(f); });
+  const enabledConnectors = AI_CONNECTORS.filter(c => c.enabled);
+  $('aiFunctionGroups').innerHTML = Object.entries(groups).map(([group, fns]) => `
+    <div class="ai-fn-group">
+      <h3>${escapeHtml(group)}</h3>
+      ${fns.map(f => {
+        const a = AI_ASSIGNMENTS[f.key];
+        const rowCls = 'ai-fn-row' + (f.agentic ? ' agentic' : '');
+        const hasAssignment = !!(a && a.connector_id);
+        const options = [`<option value="">— Default (${escapeHtml(f.default_label)})</option>`]
+          .concat(enabledConnectors.map(c => `<option value="${c.id}" ${a && a.connector_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`));
+        return `<div class="${rowCls}" id="aiFnRow_${f.key}">
+          <div class="afr-info"><b>${escapeHtml(f.label)}</b><div class="hint">${escapeHtml(f.hint)}</div></div>
+          <div class="afr-controls">
+            <select id="afSel_${f.key}" onchange="aiFunctionConnectorChanged('${f.key}')">${options.join('')}</select>
+            <input id="afModel_${f.key}" list="afModelList_${f.key}" placeholder="model id"
+                  value="${escapeHtml((a && a.model) || '')}" style="display:${hasAssignment ? '' : 'none'}">
+            <datalist id="afModelList_${f.key}"></datalist>
+            <button class="ghost" id="afFetchBtn_${f.key}" style="width:auto;display:${hasAssignment ? '' : 'none'}"
+                    onclick="aiFunctionFetchModels('${f.key}')" title="Query this connector for its available models">↻ models</button>
+            <button class="primary" style="width:auto" onclick="aiFunctionSave('${f.key}')">Save</button>
+            <span class="hint" id="afMsg_${f.key}"></span>
+          </div>
+          ${f.agentic ? `<div class="ai-fn-warn">⚠ Experimental: reassigning this uses a generic tool-calling loop
+            (Bash/Read/Write/Grep/Glob run locally, same as today) instead of the Claude Agent SDK. Subagent
+            delegation isn't supported for non-Claude connectors — the agent works flat. Test on a Quick-depth
+            investigation before relying on it for a real incident.</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
+}
+
+function aiFunctionConnectorChanged(key) {
+  const sel = $('afSel_' + key), input = $('afModel_' + key), btn = $('afFetchBtn_' + key);
+  const show = !!sel.value;
+  input.style.display = show ? '' : 'none';
+  btn.style.display = show ? '' : 'none';
+  if (show) aiFunctionFetchModels(key);
+}
+
+async function aiFunctionFetchModels(key) {
+  const sel = $('afSel_' + key), msg = $('afMsg_' + key);
+  if (!sel.value) return;
+  msg.style.color = 'var(--muted)'; msg.textContent = 'fetching models…';
+  try {
+    const r = await fetch(`/api/admin/ai/providers/${encodeURIComponent(sel.value)}/models`);
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    const dl = $('afModelList_' + key);
+    dl.innerHTML = (d.models || []).map(m => `<option value="${escapeHtml(m.id)}">`).join('');
+    msg.style.color = 'var(--ok)'; msg.textContent = `✓ ${(d.models || []).length} model(s) — pick from the list or type one`;
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+}
+
+async function aiFunctionSave(key) {
+  const sel = $('afSel_' + key), input = $('afModel_' + key), msg = $('afMsg_' + key);
+  const connectorId = sel.value || null;
+  if (connectorId && !input.value.trim()) { msg.style.color = 'var(--err)'; msg.textContent = 'Enter or pick a model id.'; return; }
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  try {
+    const r = await fetch(`/api/admin/ai/functions/${encodeURIComponent(key)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connector_id: connectorId, model: input.value.trim() }) });
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    AI_ASSIGNMENTS = d.assignments;
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved';
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
 
 /* ---------- settings: Users & Access (admin) ---------- */

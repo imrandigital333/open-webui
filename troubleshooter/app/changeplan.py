@@ -25,6 +25,7 @@ import json
 import re
 import time
 
+from . import aiproviders
 from .cmdreview import classify
 from .inventory import BASE_DIR
 
@@ -341,7 +342,8 @@ Reply with ONLY this JSON (identical schema to a refined plan; no fences):
 async def generate_plan(context: str, platform: str = "linux") -> dict:
     """Build an executable plan from a change goal/description (no document)."""
     data, err = await _one_shot_json(
-        _os_directive(platform) + _GENERATE_PROMPT % context[:6000], timeout_s=150)
+        _os_directive(platform) + _GENERATE_PROMPT % context[:6000], timeout_s=150,
+        function_key="change_generate")
     shaped = _shape_refined(data) if data else None
     if shaped:
         return shaped
@@ -446,7 +448,8 @@ def _enforce_downtime(result: dict) -> dict:
 
 async def refine_plan(plan_text: str, platform: str = "linux") -> dict:
     data, err = await _one_shot_json(
-        _os_directive(platform) + _REFINE_PROMPT % plan_text[:12000], timeout_s=150)
+        _os_directive(platform) + _REFINE_PROMPT % plan_text[:12000], timeout_s=150,
+        function_key="change_refine")
     if data:
         shaped = _shape_refined(data)
         if shaped:
@@ -517,42 +520,52 @@ def _shape_refined(data: dict) -> dict | None:
     return _enforce_downtime(out)
 
 
-async def _one_shot_json(prompt: str, timeout_s: int = 90):
+async def _one_shot_json(prompt: str, timeout_s: int = 90, function_key: str = "change_refine"):
     """Run a single-turn tool-less query, returning (parsed_json, error).
-    Exactly one of the two is set. error is a short human string for the UI."""
-    text = ""
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions, query
-        from claude_agent_sdk.types import ResultMessage
-    except Exception as exc:  # noqa: BLE001
-        return None, f"Claude Agent SDK not installed on the server ({exc})"
-    try:
-        async with asyncio.timeout(timeout_s):
-            options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    if message.is_error:
-                        return None, f"AI call returned an error: {getattr(message, 'result', '') or getattr(message, 'subtype', 'error')}"[:300]
-                    text = message.result or ""
-    except TimeoutError:
-        return None, f"AI call timed out after {timeout_s}s"
-    except Exception as exc:  # noqa: BLE001
-        return None, f"AI call failed: {type(exc).__name__}: {exc}"[:300]
-    if not text.strip():
-        return None, "AI returned an empty response (check the Claude Code login / credentials for the service account)"
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None, "AI response was not JSON: " + " ".join(text.split())[:180]
-    try:
-        return json.loads(m.group()), None
-    except json.JSONDecodeError as exc:
-        return None, f"AI response JSON was invalid ({exc})"
+    Exactly one of the two is set. error is a short human string for the UI.
+    Runs through whatever AI connector is assigned to `function_key` in
+    Settings → AI Providers, or Claude Code's default login when unassigned
+    (today's behavior, unchanged)."""
+
+    async def _default():
+        text = ""
+        try:
+            from claude_agent_sdk import ClaudeAgentOptions, query
+            from claude_agent_sdk.types import ResultMessage
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Claude Agent SDK not installed on the server ({exc})", {}
+        try:
+            async with asyncio.timeout(timeout_s):
+                options = ClaudeAgentOptions(max_turns=1, allowed_tools=[])
+                async for message in query(prompt=prompt, options=options):
+                    if isinstance(message, ResultMessage):
+                        if message.is_error:
+                            return None, f"AI call returned an error: {getattr(message, 'result', '') or getattr(message, 'subtype', 'error')}"[:300], {}
+                        text = message.result or ""
+        except TimeoutError:
+            return None, f"AI call timed out after {timeout_s}s", {}
+        except Exception as exc:  # noqa: BLE001
+            return None, f"AI call failed: {type(exc).__name__}: {exc}"[:300], {}
+        if not text.strip():
+            return None, "AI returned an empty response (check the Claude Code login / credentials for the service account)", {}
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None, "AI response was not JSON: " + " ".join(text.split())[:180], {}
+        try:
+            return json.loads(m.group()), None, {}
+        except json.JSONDecodeError as exc:
+            return None, f"AI response JSON was invalid ({exc})", {}
+
+    data, err, _usage = await aiproviders.complete_json(function_key, prompt, timeout_s=timeout_s,
+                                                         default_fn=_default)
+    return data, err
 
 
 async def recommend_change(context: str, platform: str = "linux") -> dict:
     """Suggest CR attributes + an outline plan from a description (no attachment
     flow). Degrades to neutral defaults if the AI is unavailable."""
-    data, err = await _one_shot_json(_os_directive(platform) + _RECOMMEND_PROMPT % context[:6000])
+    data, err = await _one_shot_json(_os_directive(platform) + _RECOMMEND_PROMPT % context[:6000],
+                                     function_key="change_recommend")
     if not data:
         return {"available": False, "ai_error": err,
                 "category": "Minor", "type": "Normal", "risk": "Medium",
@@ -606,7 +619,7 @@ async def verify_step(step: dict, result: dict, change_title: str = "",
     data, err = await _one_shot_json(_VERIFY_PROMPT % (
         os_label, change_title or "(change)", step.get("order"), step.get("phase", "step"),
         step.get("description", ""), step.get("command") or "(manual step)",
-        result.get("exit_code"), out or "(no output)"), timeout_s=60)
+        result.get("exit_code"), out or "(no output)"), timeout_s=60, function_key="change_verify")
     if not data:
         ok = bool(result.get("ok"))
         tail = " ".join(out.split())[:200]

@@ -7,3 +7,5 @@ itsm.yaml
 ad.yaml
 integrations.yaml
 logging.yaml
+ai_providers.yaml
+ai_functions.yaml
