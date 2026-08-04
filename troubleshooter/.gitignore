@@ -6,3 +6,4 @@ __pycache__/
 itsm.yaml
 ad.yaml
 integrations.yaml
+logging.yaml

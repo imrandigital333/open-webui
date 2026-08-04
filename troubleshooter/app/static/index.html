@@ -1238,6 +1238,33 @@
     border: 1px solid var(--border); }
   .integ-card label { display: block; margin: 8px 0 3px; font-size: 12px; color: var(--muted); }
   .integ-card input[type="text"], .integ-card input:not([type]) { width: 100%; }
+  /* platform logs */
+  .log-path { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
+  .log-path code { background: var(--chip); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; word-break: break-all; }
+  .link.danger { color: var(--err); }
+  .log-rotcfg { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; background: var(--panel2); }
+  .log-rotcfg > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  .log-cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; margin-top: 10px; }
+  .log-cfg-grid label { display: block; margin: 6px 0 3px; font-size: 12px; color: var(--muted); }
+  .log-cfg-grid input, .log-cfg-grid select { width: 100%; }
+  .log-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .log-filter select, .log-filter input { width: auto; }
+  .log-count { margin-bottom: 6px; }
+  .log-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-family: var(--mono); font-size: 11.8px; max-height: 620px; overflow-y: auto; background: var(--panel2); }
+  .log-row { display: grid; grid-template-columns: 148px 74px 108px 118px 1fr; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--hair); align-items: start; }
+  .log-row:last-child { border-bottom: none; }
+  .log-row:hover { background: var(--chip); }
+  .log-row .lr-ts { color: var(--muted); white-space: nowrap; }
+  .log-row .lr-cat { color: var(--accent2); }
+  .log-row .lr-actor { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-row .lr-msg { word-break: break-word; white-space: pre-wrap; }
+  .lr-lvl { font-weight: 700; border-radius: 5px; padding: 0 6px; text-align: center; font-size: 10.5px; line-height: 18px; height: 18px; }
+  .lr-lvl.DEBUG { color: var(--muted); background: var(--chip); }
+  .lr-lvl.INFO { color: var(--ok); background: var(--ok-bg); }
+  .lr-lvl.WARNING { color: var(--warn); background: var(--warn-bg); }
+  .lr-lvl.ERROR, .lr-lvl.CRITICAL { color: var(--err); background: var(--err-bg); }
+  .log-row.lvl-ERROR, .log-row.lvl-CRITICAL { background: var(--err-bg); }
+  @media (max-width: 760px) { .log-row { grid-template-columns: 1fr; gap: 2px; } .log-cfg-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -1551,6 +1578,8 @@
         <span class="sn-ic">🧩</span><span>Integrations<span class="sn-sub">VMware · Commvault · SolarWinds · Zabbix</span></span></button>
       <button class="set-navb" data-cat="access" data-admin-only onclick="setCategory('access')">
         <span class="sn-ic">🔐</span><span>Users &amp; Access<span class="sn-sub">accounts, roles, AD</span></span></button>
+      <button class="set-navb" data-cat="logs" data-admin-only onclick="setCategory('logs')">
+        <span class="sn-ic">📋</span><span>Logs<span class="sn-sub">activity, rotation, filters</span></span></button>
     </nav>
     <div class="set-body">
       <section class="set-cat" data-cat="servers">
@@ -1706,6 +1735,51 @@
             <button class="primary" style="width:auto" onclick="adSave()">Save AD settings</button>
             <span class="hint" id="adMsg"></span>
           </div>
+        </div>
+      </section>
+      <section class="set-cat" data-cat="logs" data-admin-only hidden>
+        <div class="panel">
+          <h2>Platform logs
+            <span class="tag" id="logSizeTag" style="float:right"></span></h2>
+          <div class="hint" style="margin-bottom:10px">Detailed, structured activity for every part of the platform — API calls, discovery, knowledge, changes, user &amp; access actions and any errors — written as one rotating log file.</div>
+          <div class="log-path"><span class="hint">Log file:</span> <code id="logPath">—</code>
+            <button class="link" onclick="logDownload()">⬇ download</button>
+            <button class="link" onclick="logRotate()">↻ rotate now</button>
+            <button class="link danger" onclick="logClear()">🗑 clear</button></div>
+
+          <details class="log-rotcfg">
+            <summary>Rotation &amp; log settings</summary>
+            <div class="log-cfg-grid">
+              <div><label>Level</label>
+                <select id="lc_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></div>
+              <div><label>Rotation strategy</label>
+                <select id="lc_strategy" onchange="logStrategyFields()"><option value="size">By size</option><option value="time">By time</option></select></div>
+              <div id="lc_size_wrap"><label>Max size (MB) before rotating</label>
+                <input id="lc_max_mb" type="number" min="1" max="1024" value="10"></div>
+              <div id="lc_time_wrap" style="display:none"><label>Rotate every</label>
+                <div style="display:flex;gap:6px"><input id="lc_interval" type="number" min="1" max="90" value="1" style="width:70px">
+                  <select id="lc_when"><option value="S">seconds</option><option value="M">minutes</option><option value="H">hours</option><option value="D">days</option><option value="midnight">at midnight</option><option value="W0">weekly</option></select></div></div>
+              <div><label>Backups to keep</label>
+                <input id="lc_backup" type="number" min="0" max="100" value="5"></div>
+              <div style="grid-column:1/-1"><label>Log file path</label>
+                <input id="lc_path" placeholder="data/logs/platform.log"></div>
+              <div style="grid-column:1/-1"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="lc_capture" checked style="width:auto">Also capture framework warnings &amp; errors (uvicorn, libraries)</label></div>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+              <button class="primary" style="width:auto" onclick="logConfigSave()">Save log settings</button>
+              <span class="hint" id="logCfgMsg"></span></div>
+          </details>
+
+          <div class="log-filter">
+            <select id="lf_level" onchange="loadLogs()"><option value="">All levels</option><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select>
+            <select id="lf_category" onchange="loadLogs()"><option value="">All categories</option></select>
+            <input id="lf_q" placeholder="🔍 search message, actor, detail…" oninput="logSearchDebounced()" style="flex:1;min-width:160px">
+            <select id="lf_limit" onchange="loadLogs()"><option value="200">200</option><option value="500" selected>500</option><option value="1000">1000</option><option value="2000">2000</option></select>
+            <label style="display:inline-flex;gap:5px;align-items:center;font-weight:400;font-size:12px;color:var(--muted)"><input type="checkbox" id="lf_auto" onchange="logAutoToggle()" style="width:auto">auto</label>
+            <button class="ghost" style="width:auto" onclick="loadLogs()">Refresh</button>
+          </div>
+          <div class="log-count hint" id="logCount"></div>
+          <div class="log-table" id="logTable"><div class="empty">Loading…</div></div>
         </div>
       </section>
       <section class="set-cat" data-cat="itsm" hidden>
@@ -3262,6 +3336,7 @@ function setCategory(cat) {
     b.classList.toggle('active', b.dataset.cat === cat));
   if (cat === 'access') loadAccess();
   if (cat === 'integrations') loadIntegrations();
+  if (cat === 'logs') loadLogsView(); else logAutoStop();
 }
 
 /* ---------- settings: infrastructure integrations ---------- */
@@ -3326,6 +3401,93 @@ async function saveIntegration(key) {
     msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved'; loadIntegrations();
   } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
 }
+
+/* ---------- settings: platform logs ---------- */
+let _logAutoTimer = null, _logSearchTimer = null;
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+async function loadLogsView() {
+  // populate config + category filter once, then load entries
+  try {
+    const m = (await (await fetch('/api/admin/logs/config')).json());
+    const c = m.config || {};
+    $('lc_level').value = c.level || 'INFO';
+    $('lc_strategy').value = c.strategy || 'size';
+    $('lc_max_mb').value = c.max_mb || 10;
+    $('lc_interval').value = c.interval || 1;
+    $('lc_when').value = c.when || 'midnight';
+    $('lc_backup').value = c.backup_count ?? 5;
+    $('lc_path').value = c.path || '';
+    $('lc_capture').checked = c.capture_framework !== false;
+    logStrategyFields();
+    const sel = $('lf_category');
+    if (sel.options.length <= 1) {
+      (m.categories || []).forEach(cat => { const o = document.createElement('option'); o.value = o.textContent = cat; sel.appendChild(o); });
+    }
+    $('logPath').textContent = c.path || '—';
+    $('logSizeTag').textContent = fmtBytes(m.total_size || 0) + (m.files && m.files.length > 1 ? ` · ${m.files.length} files` : '');
+  } catch (e) { /* ignore */ }
+  loadLogs();
+}
+function logStrategyFields() {
+  const t = $('lc_strategy').value === 'time';
+  $('lc_time_wrap').style.display = t ? '' : 'none';
+  $('lc_size_wrap').style.display = t ? 'none' : '';
+}
+async function loadLogs() {
+  const p = new URLSearchParams({ level: $('lf_level').value, category: $('lf_category').value,
+    q: $('lf_q').value.trim(), limit: $('lf_limit').value });
+  const tbl = $('logTable');
+  try {
+    const d = await (await fetch('/api/admin/logs?' + p.toString())).json();
+    const rows = d.entries || [];
+    $('logCount').textContent = `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}${rows.length >= (+$('lf_limit').value) ? ' (limit reached — narrow the filter)' : ''}`;
+    if (d.meta) { $('logPath').textContent = d.meta.path || '—'; $('logSizeTag').textContent = fmtBytes(d.meta.total_size || 0) + (d.meta.files && d.meta.files.length > 1 ? ` · ${d.meta.files.length} files` : ''); }
+    if (!rows.length) { tbl.innerHTML = '<div class="empty">No log entries match the filter.</div>'; return; }
+    tbl.innerHTML = rows.map(e => {
+      const ts = e.ts ? new Date(e.ts * 1000).toLocaleString() : '';
+      const lvl = (e.level || 'INFO').toUpperCase();
+      const det = e.detail ? '  ' + JSON.stringify(e.detail) : '';
+      return `<div class="log-row lvl-${lvl}">
+        <span class="lr-ts">${escapeHtml(ts)}</span>
+        <span class="lr-lvl ${lvl}">${escapeHtml(lvl)}</span>
+        <span class="lr-cat">${escapeHtml(e.category || '')}</span>
+        <span class="lr-actor" title="${escapeHtml(e.actor || '')}">${escapeHtml(e.actor || '')}</span>
+        <span class="lr-msg">${escapeHtml(e.msg || '')}${det ? `<span style="color:var(--muted)">${escapeHtml(det)}</span>` : ''}</span>
+      </div>`;
+    }).join('');
+  } catch (e) { tbl.innerHTML = '<div class="empty">✕ ' + escapeHtml(e.message) + '</div>'; }
+}
+function logSearchDebounced() { clearTimeout(_logSearchTimer); _logSearchTimer = setTimeout(loadLogs, 320); }
+function logAutoToggle() {
+  if ($('lf_auto').checked) { _logAutoTimer = setInterval(loadLogs, 5000); loadLogs(); }
+  else logAutoStop();
+}
+function logAutoStop() { if (_logAutoTimer) { clearInterval(_logAutoTimer); _logAutoTimer = null; } const a = $('lf_auto'); if (a) a.checked = false; }
+async function logConfigSave() {
+  const msg = $('logCfgMsg'); msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+  const body = { level: $('lc_level').value, strategy: $('lc_strategy').value,
+    max_mb: +$('lc_max_mb').value, backup_count: +$('lc_backup').value,
+    interval: +$('lc_interval').value, when: $('lc_when').value,
+    path: $('lc_path').value.trim(), capture_framework: $('lc_capture').checked };
+  try {
+    const r = await fetch('/api/admin/logs/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + (d.detail || 'failed'); return; }
+    msg.style.color = 'var(--ok)'; msg.textContent = '✓ saved'; loadLogsView();
+  } catch (e) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; }
+}
+async function logRotate() {
+  await fetch('/api/admin/logs/rotate', { method: 'POST' }); loadLogsView();
+}
+async function logClear() {
+  if (!(await uiConfirm('Clear the current log file? Rotated backups are kept.'))) return;
+  await fetch('/api/admin/logs', { method: 'DELETE' }); loadLogsView();
+}
+function logDownload() { window.open('/api/admin/logs/download', '_blank'); }
 
 /* ---------- settings: Users & Access (admin) ---------- */
 let ACCESS_ROLES = [], ACCESS_PAGES = [];

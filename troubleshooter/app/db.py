@@ -393,12 +393,40 @@ def past_incidents(server: str, exclude_id: str, limit: int = 3) -> list[dict]:
 
 # ---------- audit ----------
 
+_AUDIT_CATEGORY = [
+    (("login", "logout", "password", "lockout", "auth"), "auth"),
+    (("user", "role", "access"), "access"),
+    (("discover", "probe", "scan"), "discovery"),
+    (("knowledge", "kb_", "design", "ingest"), "knowledge"),
+    (("change", "plan", "_cr", "implement"), "changes"),
+    (("integration",), "integrations"),
+    (("inventory", "server"), "inventory"),
+    (("itsm", "summit", "ticket"), "itsm"),
+    (("session", "investigat"), "investigation"),
+]
+
+
+def _audit_category(action: str) -> str:
+    a = (action or "").lower()
+    for keys, cat in _AUDIT_CATEGORY:
+        if any(k in a for k in keys):
+            return cat
+    return "settings"
+
+
 def audit(actor: str, action: str, detail: dict | None = None) -> None:
     with engine().begin() as conn:
         conn.execute(audit_t.insert().values(
             ts=time.time(), actor=actor or "anonymous", action=action,
             detail=json.dumps(detail or {}, default=str),
         ))
+    # mirror the audit trail into the rotating platform log (best effort)
+    try:
+        from . import platform_log
+        platform_log.event(_audit_category(action), action.replace("_", " "),
+                           actor=actor or "anonymous", detail=detail or None)
+    except Exception:  # noqa: BLE001 — logging must never break an audited action
+        pass
 
 
 def list_audit(limit: int = 200) -> list[dict]:

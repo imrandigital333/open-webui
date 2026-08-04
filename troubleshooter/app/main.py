@@ -16,7 +16,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from pydantic import BaseModel, Field
 
 from . import (auth, changeplan, cmdreview, db, discovery, healthprobe,
-               integrations, itsm, knowledge, orchestrator, winexec)
+               integrations, itsm, knowledge, orchestrator, platform_log, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.11.0"
+APP_VERSION = "3.12.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -101,8 +101,63 @@ async def _auth_gate(request: Request, call_next):
     return await call_next(request)
 
 
+def _api_category(path: str) -> str:
+    """Map an API path to a functionality category for the platform log."""
+    p = path
+    table = [
+        ("/api/auth", "auth"),
+        ("/api/admin/logs", "settings"),
+        ("/api/admin/integrations", "integrations"),
+        ("/api/admin/users", "access"), ("/api/admin/roles", "access"),
+        ("/api/admin/ad-config", "access"),
+        ("/api/admin/inventory", "inventory"),
+        ("/api/admin/itsm", "itsm"), ("/api/itsm", "itsm"),
+        ("/api/servers", "discovery"),
+        ("/api/knowledge", "knowledge"), ("/api/kb", "knowledge"), ("/api/design", "knowledge"),
+        ("/api/changes", "changes"), ("/api/change", "changes"),
+        ("/api/sessions", "investigation"), ("/api/session", "investigation"),
+        ("/api/admin", "settings"),
+    ]
+    for prefix, cat in table:
+        if p.startswith(prefix):
+            return cat
+    return "api"
+
+
+# request access logging is registered here so it wraps the auth gate (Starlette
+# runs the most-recently-added middleware outermost) — every API call is logged
+# with method, path, status, duration and the resolved actor.
+@app.middleware("http")
+async def _request_log(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path == "/api/version":
+        return await call_next(request)
+    # don't log reads of the log itself — that would feed back on auto-refresh
+    if path.startswith("/api/admin/logs") and request.method == "GET":
+        return await call_next(request)
+    start = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        dur_ms = round((time.perf_counter() - start) * 1000, 1)
+        level = "ERROR" if status >= 500 else "WARNING" if status >= 400 else "INFO"
+        actor = _actor(request)
+        with contextlib.suppress(Exception):
+            platform_log.event(
+                _api_category(path),
+                f"{request.method} {path} → {status} ({dur_ms} ms)",
+                level=level, actor=actor,
+                detail={"method": request.method, "path": path,
+                        "status": status, "duration_ms": dur_ms})
+
+
 @app.on_event("startup")
 async def _startup():
+    await asyncio.to_thread(platform_log.configure)
+    platform_log.event("system", f"platform starting (v{APP_VERSION})")
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(auth.ensure_bootstrap)
     await asyncio.to_thread(db.auth_sessions_purge_expired)
@@ -424,6 +479,63 @@ async def admin_integration_discover(key: str, request: Request):
     await asyncio.to_thread(db.audit, _actor(request), "integration_discovered",
                             {"layer": key, "mode": mode, "reachable": result.get("reachable")})
     return result
+
+
+# ---------- platform logs (admin only via middleware) ----------
+
+@app.get("/api/admin/logs")
+async def admin_logs_get(level: str = "", category: str = "", q: str = "",
+                         since: float = 0.0, limit: int = 500, file: str = ""):
+    entries = await asyncio.to_thread(platform_log.read, level, category, q,
+                                      since, limit, file)
+    meta = await asyncio.to_thread(platform_log.meta)
+    return {"entries": entries, "meta": meta}
+
+
+@app.get("/api/admin/logs/config")
+async def admin_logs_config_get():
+    return await asyncio.to_thread(platform_log.meta)
+
+
+class LogConfigRequest(BaseModel):
+    level: str = Field("INFO", max_length=10)
+    strategy: str = Field("size", max_length=10)
+    max_mb: int = Field(10, ge=1, le=1024)
+    backup_count: int = Field(5, ge=0, le=100)
+    when: str = Field("midnight", max_length=12)
+    interval: int = Field(1, ge=1, le=90)
+    path: str = Field("", max_length=500)
+    capture_framework: bool = True
+
+
+@app.post("/api/admin/logs/config")
+async def admin_logs_config_save(req: LogConfigRequest, request: Request):
+    cfg = await asyncio.to_thread(platform_log.save_config, req.model_dump())
+    await asyncio.to_thread(db.audit, _actor(request), "logging_config_saved",
+                            {"strategy": cfg["strategy"], "level": cfg["level"]})
+    return {"ok": True, "config": cfg}
+
+
+@app.post("/api/admin/logs/rotate")
+async def admin_logs_rotate(request: Request):
+    meta = await asyncio.to_thread(platform_log.rotate_now)
+    await asyncio.to_thread(db.audit, _actor(request), "logs_rotated", {})
+    return {"ok": True, "meta": meta}
+
+
+@app.delete("/api/admin/logs")
+async def admin_logs_clear(request: Request):
+    meta = await asyncio.to_thread(platform_log.clear)
+    await asyncio.to_thread(db.audit, _actor(request), "logs_cleared", {})
+    return {"ok": True, "meta": meta}
+
+
+@app.get("/api/admin/logs/download")
+async def admin_logs_download():
+    p = platform_log.current_file_path()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="No log file yet.")
+    return FileResponse(str(p), filename=p.name, media_type="text/plain")
 
 
 @app.get("/api/admin/ad-config")
