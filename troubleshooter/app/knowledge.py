@@ -201,8 +201,24 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(re.sub(r"\s+", " ", text.strip().lower()).encode()).hexdigest()
 
 
+# where a piece of knowledge comes from — lets the chat scope its sources
+SOURCE_CLASSES = [
+    {"key": "document", "label": "Documents", "icon": "📄"},
+    {"key": "device_config", "label": "Device configuration", "icon": "⚙️"},
+    {"key": "device_data", "label": "Direct from device", "icon": "📡"},
+]
+_ALL_CLASSES = {c["key"] for c in SOURCE_CLASSES}
+
+
+def _norm_class(v: str) -> str:
+    v = (v or "").strip().lower()
+    return v if v in _ALL_CLASSES else "document"
+
+
 async def ingest(text: str, *, title_hint: str = "", source_type: str = "text",
-                 filename: str | None = None, actor: str | None = None) -> dict:
+                 filename: str | None = None, actor: str | None = None,
+                 source_class: str = "document") -> dict:
+    source_class = _norm_class(source_class)
     text = (text or "").strip()
     if len(text) < 3:
         return {"ok": False, "error": "Nothing to store — the content was empty."}
@@ -219,7 +235,8 @@ async def ingest(text: str, *, title_hint: str = "", source_type: str = "text",
     doc_id = uuid.uuid4().hex[:16]
     doc = {"id": doc_id, "title": meta["title"], "source_type": source_type,
            "filename": filename, "server": meta["server"], "os": meta["os"],
-           "category": meta["category"], "summary": meta["summary"],
+           "category": meta["category"], "source_class": source_class,
+           "summary": meta["summary"],
            "keywords": meta["keywords"], "body": text[:200000],
            "created_at": time.time(), "actor": actor, "content_hash": chash,
            "tokens_in": usage.get("input_tokens"), "tokens_out": usage.get("output_tokens")}
@@ -246,18 +263,31 @@ def _score(query_tokens: list[str], chunk: dict) -> float:
     return hits / (1 + len(hay) / 4000.0)
 
 
-async def retrieve(query: str, server: str = "", top_k: int = 6) -> list[dict]:
+async def retrieve(query: str, server: str = "", top_k: int = 6,
+                   classes=None) -> list[dict]:
     qtok = list(dict.fromkeys(_tokens(query)))
+    # class filter: only apply when the caller asked for a real subset of sources
+    filt = None
+    if classes:
+        s = {_norm_class(c) for c in classes}
+        if s and not _ALL_CLASSES.issubset(s):
+            filt = s
+    fetch = top_k if filt is None else max(top_k * 4, 24)
     # Fast path: SQLite FTS5 index (scales to very large KBs without a scan).
-    fts = await asyncio.to_thread(db.kb_fts_search, qtok, server or "", top_k)
+    fts = await asyncio.to_thread(db.kb_fts_search, qtok, server or "", fetch)
     if fts is not None:
-        return [dict(h, _score=round(-(h.get("rank") or 0.0), 3)) for h in fts]
-    # Fallback: in-memory lexical scan (FTS5 unavailable / non-SQLite backend).
-    cands = await asyncio.to_thread(db.kb_candidate_chunks, server or "")
-    scored = [(c, _score(qtok, c)) for c in cands]
-    scored = [cs for cs in scored if cs[1] > 0]
-    scored.sort(key=lambda cs: -cs[1])
-    return [dict(c, _score=round(s, 3)) for c, s in scored[:top_k]]
+        hits = [dict(h, _score=round(-(h.get("rank") or 0.0), 3)) for h in fts]
+    else:
+        # Fallback: in-memory lexical scan (FTS5 unavailable / non-SQLite backend).
+        cands = await asyncio.to_thread(db.kb_candidate_chunks, server or "")
+        scored = [(c, _score(qtok, c)) for c in cands]
+        scored = [cs for cs in scored if cs[1] > 0]
+        scored.sort(key=lambda cs: -cs[1])
+        hits = [dict(c, _score=round(s, 3)) for c, s in scored[:fetch]]
+    if filt is not None:
+        cmap = await asyncio.to_thread(db.kb_doc_class_map)
+        hits = [h for h in hits if cmap.get(h.get("doc_id"), "document") in filt]
+    return hits[:top_k]
 
 
 async def context_and_sources(query: str, server: str = "",
@@ -371,7 +401,8 @@ QUESTION: %s
 """
 
 
-async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
+async def chat(message: str, server: str = "", mode: str = "auto",
+               classes=None) -> dict:
     message = (message or "").strip()
     if not message:
         return {"ok": False, "error": "Empty message"}
@@ -410,7 +441,7 @@ async def chat(message: str, server: str = "", mode: str = "auto") -> dict:
         # duplicate → answer about it
 
     # ask
-    hits = await retrieve(message, server, top_k=6)
+    hits = await retrieve(message, server, top_k=6, classes=classes)
     if not hits:
         return {"mode": "ask", "ok": True, "answer":
                 "I don't have anything on that in the knowledge base yet. "
@@ -459,13 +490,14 @@ def tree() -> dict:
 def overview() -> dict:
     return {"stats": db.kb_stats(), "usage": db.kb_usage_get(),
             "model": KB_MODEL, "model_label": KB_MODEL_LABEL,
-            "categories": CATEGORIES}
+            "categories": CATEGORIES, "source_classes": SOURCE_CLASSES}
 
 
 # ---------- store data locally (no AI) ----------
 
 async def store_local(text: str, *, server: str, os_: str, category: str, title: str,
-                      source_type: str = "discovery") -> str:
+                      source_type: str = "discovery",
+                      source_class: str = "device_data") -> str:
     """Persist text into the KB WITHOUT any AI call. Replaces a previous doc with
     the same (server, title) so refreshable data (e.g. live topology) stays one
     current entry instead of piling up."""
@@ -474,7 +506,8 @@ async def store_local(text: str, *, server: str, os_: str, category: str, title:
             await asyncio.to_thread(db.kb_delete_doc, d["id"])
     doc_id = uuid.uuid4().hex[:16]
     doc = {"id": doc_id, "title": title, "source_type": source_type, "filename": None,
-           "server": server, "os": os_, "category": category, "summary": text[:400],
+           "server": server, "os": os_, "category": category,
+           "source_class": _norm_class(source_class), "summary": text[:400],
            "keywords": _keywords(text), "body": text[:200000], "created_at": time.time(),
            "actor": "live-probe", "content_hash": _content_hash(text),
            "tokens_in": 0, "tokens_out": 0}

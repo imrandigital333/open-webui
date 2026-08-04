@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.7.1"
+APP_VERSION = "3.8.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -897,12 +897,14 @@ async def kb_delete(doc_id: str, request: Request):
 class KbTextRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=200000)
     title: str = Field("", max_length=200)
+    source_class: str = Field("document", max_length=20)
 
 
 @app.post("/api/kb/add-text")
 async def kb_add_text(req: KbTextRequest, request: Request):
     res = await knowledge.ingest(req.text, title_hint=req.title, source_type="text",
-                                 actor=_actor(request))
+                                 actor=_actor(request),
+                                 source_class=getattr(req, "source_class", "document"))
     if res.get("ok"):
         await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
                                 {"id": res["doc"]["id"], "server": res["doc"]["server"],
@@ -911,7 +913,8 @@ async def kb_add_text(req: KbTextRequest, request: Request):
 
 
 @app.post("/api/kb/upload")
-async def kb_upload(request: Request, file: UploadFile = File(...)):
+async def kb_upload(request: Request, file: UploadFile = File(...),
+                    source_class: str = Form("document")):
     raw = await file.read()
     if len(raw) > 10_000_000:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
@@ -922,7 +925,8 @@ async def kb_upload(request: Request, file: UploadFile = File(...)):
     if len((text or "").strip()) < 3:
         raise HTTPException(status_code=422, detail="Could not read any text from that file.")
     res = await knowledge.ingest(text, title_hint=file.filename or "", source_type="upload",
-                                 filename=file.filename, actor=_actor(request))
+                                 filename=file.filename, actor=_actor(request),
+                                 source_class=source_class)
     if res.get("ok"):
         await asyncio.to_thread(db.audit, _actor(request), "kb_doc_uploaded",
                                 {"id": res["doc"]["id"], "file": file.filename,
@@ -934,11 +938,12 @@ class KbChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=8000)
     server: str = Field("", max_length=100)
     mode: str = Field("auto", pattern="^(auto|ask|teach)$")
+    classes: list[str] = Field(default_factory=list)   # source filter; empty = all
 
 
 @app.post("/api/kb/chat")
 async def kb_chat(req: KbChatRequest, request: Request):
-    res = await knowledge.chat(req.message, req.server, req.mode)
+    res = await knowledge.chat(req.message, req.server, req.mode, classes=req.classes)
     if res.get("mode") == "teach" and res.get("ok"):
         await asyncio.to_thread(db.audit, _actor(request), "kb_doc_added",
                                 {"via": "chat", "id": (res.get("stored") or {}).get("id")})

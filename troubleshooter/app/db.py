@@ -113,6 +113,7 @@ kb_docs_t = Table(
     Column("server", String(100), index=True),    # '' = general / fleet-wide
     Column("os", String(40)),                      # linux | windows | ''
     Column("category", String(40), index=True),    # network|application|process|kb_article|config|design|manual|general
+    Column("source_class", String(20), index=True),  # document | device_config | device_data
     Column("summary", Text),
     Column("keywords", Text),                      # JSON list
     Column("body", Text),                          # full extracted text
@@ -227,6 +228,7 @@ def init_db() -> None:
         "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER",
         "ALTER TABLE sessions ADD COLUMN incident_id VARCHAR(64)",
         "ALTER TABLE kb_docs ADD COLUMN content_hash VARCHAR(64)",
+        "ALTER TABLE kb_docs ADD COLUMN source_class VARCHAR(20)",
     ):
         with _ctx.suppress(Exception), engine().begin() as conn:
             conn.execute(_text(ddl))
@@ -472,7 +474,9 @@ def kb_add_doc(doc: dict) -> None:
             id=doc["id"], title=doc.get("title", ""),
             source_type=doc.get("source_type", "text"), filename=doc.get("filename"),
             server=doc.get("server", ""), os=doc.get("os", ""),
-            category=doc.get("category", "general"), summary=doc.get("summary", ""),
+            category=doc.get("category", "general"),
+            source_class=doc.get("source_class", "document"),
+            summary=doc.get("summary", ""),
             keywords=json.dumps(doc.get("keywords", [])), body=doc.get("body", ""),
             created_at=doc.get("created_at") or time.time(), actor=doc.get("actor"),
             tokens_in=doc.get("tokens_in"), tokens_out=doc.get("tokens_out"),
@@ -535,9 +539,18 @@ def kb_fts_search(terms: list[str], server: str, limit: int) -> list[dict] | Non
 def _kb_doc_row(r) -> dict:
     return {"id": r.id, "title": r.title, "source_type": r.source_type,
             "filename": r.filename, "server": r.server or "", "os": r.os or "",
-            "category": r.category or "general", "summary": r.summary or "",
+            "category": r.category or "general",
+            "source_class": (r.source_class or "document"),
+            "summary": r.summary or "",
             "keywords": json.loads(r.keywords or "[]"), "created_at": r.created_at,
             "actor": r.actor, "tokens_in": r.tokens_in, "tokens_out": r.tokens_out}
+
+
+def kb_doc_class_map() -> dict:
+    """{doc_id: source_class} for scoping retrieval by knowledge source."""
+    with engine().connect() as conn:
+        return {r.id: (r.source_class or "document")
+                for r in conn.execute(select(kb_docs_t.c.id, kb_docs_t.c.source_class))}
 
 
 def kb_list_docs() -> list[dict]:
@@ -591,7 +604,12 @@ def kb_stats() -> dict:
         servers = conn.execute(
             select(func.count(func.distinct(kb_docs_t.c.server)))
             .where(kb_docs_t.c.server != "")).scalar() or 0
-    return {"docs": int(docs), "chunks": int(chunks), "servers": int(servers)}
+    with engine().connect() as conn:
+        rows = conn.execute(select(kb_docs_t.c.source_class, func.count())
+                            .group_by(kb_docs_t.c.source_class))
+        by_class = {(r[0] or "document"): int(r[1]) for r in rows}
+    return {"docs": int(docs), "chunks": int(chunks), "servers": int(servers),
+            "by_class": by_class}
 
 
 def design_cache_get(key: str) -> dict | None:

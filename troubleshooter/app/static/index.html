@@ -830,6 +830,19 @@
     border-bottom-left-radius: 3px; }
   .kb-msg.bot.teach { border-color: var(--ok-bd); }
   .kb-msg .src { display: block; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
+  .kb-src-bar { position: relative; margin-top: 8px; }
+  .kb-src-btn { width: auto; font-size: 11.5px; padding: 5px 10px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 8px; color: var(--muted); cursor: pointer; }
+  .kb-src-btn:hover { color: var(--text); }
+  .kb-src-menu { position: absolute; bottom: 34px; left: 0; z-index: 20; min-width: 240px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px;
+    box-shadow: 0 10px 30px var(--shadow); }
+  .kb-src-opt { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500;
+    color: var(--text); padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+  .kb-src-opt:hover { background: var(--chip); }
+  .kb-src-opt input { width: auto; margin: 0; }
+  .kb-src-n { margin-left: auto; color: var(--muted); font-size: 11px; font-family: var(--mono); }
+  .kb-src-sep { height: 1px; background: var(--border); margin: 5px 2px; }
   .kb-chat-in { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
   .kb-chat-in input { flex: 1; margin: 0; }
   /* settings: left category nav + content */
@@ -1415,6 +1428,14 @@
         <div class="kb-side-h" style="padding-bottom:6px;display:flex;align-items:center;gap:6px"><span class="rc-ava" style="width:22px;height:22px;display:inline-grid" id="kbAva"></span>
           Assistant <span class="kb-model-chip" id="kbModelChip"></span></div>
         <div id="kbChatBody" class="kb-chat-body"></div>
+        <div class="kb-src-bar">
+          <button class="kb-src-btn" id="kbSrcBtn" onclick="kbSrcToggle(event)" title="Choose which knowledge bases to search">🗄️ Sources: <span id="kbSrcLabel">All</span> ▾</button>
+          <div class="kb-src-menu" id="kbSrcMenu" style="display:none">
+            <label class="kb-src-opt"><input type="checkbox" id="kbSrcAll" checked onchange="kbSrcAll(this.checked)"> <b>All knowledge bases</b></label>
+            <div class="kb-src-sep"></div>
+            <div id="kbSrcList"></div>
+          </div>
+        </div>
         <div class="kb-chat-in">
           <select id="kbChatServer" title="Scope questions to a server" style="max-width:110px;margin:0"></select>
           <input id="kbChatIn" placeholder="Ask, or state a fact…" autocomplete="off"
@@ -1454,6 +1475,12 @@
       <div class="kb-tabpane" data-pane="data" hidden>
         <details class="kb-side-sec" open>
           <summary class="kb-side-h">Add knowledge</summary>
+          <label style="margin-top:8px">Type of upload</label>
+          <select id="kbUpClass" style="width:100%;margin:0" title="What kind of knowledge is this?">
+            <option value="document">📄 Document (design / manual / notes)</option>
+            <option value="device_config">⚙️ Device configuration file</option>
+            <option value="device_data">📡 Direct-from-device data</option>
+          </select>
           <div id="kbDrop" class="kb-drop" style="margin-top:8px">
             <div><b>Drop files</b> or <label class="link" for="kbFile">choose</label>
               <input type="file" id="kbFile" multiple style="display:none"
@@ -3581,8 +3608,49 @@ function kbBuildOrgArch(regenerate) {
   kbShowDesignQuery('', '', !!regenerate, false, true);
 }
 
+/* ---- knowledge-source filter for the chat ---- */
+let KB_SOURCE_CLASSES = [], kbSrcSel = null;
+function kbRenderSources(ov) {
+  KB_SOURCE_CLASSES = ov.source_classes || [
+    { key: 'document', label: 'Documents', icon: '📄' },
+    { key: 'device_config', label: 'Device configuration', icon: '⚙️' },
+    { key: 'device_data', label: 'Direct from device', icon: '📡' }];
+  const stats = (ov.stats && ov.stats.by_class) || {};
+  if (kbSrcSel === null) kbSrcSel = new Set(KB_SOURCE_CLASSES.map(c => c.key));  // default: all
+  const list = $('kbSrcList'); if (!list) return;
+  list.innerHTML = KB_SOURCE_CLASSES.map(c =>
+    `<label class="kb-src-opt"><input type="checkbox" data-cls="${c.key}" ${kbSrcSel.has(c.key) ? 'checked' : ''} onchange="kbSrcChange()"> ${c.icon} ${escapeHtml(c.label)} <span class="kb-src-n">${stats[c.key] || 0}</span></label>`).join('');
+  kbSrcSyncLabel();
+}
+function kbSrcToggle(e) { if (e) e.stopPropagation(); const m = $('kbSrcMenu'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; }
+document.addEventListener('click', e => { const m = $('kbSrcMenu'); if (m && m.style.display !== 'none' && !e.target.closest('.kb-src-bar')) m.style.display = 'none'; });
+function kbSrcChange() {
+  kbSrcSel = new Set([...document.querySelectorAll('#kbSrcList input:checked')].map(c => c.dataset.cls));
+  $('kbSrcAll').checked = kbSrcSel.size === KB_SOURCE_CLASSES.length;
+  kbSrcSyncLabel();
+}
+function kbSrcAll(on) {
+  kbSrcSel = new Set(on ? KB_SOURCE_CLASSES.map(c => c.key) : []);
+  document.querySelectorAll('#kbSrcList input').forEach(c => c.checked = on);
+  kbSrcSyncLabel();
+}
+function kbSrcSyncLabel() {
+  const n = kbSrcSel ? kbSrcSel.size : 0, total = KB_SOURCE_CLASSES.length;
+  let lbl = 'All';
+  if (n && n < total) lbl = n === 1 ? (KB_SOURCE_CLASSES.find(c => kbSrcSel.has(c.key)) || {}).label : `${n} selected`;
+  const el = $('kbSrcLabel'); if (el) el.textContent = lbl;
+  if ($('kbSrcAll')) $('kbSrcAll').checked = n === total;
+}
+// classes to send: [] means "all" (no filter)
+function kbSelectedClasses() {
+  const total = KB_SOURCE_CLASSES.length;
+  if (!kbSrcSel || kbSrcSel.size === 0 || kbSrcSel.size === total) return [];
+  return [...kbSrcSel];
+}
+
 function kbRenderUsage(ov) {
   const u = ov.usage || {}, st = ov.stats || {};
+  kbRenderSources(ov);
   $('kbModelChip').textContent = ov.model_label || 'Haiku';
   $('kbModelChip').title = ov.model || '';
   if ($('kbArchModel')) { $('kbArchModel').textContent = ov.model_label || 'Haiku'; $('kbArchModel').title = ov.model || ''; }
@@ -3640,7 +3708,7 @@ async function kbAddText() {
   try {
     const r = await (await fetch('/api/kb/add-text', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, title: $('kbTitle').value.trim() }),
+      body: JSON.stringify({ text, title: $('kbTitle').value.trim(), source_class: ($('kbUpClass') || {}).value || 'document' }),
     })).json();
     if (r.ok) {
       const d = r.doc;
@@ -3667,6 +3735,7 @@ async function kbUploadFiles(files) {
     lbl.textContent = `${i + 1}/${files.length} · ${f.name}`;
     bar.style.width = `${Math.round((i / files.length) * 100)}%`;
     const fd = new FormData(); fd.append('file', f);
+    fd.append('source_class', ($('kbUpClass') || {}).value || 'document');
     try {
       const res = await fetch('/api/kb/upload', { method: 'POST', body: fd });
       const r = await res.json();
@@ -3725,7 +3794,7 @@ async function kbSend() {
   try {
     const r = await (await fetch('/api/kb/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, server: $('kbChatServer').value || '', mode: 'auto' }),
+      body: JSON.stringify({ message: text, server: $('kbChatServer').value || '', mode: 'auto', classes: kbSelectedClasses() }),
     })).json();
     thinking.remove();
     if (r.ok === false) { kbMsg('✕ ' + (r.error || 'failed'), 'bot'); }
