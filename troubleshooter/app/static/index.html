@@ -1366,6 +1366,7 @@
   </div>
   <nav class="nav">
     <button id="navOverview" class="active">Overview</button>
+    <button id="navServers">Servers</button>
     <button id="navIncidents">Incidents</button>
     <button id="navWork">Investigations</button>
     <button id="navChanges">Changes</button>
@@ -1400,6 +1401,87 @@
       <div id="ovActivity" class="panel" style="padding:8px 10px"><div class="empty">Loading…</div></div>
     </div>
   </div>
+</div>
+
+<div id="viewServers" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
+  <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
+    <div class="panel">
+      <h2>Server inventory
+        <button class="link" id="addServerBtn" style="float:right">+ add server</button></h2>
+      <div class="hint" id="invPath" style="margin-bottom:8px"></div>
+      <div class="bulk-bar">
+        <button class="ghost" style="width:auto" onclick="$('bulkFile').click()">⬆ Bulk upload (CSV/Excel)</button>
+        <input type="file" id="bulkFile" accept=".csv,.xlsx,.xlsm" style="display:none"
+          onchange="bulkUpload(this.files[0]); this.value='';">
+        <span class="hint">Template:
+          <a class="link" href="/api/admin/inventory/sample?fmt=csv">CSV</a> ·
+          <a class="link" href="/api/admin/inventory/sample?fmt=xlsx">Excel</a></span>
+      </div>
+      <div id="bulkResult" class="bulk-result" style="display:none"></div>
+      <div id="invList"><div class="empty">Loading…</div></div>
+    </div>
+    <div>
+      <div class="panel" id="invFormPanel" style="display:none">
+        <h2 id="invFormTitle">Edit server</h2>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
+          <div><label>Name *</label><input id="f_name" maxlength="100"></div>
+          <div><label>Host / IP *</label><input id="f_host" maxlength="255"></div>
+          <div style="grid-column:1/-1"><label>Platform</label>
+            <select id="f_platform">
+              <option value="linux">Linux / Unix — SSH (bash)</option>
+              <option value="windows">Windows Server — WinRM (PowerShell)</option>
+            </select></div>
+          <div><label>User *</label><input id="f_user" maxlength="64" placeholder="claude-ro"></div>
+          <div id="wrap_port"><label>SSH port</label><input id="f_port" type="number" value="22" min="1" max="65535"></div>
+          <!-- Linux / SSH -->
+          <div style="grid-column:1/-1" id="wrap_ssh_key"><label>SSH key path <span style="font-weight:normal">(optional — empty uses the service account's default keys)</span></label>
+            <input id="f_ssh_key" maxlength="512" placeholder="/home/aitrouble/.ssh/claude-ro"></div>
+          <!-- Windows / WinRM -->
+          <div style="grid-column:1/-1;display:none" id="winrmFields">
+            <div class="hint" style="margin:2px 0 8px">WinRM / PowerShell Remoting. The password is stored on the server, never shown back.</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0 14px;">
+              <div style="grid-column:1/-1"><label>WinRM password <span style="font-weight:normal">(for the account above)</span></label>
+                <input id="f_winrm_password" type="password" maxlength="512" autocomplete="new-password" placeholder="•••••• (leave as-is to keep the stored one)"></div>
+              <div><label>Auth</label>
+                <select id="f_winrm_transport">
+                  <option value="ntlm">NTLM</option>
+                  <option value="kerberos">Kerberos</option>
+                  <option value="basic">Basic</option>
+                  <option value="credssp">CredSSP</option>
+                  <option value="ssl">SSL/cert</option>
+                </select></div>
+              <div><label>WinRM port</label><input id="f_winrm_port" type="number" value="5985" min="1" max="65535"></div>
+              <div><label>Scheme</label>
+                <select id="f_winrm_scheme"><option value="http">http</option><option value="https">https</option></select></div>
+              <div><label>Cert validation</label>
+                <select id="f_winrm_cert"><option value="ignore">ignore (self-signed)</option><option value="validate">validate</option></select></div>
+              <div style="grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:4px">
+                <input type="checkbox" id="f_winrm_use_proxy" style="width:auto;margin:0">
+                <label for="f_winrm_use_proxy" style="margin:0;font-weight:normal">Route WinRM through the corporate HTTP proxy (leave OFF for internal hosts — the proxy 403s internal IPs)</label></div>
+            </div>
+          </div>
+          <div><label>Description</label><input id="f_description" maxlength="500"></div>
+          <div><label>OS</label><input id="f_os" maxlength="100" placeholder="ubuntu-22.04"></div>
+          <div><label>Tags <span style="font-weight:normal">(comma separated)</span></label>
+            <input id="f_tags" placeholder="web, production"></div>
+          <div><label>Key services <span style="font-weight:normal">(comma separated)</span></label>
+            <input id="f_services" placeholder="nginx, postgresql"></div>
+          <div style="grid-column:1/-1"><label>Log hints <span style="font-weight:normal">(one per line — where the agent should look first)</span></label>
+            <textarea id="f_log_hints" style="min-height:70px" placeholder="/var/log/nginx/error.log&#10;journalctl -u myapp"></textarea></div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+          <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
+          <button class="ghost" id="testServerBtn">Test connection</button>
+          <button class="ghost" id="discoverServerBtn" title="Basic data collection — connect (SSH for Linux, WinRM for Windows) and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
+          <button class="ghost" id="deepScanServerBtn" title="Detailed data gathering for architecture & detailed review — packages, dependencies, firewall, scheduled jobs, storage. Stored to the knowledge base so the bot can answer deep questions.">⌗ Deep scan</button>
+          <button class="ghost danger" id="deleteServerBtn">Delete</button>
+        </div>
+        <div class="hint" id="invMsg" style="margin-top:8px"></div>
+        <div id="discoveryPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
+        <div id="deepPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
+      </div>
+    </div><!-- right column -->
+  </div><!-- inventory grid -->
 </div>
 
 <div id="viewIncidents" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
@@ -1611,9 +1693,7 @@
 <div id="viewSettings" style="display:none; max-width:1600px; margin:0 auto; padding:16px 24px;">
   <div class="set-layout">
     <nav class="set-nav" id="setNav">
-      <button class="set-navb active" data-cat="servers" onclick="setCategory('servers')">
-        <span class="sn-ic">🖥️</span><span>Servers<span class="sn-sub">inventory & connections</span></span></button>
-      <button class="set-navb" data-cat="itsm" onclick="setCategory('itsm')">
+      <button class="set-navb active" data-cat="itsm" onclick="setCategory('itsm')">
         <span class="sn-ic">🎫</span><span>SummitAI (ITSM)<span class="sn-sub">incidents API</span></span></button>
       <button class="set-navb" data-cat="change" onclick="setCategory('change')">
         <span class="sn-ic">🛠️</span><span>Change management<span class="sn-sub">change API & defaults</span></span></button>
@@ -1631,86 +1711,6 @@
         <span class="sn-ic">🧠</span><span>AI Providers<span class="sn-sub">connectors & per-function models</span></span></button>
     </nav>
     <div class="set-body">
-      <section class="set-cat" data-cat="servers">
-        <div style="display:grid; grid-template-columns: 340px 1fr; gap:16px; align-items:start;">
-    <div class="panel">
-      <h2>Server inventory
-        <button class="link" id="addServerBtn" style="float:right">+ add server</button></h2>
-      <div class="hint" id="invPath" style="margin-bottom:8px"></div>
-      <div class="bulk-bar">
-        <button class="ghost" style="width:auto" onclick="$('bulkFile').click()">⬆ Bulk upload (CSV/Excel)</button>
-        <input type="file" id="bulkFile" accept=".csv,.xlsx,.xlsm" style="display:none"
-          onchange="bulkUpload(this.files[0]); this.value='';">
-        <span class="hint">Template:
-          <a class="link" href="/api/admin/inventory/sample?fmt=csv">CSV</a> ·
-          <a class="link" href="/api/admin/inventory/sample?fmt=xlsx">Excel</a></span>
-      </div>
-      <div id="bulkResult" class="bulk-result" style="display:none"></div>
-      <div id="invList"><div class="empty">Loading…</div></div>
-    </div>
-    <div>
-      <div class="panel" id="invFormPanel" style="display:none">
-        <h2 id="invFormTitle">Edit server</h2>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px;">
-          <div><label>Name *</label><input id="f_name" maxlength="100"></div>
-          <div><label>Host / IP *</label><input id="f_host" maxlength="255"></div>
-          <div style="grid-column:1/-1"><label>Platform</label>
-            <select id="f_platform">
-              <option value="linux">Linux / Unix — SSH (bash)</option>
-              <option value="windows">Windows Server — WinRM (PowerShell)</option>
-            </select></div>
-          <div><label>User *</label><input id="f_user" maxlength="64" placeholder="claude-ro"></div>
-          <div id="wrap_port"><label>SSH port</label><input id="f_port" type="number" value="22" min="1" max="65535"></div>
-          <!-- Linux / SSH -->
-          <div style="grid-column:1/-1" id="wrap_ssh_key"><label>SSH key path <span style="font-weight:normal">(optional — empty uses the service account's default keys)</span></label>
-            <input id="f_ssh_key" maxlength="512" placeholder="/home/aitrouble/.ssh/claude-ro"></div>
-          <!-- Windows / WinRM -->
-          <div style="grid-column:1/-1;display:none" id="winrmFields">
-            <div class="hint" style="margin:2px 0 8px">WinRM / PowerShell Remoting. The password is stored on the server, never shown back.</div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0 14px;">
-              <div style="grid-column:1/-1"><label>WinRM password <span style="font-weight:normal">(for the account above)</span></label>
-                <input id="f_winrm_password" type="password" maxlength="512" autocomplete="new-password" placeholder="•••••• (leave as-is to keep the stored one)"></div>
-              <div><label>Auth</label>
-                <select id="f_winrm_transport">
-                  <option value="ntlm">NTLM</option>
-                  <option value="kerberos">Kerberos</option>
-                  <option value="basic">Basic</option>
-                  <option value="credssp">CredSSP</option>
-                  <option value="ssl">SSL/cert</option>
-                </select></div>
-              <div><label>WinRM port</label><input id="f_winrm_port" type="number" value="5985" min="1" max="65535"></div>
-              <div><label>Scheme</label>
-                <select id="f_winrm_scheme"><option value="http">http</option><option value="https">https</option></select></div>
-              <div><label>Cert validation</label>
-                <select id="f_winrm_cert"><option value="ignore">ignore (self-signed)</option><option value="validate">validate</option></select></div>
-              <div style="grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:4px">
-                <input type="checkbox" id="f_winrm_use_proxy" style="width:auto;margin:0">
-                <label for="f_winrm_use_proxy" style="margin:0;font-weight:normal">Route WinRM through the corporate HTTP proxy (leave OFF for internal hosts — the proxy 403s internal IPs)</label></div>
-            </div>
-          </div>
-          <div><label>Description</label><input id="f_description" maxlength="500"></div>
-          <div><label>OS</label><input id="f_os" maxlength="100" placeholder="ubuntu-22.04"></div>
-          <div><label>Tags <span style="font-weight:normal">(comma separated)</span></label>
-            <input id="f_tags" placeholder="web, production"></div>
-          <div><label>Key services <span style="font-weight:normal">(comma separated)</span></label>
-            <input id="f_services" placeholder="nginx, postgresql"></div>
-          <div style="grid-column:1/-1"><label>Log hints <span style="font-weight:normal">(one per line — where the agent should look first)</span></label>
-            <textarea id="f_log_hints" style="min-height:70px" placeholder="/var/log/nginx/error.log&#10;journalctl -u myapp"></textarea></div>
-        </div>
-        <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-          <button class="primary" id="saveServerBtn" style="flex:1; margin-top:0">Save server</button>
-          <button class="ghost" id="testServerBtn">Test connection</button>
-          <button class="ghost" id="discoverServerBtn" title="Basic data collection — connect (SSH for Linux, WinRM for Windows) and gather a full fact sheet so the agent knows this server">⦿ Discover</button>
-          <button class="ghost" id="deepScanServerBtn" title="Detailed data gathering for architecture & detailed review — packages, dependencies, firewall, scheduled jobs, storage. Stored to the knowledge base so the bot can answer deep questions.">⌗ Deep scan</button>
-          <button class="ghost danger" id="deleteServerBtn">Delete</button>
-        </div>
-        <div class="hint" id="invMsg" style="margin-top:8px"></div>
-        <div id="discoveryPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
-        <div id="deepPanel" style="display:none; margin-top:10px; padding:12px 14px; background:var(--panel2, rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:10px; font-size:12.5px"></div>
-      </div>
-        </div><!-- right column -->
-        </div><!-- inventory grid -->
-      </section>
       <section class="set-cat" data-cat="scripts" hidden>
       <div class="panel">
         <h2>Agent script library <span class="count" id="scriptCount" style="float:right"></span></h2>
@@ -3467,7 +3467,7 @@ async function loadFiles(id) {
 }
 
 /* ---------- settings categories ---------- */
-let setCat = 'servers';
+let setCat = 'itsm';
 function setCategory(cat) {
   setCat = cat;
   document.querySelectorAll('#viewSettings .set-cat').forEach(s =>
@@ -5012,17 +5012,18 @@ function kbArchAsk(label) {
 
 function switchView(view) {
   if (AUTH && !authCan(view)) view = (AUTH.pages && AUTH.pages[0]) || 'overview';
-  const views = { overview: 'viewOverview', incidents: 'viewIncidents', work: 'viewWork',
+  const views = { overview: 'viewOverview', servers: 'viewServers', incidents: 'viewIncidents', work: 'viewWork',
                   changes: 'viewChanges', knowledge: 'viewKnowledge', settings: 'viewSettings' };
-  const nav = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
+  const nav = { overview: 'navOverview', servers: 'navServers', incidents: 'navIncidents', work: 'navWork',
                 changes: 'navChanges', knowledge: 'navKnowledge', settings: 'navSettings' };
   Object.entries(views).forEach(([v, id]) => $(id).style.display = v === view ? '' : 'none');
   Object.entries(nav).forEach(([v, id]) => $(id).classList.toggle('active', v === view));
   if (view === 'overview') { loadFleet(); loadOvSummary(); }
+  if (view === 'servers') loadAdminInventory();
   if (view === 'incidents') loadIncidents();
   if (view === 'changes') loadChanges();
   if (view === 'knowledge') loadKnowledge();
-  if (view === 'settings') { loadAdminInventory(); loadScripts(); loadItsmConfig(); setCategory(setCat); }
+  if (view === 'settings') { loadScripts(); loadItsmConfig(); setCategory(setCat); }
   // on the Investigations tab with nothing open, show the New-investigation form
   if (view === 'work' && !currentSession) $('viewWork').classList.remove('hide-left');
 }
@@ -5234,6 +5235,7 @@ async function saveItsm(msgId) {
 $('saveItsmBtn').onclick = () => saveItsm('itsmMsg');
 $('saveChangeBtn').onclick = () => saveItsm('itsmChangeMsg');
 $('navOverview').onclick = () => switchView('overview');
+$('navServers').onclick = () => switchView('servers');
 $('navIncidents').onclick = () => switchView('incidents');
 $('navWork').onclick = () => switchView('work');
 $('navChanges').onclick = () => switchView('changes');
@@ -6545,7 +6547,7 @@ async function genOnServer() {
       if ($('genOs') && !$('genOs').value) $('genOs').value = (f.os || '') + (f.os_version ? ' ' + f.os_version : '');
       if (note) note.innerHTML = `✓ Discovered ${escapeHtml(f.os || '')} · ${escapeHtml(f.machine_type)} (${escapeHtml(f.virtualization)}) · ${escapeHtml(f.package_manager)} — facts will ground the plan.`;
     } else if (note) {
-      note.innerHTML = `Not discovered yet — <a href="#" onclick="switchView('settings');return false;">run discovery in Settings</a> for a plan grounded in this server's real facts.`;
+      note.innerHTML = `Not discovered yet — <a href="#" onclick="switchView('servers');return false;">run discovery in Servers</a> for a plan grounded in this server's real facts.`;
     }
   } catch { if (note) note.textContent = ''; }
 }
@@ -7707,7 +7709,7 @@ function uiConfirm(message, opts) {
 
 /* ================= authentication & access ================= */
 let AUTH = null;   // { user, is_admin, pages:[...], all_pages:[...] }
-const NAV_IDS = { overview: 'navOverview', incidents: 'navIncidents', work: 'navWork',
+const NAV_IDS = { overview: 'navOverview', servers: 'navServers', incidents: 'navIncidents', work: 'navWork',
                   changes: 'navChanges', knowledge: 'navKnowledge', settings: 'navSettings' };
 function authCan(page) { return !!AUTH && (AUTH.is_admin || (AUTH.pages || []).includes(page)); }
 

@@ -30,6 +30,7 @@ from .inventory import BASE_DIR
 # ---------- pages (tabs) the UI exposes; roles are granted a subset ----------
 PAGES = [
     {"key": "overview", "label": "Overview"},
+    {"key": "servers", "label": "Servers"},
     {"key": "incidents", "label": "Incidents"},
     {"key": "work", "label": "Investigations"},
     {"key": "changes", "label": "Changes"},
@@ -376,8 +377,8 @@ def required_permission(method: str, path: str):
 
 _DEFAULT_ROLES = [
     ("admin", "Full access to every page and all administration.", ["*"], True),
-    ("operator", "Investigations, Changes, Incidents and the Overview.",
-     ["overview", "incidents", "work", "changes"], False),
+    ("operator", "Investigations, Changes, Incidents, Servers and the Overview.",
+     ["overview", "servers", "incidents", "work", "changes"], False),
     ("knowledge", "Knowledge base only.", ["knowledge"], False),
     ("viewer", "Read-only Overview.", ["overview"], False),
 ]
