@@ -59,10 +59,19 @@ _CONNECTOR_FIELDS = ("name", "kind", "base_url", "api_key", "verify_tls", "notes
 # hidden/ambiguous "whatever the CLI defaults to" fallback. It can't be created,
 # edited, or deleted like a normal connector.
 NATIVE_CONNECTOR_ID = "__claude_native__"
+# There's no live "list models" API for the CLI's own subscription login (unlike
+# the direct Anthropic/OpenAI HTTP connectors, which really do query /models) —
+# this is every model family the Claude Code CLI can be pointed at today, current
+# generation first. The model field also accepts free text, so a specific dated
+# snapshot not listed here (e.g. an older pinned release) still works if typed in.
 NATIVE_MODELS = [
     {"id": "claude-opus-5", "label": "Claude Opus 5 — most capable, slower/costlier"},
     {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 — balanced (recommended)"},
     {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 — fastest/cheapest"},
+    {"id": "claude-fable-5", "label": "Claude Fable 5 — narrative/writing-tuned"},
+    {"id": "claude-opus-4-1-20250805", "label": "Claude Opus 4.1 (previous generation)"},
+    {"id": "claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5 (previous generation)"},
+    {"id": "claude-3-5-haiku-20241022", "label": "Claude Haiku 3.5 (previous generation)"},
 ]
 _NATIVE_MODEL_IDS = {m["id"] for m in NATIVE_MODELS}
 

@@ -760,6 +760,7 @@ async def admin_ai_providers_get():
         "connectors": await asyncio.to_thread(aiproviders.public_connectors),
         "functions": aiproviders.FUNCTIONS,
         "assignments": await asyncio.to_thread(aiproviders.get_assignments),
+        "native_models": aiproviders.NATIVE_MODELS,
     }
 
 

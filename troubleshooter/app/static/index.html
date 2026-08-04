@@ -3742,7 +3742,7 @@ async function vaultMigrate() {
 }
 
 /* ---------- settings: AI providers + per-function assignment ---------- */
-let AI_CONNECTORS = [], AI_FUNCTIONS = [], AI_ASSIGNMENTS = {};
+let AI_CONNECTORS = [], AI_FUNCTIONS = [], AI_ASSIGNMENTS = {}, AI_NATIVE_MODELS = [];
 const NATIVE_CONNECTOR_ID = '__claude_native__';
 
 async function loadAiProviders() {
@@ -3751,6 +3751,7 @@ async function loadAiProviders() {
     AI_CONNECTORS = d.connectors || [];
     AI_FUNCTIONS = d.functions || [];
     AI_ASSIGNMENTS = d.assignments || {};
+    AI_NATIVE_MODELS = d.native_models || [];
     renderAiConnectors();
     renderAiFunctions();
   } catch (e) {
@@ -3864,15 +3865,12 @@ function renderAiFunctions() {
         const isDefault = a.connector_id === NATIVE_CONNECTOR_ID && a.model === f.default_model;
         const options = enabledConnectors.map(c =>
           `<option value="${c.id}" ${a.connector_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`);
+        const conn = enabledConnectors.find(c => c.id === a.connector_id);
         return `<div class="${rowCls}" id="aiFnRow_${f.key}">
           <div class="afr-info"><b>${escapeHtml(f.label)}</b><div class="hint">${escapeHtml(f.hint)}</div></div>
           <div class="afr-controls">
             <select id="afSel_${f.key}" onchange="aiFunctionConnectorChanged('${f.key}')">${options.join('')}</select>
-            <input id="afModel_${f.key}" list="afModelList_${f.key}" placeholder="model id"
-                  value="${escapeHtml(a.model || '')}">
-            <datalist id="afModelList_${f.key}"></datalist>
-            <button class="ghost" id="afFetchBtn_${f.key}" style="width:auto"
-                    onclick="aiFunctionFetchModels('${f.key}')" title="Query this connector for its available models">↻ models</button>
+            <span id="afModelWrap_${f.key}">${modelControlHtml(f.key, conn ? conn.kind : '', a.model)}</span>
             <button class="primary" style="width:auto" onclick="aiFunctionSave('${f.key}')">Save</button>
             ${isDefault ? '' : `<button class="ghost" style="width:auto" onclick="aiFunctionReset('${f.key}')" title="Revert to the recommended default">↺ reset</button>`}
             <span class="hint" id="afMsg_${f.key}">${isDefault ? 'recommended default' : ''}</span>
@@ -3887,8 +3885,31 @@ function renderAiFunctions() {
   `).join('');
 }
 
+function modelControlHtml(key, kind, model) {
+  if (kind === 'claude_native') {
+    // A fixed, always-available list — shown as a real dropdown so every
+    // option is visible at once (a text input + datalist narrows to
+    // whatever's already typed, which looked like "only one model").
+    const opts = AI_NATIVE_MODELS.map(m =>
+      `<option value="${escapeHtml(m.id)}" ${m.id === model ? 'selected' : ''}>${escapeHtml(m.label || m.id)}</option>`);
+    return `<select id="afModel_${key}">${opts.join('')}</select>`;
+  }
+  return `<input id="afModel_${key}" list="afModelList_${key}" placeholder="model id" value="${escapeHtml(model || '')}">
+          <datalist id="afModelList_${key}"></datalist>
+          <button class="ghost" id="afFetchBtn_${key}" style="width:auto"
+                  onclick="aiFunctionFetchModels('${key}')" title="Query this connector for its available models">↻ models</button>`;
+}
+
 function aiFunctionConnectorChanged(key) {
-  aiFunctionFetchModels(key);
+  const sel = $('afSel_' + key);
+  const conn = AI_CONNECTORS.find(c => c.id === sel.value);
+  const kind = conn ? conn.kind : '';
+  const current = AI_ASSIGNMENTS[key];
+  const f = AI_FUNCTIONS.find(x => x.key === key);
+  let model = (current && current.connector_id === sel.value) ? current.model : '';
+  if (!model && kind === 'claude_native') model = (f && f.default_model) || (AI_NATIVE_MODELS[0] || {}).id || '';
+  $('afModelWrap_' + key).innerHTML = modelControlHtml(key, kind, model);
+  if (kind && kind !== 'claude_native') aiFunctionFetchModels(key);
 }
 
 async function aiFunctionFetchModels(key) {
