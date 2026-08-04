@@ -24,7 +24,7 @@ import uuid
 
 import yaml
 
-from . import db
+from . import db, vaultclient
 from .inventory import BASE_DIR
 
 # ---------- pages (tabs) the UI exposes; roles are granted a subset ----------
@@ -58,9 +58,11 @@ _AD_DEFAULTS = {
     "user_search_attr": "sAMAccountName",
     "bind_user": "",               # optional service account for search-then-bind
     "bind_password": "",           # write-only
+    "secret_in_vault": False,      # bind_password stored in Vault instead of this file
     "default_role": "viewer",      # role auto-assigned to AD users on first login
     "verify_tls": True,
 }
+_AD_VAULT_PATH = "ad/bind_password"
 
 
 # ---------- password hashing (PBKDF2-SHA256, stdlib) ----------
@@ -98,7 +100,9 @@ def password_ok(pw: str) -> str:
 
 # ---------- AD / LDAP configuration (secrets write-only) ----------
 
-def load_ad_config() -> dict:
+def _read_raw_ad() -> dict:
+    """Exactly what's on disk, with NO Vault resolution — the only safe base
+    for re-writing the file (see integrations._read_raw for why)."""
     cfg = dict(_AD_DEFAULTS)
     try:
         if AD_CONFIG_PATH.exists():
@@ -106,7 +110,7 @@ def load_ad_config() -> dict:
             for k in _AD_DEFAULTS:
                 if k in file_cfg and file_cfg[k] not in (None, ""):
                     cfg[k] = file_cfg[k]
-            for b in ("enabled", "use_ssl", "verify_tls"):
+            for b in ("enabled", "use_ssl", "verify_tls", "secret_in_vault"):
                 if isinstance(file_cfg.get(b), bool):
                     cfg[b] = file_cfg[b]
     except (OSError, yaml.YAMLError):
@@ -114,26 +118,65 @@ def load_ad_config() -> dict:
     return cfg
 
 
+def load_ad_config() -> dict:
+    cfg = _read_raw_ad()
+    if vaultclient.enabled() and cfg.get("secret_in_vault"):
+        try:
+            data = vaultclient.read_secret(_AD_VAULT_PATH)
+            cfg["bind_password"] = (data or {}).get("bind_password", "")
+        except vaultclient.VaultError as exc:
+            cfg["bind_password"] = ""
+            cfg["vault_error"] = str(exc)
+    return cfg
+
+
 def public_ad_config() -> dict:
     """AD config for the browser — the bind password is redacted."""
     cfg = load_ad_config()
     cfg = dict(cfg)
-    cfg["bind_password"] = _REDACTED if cfg.get("bind_password") else ""
+    cfg["bind_password"] = _REDACTED if (cfg.get("bind_password") or cfg.get("secret_in_vault")) else ""
     cfg["ldap3_available"] = _ldap3_available()
     return cfg
 
 
 def save_ad_config(new: dict) -> None:
-    cur = load_ad_config()
+    cur = _read_raw_ad()               # NOT load_ad_config() — must never re-persist a Vault-resolved secret
     out = dict(cur)
     for k in _AD_DEFAULTS:
-        if k in new:
+        if k in new and k not in ("bind_password", "secret_in_vault"):
             out[k] = new[k]
-    # keep the stored bind password when the browser sends the redaction sentinel
-    if new.get("bind_password") in (None, "", _REDACTED):
-        out["bind_password"] = cur.get("bind_password", "")
+    pw = new.get("bind_password")
+    if pw in (None, "", _REDACTED):
+        pass  # keep whatever's already stored (file or Vault) unchanged
+    elif vaultclient.enabled():
+        vaultclient.write_secret(_AD_VAULT_PATH, {"bind_password": str(pw)})
+        out["bind_password"] = ""
+        out["secret_in_vault"] = True
+    else:
+        out["bind_password"] = str(pw)
+        out["secret_in_vault"] = False
     AD_CONFIG_PATH.write_text(yaml.safe_dump(out, sort_keys=False))
     os.chmod(AD_CONFIG_PATH, 0o600)
+
+
+def migrate_ad_to_vault() -> dict:
+    """Move the locally-stored AD bind password into Vault."""
+    if not vaultclient.enabled():
+        return {"ok": False, "error": "Vault is not configured (VAULT_ADDR / VAULT_TOKEN unset)."}
+    raw = _read_raw_ad()
+    if raw.get("secret_in_vault"):
+        return {"ok": True, "migrated": False, "reason": "already in Vault"}
+    if not raw.get("bind_password"):
+        return {"ok": True, "migrated": False, "reason": "no bind password set"}
+    try:
+        vaultclient.write_secret(_AD_VAULT_PATH, {"bind_password": raw["bind_password"]})
+    except vaultclient.VaultError as exc:
+        return {"ok": False, "error": str(exc)}
+    raw["bind_password"] = ""
+    raw["secret_in_vault"] = True
+    AD_CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False))
+    os.chmod(AD_CONFIG_PATH, 0o600)
+    return {"ok": True, "migrated": True}
 
 
 def _ldap3_available() -> bool:

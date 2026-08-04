@@ -1,10 +1,14 @@
 """Observability / infrastructure layer integrations.
 
 Connection settings for the platforms we plan to read logs & inventory from for
-a holistic view — VMware vCenter, Commvault, SolarWinds and Zabbix. This module
-stores the configuration (a chmod-600, gitignored integrations.yaml with the
-secret write-only); the actual log/inventory collectors are added later and will
-read from here. Enable a layer once its collector is wired up.
+a holistic view — VMware vCenter, Commvault, SolarWinds and Zabbix. Non-secret
+fields (host, user, enabled, notes) live in a chmod-600, gitignored
+integrations.yaml. The secret itself lives there too UNTIL Vault is enabled
+(VAULT_ADDR/VAULT_TOKEN) and the layer is migrated — see migrate_to_vault() —
+after which it's stored in HashiCorp Vault (KV v2) instead and integrations.yaml
+only carries a `secret_in_vault: true` marker. The actual log/inventory
+collectors are added later and will read config through this module; enable a
+layer once its collector is wired up.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from . import vaultclient
 from .inventory import BASE_DIR
 
 CONFIG_PATH = BASE_DIR / "integrations.yaml"
@@ -35,15 +40,24 @@ LAYERS = [
 ]
 LAYER_KEYS = {l["key"] for l in LAYERS}
 
-_FIELDS = ("enabled", "host", "user", "secret", "verify_tls", "notes")
+_FIELDS = ("enabled", "host", "user", "secret", "verify_tls", "notes", "secret_in_vault")
 
 
 def _defaults() -> dict:
     return {l["key"]: {"enabled": False, "host": "", "user": "", "secret": "",
-                       "verify_tls": True, "notes": ""} for l in LAYERS}
+                       "verify_tls": True, "notes": "", "secret_in_vault": False}
+            for l in LAYERS}
 
 
-def load_config() -> dict:
+def _vault_path(key: str) -> str:
+    return f"integrations/{key}"
+
+
+def _read_raw() -> dict:
+    """Exactly what's on disk (defaults filled), with NO Vault resolution. This
+    — never a Vault-resolved dict — is the only safe base for re-writing the
+    file: writing back a dict that had a Vault secret merged into it would
+    leak that secret into plaintext on disk."""
     cfg = _defaults()
     try:
         if CONFIG_PATH.exists():
@@ -59,6 +73,23 @@ def load_config() -> dict:
     return cfg
 
 
+def load_config() -> dict:
+    """Non-secret fields from integrations.yaml; the secret itself resolved
+    from Vault when that layer has been migrated there, else from the file."""
+    cfg = _read_raw()
+    if vaultclient.enabled():
+        for key in LAYER_KEYS:
+            if not cfg[key].get("secret_in_vault"):
+                continue
+            try:
+                data = vaultclient.read_secret(_vault_path(key))
+                cfg[key]["secret"] = (data or {}).get("secret", "")
+            except vaultclient.VaultError as exc:
+                cfg[key]["secret"] = ""
+                cfg[key]["vault_error"] = str(exc)
+    return cfg
+
+
 def public_config() -> dict:
     """Config for the browser — every layer's secret is redacted."""
     cfg = load_config()
@@ -68,14 +99,21 @@ def public_config() -> dict:
     return cfg
 
 
+def _write_yaml(cfg: dict) -> None:
+    CONFIG_PATH.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    os.chmod(CONFIG_PATH, 0o600)
+
+
 def save_layer(key: str, new: dict) -> dict:
     """Persist one layer's settings, keeping the stored secret when the browser
-    sends the redaction sentinel (or nothing)."""
+    sends the redaction sentinel (or nothing). If Vault is enabled and a *new*
+    secret value is supplied, it's written to Vault instead of the file — a
+    Vault write failure raises (never silently falls back to plaintext)."""
     if key not in LAYER_KEYS:
         raise ValueError("unknown integration")
-    cfg = load_config()
-    cur = cfg.get(key, {})
-    out = dict(cur)
+    raw = _read_raw()               # NOT load_config() — must never re-persist a Vault-resolved secret
+    cur = raw.get(key, {})
+    out = {f: cur.get(f) for f in _FIELDS}
     for f in ("host", "user", "notes"):
         if f in new:
             out[f] = str(new[f] or "")
@@ -85,14 +123,45 @@ def save_layer(key: str, new: dict) -> dict:
         out["verify_tls"] = bool(new["verify_tls"])
     sec = new.get("secret")
     if sec in (None, "", _REDACTED):
-        out["secret"] = cur.get("secret", "")
+        pass  # keep whatever's already stored (file or Vault) unchanged
+    elif vaultclient.enabled():
+        vaultclient.write_secret(_vault_path(key), {"secret": str(sec)})
+        out["secret"] = ""
+        out["secret_in_vault"] = True
     else:
         out["secret"] = str(sec)
-    cfg[key] = out
-    CONFIG_PATH.write_text(yaml.safe_dump(cfg, sort_keys=False))
-    os.chmod(CONFIG_PATH, 0o600)
-    pub = dict(out); pub["secret"] = _REDACTED if out.get("secret") else ""
+        out["secret_in_vault"] = False
+    raw[key] = out
+    _write_yaml(raw)
+    pub = dict(out)
+    pub["secret"] = _REDACTED if (out.get("secret") or out.get("secret_in_vault")) else ""
     return pub
+
+
+def migrate_to_vault() -> dict:
+    """Move every layer's locally-stored plaintext secret into Vault. Requires
+    Vault to be configured; leaves already-migrated / empty-secret layers alone."""
+    if not vaultclient.enabled():
+        return {"ok": False, "error": "Vault is not configured (VAULT_ADDR / VAULT_TOKEN unset)."}
+    raw = _read_raw()                # NOT load_config() — same reason as save_layer above
+    migrated, skipped, errors = [], [], {}
+    for key in LAYER_KEYS:
+        row = raw[key]
+        if row.get("secret_in_vault"):
+            skipped.append(key)
+            continue
+        if not row.get("secret"):
+            skipped.append(key)
+            continue
+        try:
+            vaultclient.write_secret(_vault_path(key), {"secret": row["secret"]})
+            row["secret"] = ""
+            row["secret_in_vault"] = True
+            migrated.append(key)
+        except vaultclient.VaultError as exc:
+            errors[key] = str(exc)
+    _write_yaml(raw)
+    return {"ok": True, "migrated": migrated, "skipped": skipped, "errors": errors}
 
 
 # ---------------------------------------------------------------------------

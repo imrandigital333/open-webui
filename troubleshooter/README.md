@@ -182,6 +182,86 @@ Each source's `agent_hints` are free text handed to the agent — use them to
 encode tribal knowledge ("host names match inventory", "check change windows
 first", "device logs under /var/log/network/<device>/").
 
+## Secrets vault (HashiCorp Vault)
+
+By default every credential this platform holds (the SummitAI API keys, the
+AD bind password, each integration's secret in Settings → Integrations) lives
+in its own chmod-600, gitignored YAML file. That's fine for a single admin on
+a locked-down box; for a more enterprise posture, point the app at a
+self-hosted **HashiCorp Vault** instead and those files hold only a
+`secret_in_vault: true` marker — the actual secret lives in Vault's KV v2
+engine. This is opt-in and fails safe: until Vault is configured (below),
+nothing changes.
+
+**1. Install & start Vault** (same host as the app, OSS, file storage — no
+separate cluster needed for one node):
+
+```bash
+curl -sSLo /tmp/vault.zip https://releases.hashicorp.com/vault/1.17.6/vault_1.17.6_linux_amd64.zip
+sudo mkdir -p /opt/ai-troubleshooter/vault/data
+sudo unzip /tmp/vault.zip -d /opt/ai-troubleshooter/vault
+sudo useradd --system --home /opt/ai-troubleshooter/vault --shell /usr/sbin/nologin vault
+sudo chown -R vault:vault /opt/ai-troubleshooter/vault
+sudo cp systemd/vault.hcl /opt/ai-troubleshooter/vault/vault.hcl
+sudo cp systemd/vault.service /etc/systemd/system/vault.service
+sudo systemctl daemon-reload && sudo systemctl enable --now vault.service
+```
+
+**2. One-time init, then unseal.** Vault starts **sealed** after every
+(re)start; OSS Vault has no built-in auto-unseal (that needs a cloud KMS or
+Vault Enterprise), so plan for an operator to run the unseal step below after
+every restart/reboot — this is the real operational cost of self-hosting
+Vault without a cloud KMS.
+
+```bash
+export VAULT_ADDR=http://127.0.0.1:8200
+vault operator init -key-shares=5 -key-threshold=3   # ONE TIME — save the 5
+                                                       # unseal keys + the
+                                                       # initial root token
+                                                       # somewhere safe (e.g.
+                                                       # split among admins);
+                                                       # they are shown ONCE.
+vault operator unseal   # run 3 times with 3 different unseal keys (repeat after every restart)
+```
+
+**3. Create a least-privilege token for the app** — never give it the root
+token. This policy only allows reading/writing this platform's own secrets:
+
+```bash
+export VAULT_TOKEN=<the initial root token from step 2, used just this once>
+vault policy write troubleshooter-app - <<'EOF'
+path "secret/data/troubleshooter/*"     { capabilities = ["create","read","update"] }
+path "secret/metadata/troubleshooter/*" { capabilities = ["read","delete"] }
+EOF
+vault token create -policy=troubleshooter-app -period=720h   # renewable app token
+# → copy the resulting token into /etc/ai-troubleshooter/vault.env (see below)
+```
+Store the root token and unseal keys somewhere Vault-appropriate (a password
+manager, not this repo) and don't reuse them day to day — the app only ever
+needs the narrowly-scoped `troubleshooter-app` token above.
+
+**4. Point the app at Vault:**
+
+```bash
+sudo mkdir -p /etc/ai-troubleshooter
+printf 'VAULT_ADDR=http://127.0.0.1:8200\nVAULT_TOKEN=<token from step 3>\n' \
+  | sudo tee /etc/ai-troubleshooter/vault.env
+sudo chown aitrouble:aitrouble /etc/ai-troubleshooter/vault.env
+sudo chmod 600 /etc/ai-troubleshooter/vault.env
+sudo systemctl restart ai-troubleshooter
+```
+
+**5. Migrate existing secrets.** Open Settings → Secrets vault as an admin —
+it shows Vault's connection status and, for every credential still in a local
+file, a **Migrate local secrets to Vault** button. From then on, saving a new
+value for any of those credentials writes it to Vault instead of the file.
+
+Other `VAULT_*` environment variables (all optional): `VAULT_NAMESPACE`
+(Vault Enterprise only), `VAULT_KV_MOUNT` (default `secret`),
+`VAULT_PATH_PREFIX` (default `troubleshooter`), `VAULT_VERIFY_TLS=0` to skip
+TLS verification against a self-signed Vault (only if Vault is on `https://`),
+`VAULT_TIMEOUT` (seconds, default `5`).
+
 ## How a session works
 
 1. `POST /api/sessions` creates a working directory

@@ -1265,6 +1265,22 @@
   .lr-lvl.ERROR, .lr-lvl.CRITICAL { color: var(--err); background: var(--err-bg); }
   .log-row.lvl-ERROR, .log-row.lvl-CRITICAL { background: var(--err-bg); }
   @media (max-width: 760px) { .log-row { grid-template-columns: 1fr; gap: 2px; } .log-cfg-grid { grid-template-columns: 1fr; } }
+  /* secrets vault */
+  .vault-conn { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    background: var(--panel); box-shadow: 0 1px 3px var(--shadow); display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 18px; }
+  .vault-conn .vc-item b { display: block; font-size: 11px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .03em; margin-bottom: 3px; }
+  .vault-conn .vc-item span { font-size: 13.5px; }
+  .vault-holder { display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel); margin-bottom: 8px; }
+  .vault-holder .vh-label { flex: 1; font-weight: 600; }
+  .vault-badge { border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600;
+    white-space: nowrap; }
+  .vault-badge.in-vault { color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-bd); }
+  .vault-badge.local { color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-bd); }
+  .vault-badge.none { color: var(--muted); background: var(--chip); border: 1px solid var(--border); }
+  .vault-badge.err { color: var(--err); background: var(--err-bg); border: 1px solid var(--err-bd); }
 </style>
 </head>
 <body>
@@ -1580,6 +1596,8 @@
         <span class="sn-ic">🔐</span><span>Users &amp; Access<span class="sn-sub">accounts, roles, AD</span></span></button>
       <button class="set-navb" data-cat="logs" data-admin-only onclick="setCategory('logs')">
         <span class="sn-ic">📋</span><span>Logs<span class="sn-sub">activity, rotation, filters</span></span></button>
+      <button class="set-navb" data-cat="vault" data-admin-only onclick="setCategory('vault')">
+        <span class="sn-ic">🔑</span><span>Secrets vault<span class="sn-sub">HashiCorp Vault status</span></span></button>
     </nav>
     <div class="set-body">
       <section class="set-cat" data-cat="servers">
@@ -1780,6 +1798,26 @@
           </div>
           <div class="log-count hint" id="logCount"></div>
           <div class="log-table" id="logTable"><div class="empty">Loading…</div></div>
+        </div>
+      </section>
+      <section class="set-cat" data-cat="vault" data-admin-only hidden>
+        <div class="panel">
+          <h2>Secrets vault <span class="tag" id="vaultConnTag" style="float:right"></span></h2>
+          <div class="hint" style="margin-bottom:10px">Every credential this platform holds — the SummitAI API keys,
+            the AD bind password, and each integration's secret — can live in a self-hosted
+            <b>HashiCorp Vault</b> instead of a local file. Vault's own address &amp; token are the app's
+            <i>own</i> credentials to Vault, so they're set only via environment variables (systemd), never
+            through this page — typing them into a browser would defeat the point.</div>
+          <div id="vaultConnCard"><div class="empty">Loading…</div></div>
+          <div style="margin-top:14px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <h3 style="margin:0">Secret holders</h3>
+              <button class="ghost" style="width:auto;margin-left:auto" onclick="loadVault()">↻ refresh</button>
+              <button class="primary" style="width:auto" onclick="vaultMigrate()">🔒 Migrate local secrets to Vault</button>
+            </div>
+            <div id="vaultHolders"><div class="empty">Loading…</div></div>
+            <div id="vaultMigrateResult" style="display:none;margin-top:10px"></div>
+          </div>
         </div>
       </section>
       <section class="set-cat" data-cat="itsm" hidden>
@@ -3360,6 +3398,7 @@ function setCategory(cat) {
   if (cat === 'access') loadAccess();
   if (cat === 'integrations') loadIntegrations();
   if (cat === 'logs') loadLogsView(); else logAutoStop();
+  if (cat === 'vault') loadVault();
 }
 
 /* ---------- settings: infrastructure integrations ---------- */
@@ -3511,6 +3550,80 @@ async function logClear() {
   await fetch('/api/admin/logs', { method: 'DELETE' }); loadLogsView();
 }
 function logDownload() { window.open('/api/admin/logs/download', '_blank'); }
+
+/* ---------- settings: secrets vault ---------- */
+function vaultBadge(inVault, hasSecret, err) {
+  if (err) return `<span class="vault-badge err" title="${escapeHtml(err)}">⚠ vault error</span>`;
+  if (inVault) return `<span class="vault-badge in-vault">🔒 in Vault</span>`;
+  if (hasSecret) return `<span class="vault-badge local">📄 local file</span>`;
+  return `<span class="vault-badge none">— not set</span>`;
+}
+async function loadVault() {
+  const connTag = $('vaultConnTag'), connCard = $('vaultConnCard'), holders = $('vaultHolders');
+  try {
+    const d = await (await fetch('/api/admin/vault/status')).json();
+    const v = d.vault || {};
+    if (!v.configured) {
+      connTag.textContent = 'not configured';
+      connCard.innerHTML = `<div class="empty">VAULT_ADDR / VAULT_TOKEN aren't set for this process — every secret
+        below is stored locally (chmod-600 files). Configure Vault via environment variables and restart the app
+        to enable migration. See systemd/vault.service and the README.</div>`;
+    } else if (!v.reachable) {
+      connTag.textContent = '⚠ unreachable';
+      connCard.innerHTML = `<div class="vault-conn"><div class="vc-item"><b>Address</b><span>${escapeHtml(v.addr || '')}</span></div>
+        <div class="vc-item"><b>Status</b><span style="color:var(--err)">unreachable — ${escapeHtml(v.error || '')}</span></div></div>`;
+    } else {
+      connTag.textContent = v.sealed ? '⚠ sealed' : '✓ connected';
+      const ttl = v.token_ttl_seconds;
+      const ttlTxt = ttl === undefined ? '—' : (ttl === 0 ? 'never expires' : `${Math.round(ttl / 3600)} h`);
+      connCard.innerHTML = `<div class="vault-conn">
+        <div class="vc-item"><b>Address</b><span>${escapeHtml(v.addr || '')}</span></div>
+        <div class="vc-item"><b>KV mount</b><span>${escapeHtml(v.mount || '')}</span></div>
+        <div class="vc-item"><b>Version</b><span>${escapeHtml(v.version || '?')}</span></div>
+        <div class="vc-item"><b>Sealed</b><span style="color:${v.sealed ? 'var(--err)' : 'var(--ok)'}">${v.sealed ? 'yes — unseal to use' : 'no'}</span></div>
+        <div class="vc-item"><b>Standby</b><span>${v.standby ? 'yes' : 'no'}</span></div>
+        <div class="vc-item"><b>App token TTL</b><span>${escapeHtml(ttlTxt)}</span></div>
+      </div>`;
+    }
+    const h = d.holders || {};
+    const rows = [];
+    if (h.itsm) rows.push([h.itsm.label, h.itsm.in_vault, h.itsm.has_secret, h.itsm.error]);
+    if (h.ad) rows.push([h.ad.label, h.ad.in_vault, h.ad.has_secret, h.ad.error]);
+    (h.integrations || []).forEach(r => rows.push([r.label, r.in_vault, r.has_secret, r.error]));
+    holders.innerHTML = rows.map(([label, inVault, hasSecret, err]) => `
+      <div class="vault-holder"><span class="vh-label">${escapeHtml(label)}</span>${vaultBadge(inVault, hasSecret, err)}</div>
+    `).join('') || '<div class="empty">No secret-holding config yet.</div>';
+  } catch (e) {
+    connCard.innerHTML = '<div class="empty">✕ ' + escapeHtml(e.message) + '</div>';
+  }
+}
+async function vaultMigrate() {
+  const box = $('vaultMigrateResult');
+  box.style.display = ''; box.className = 'bulk-result';
+  box.innerHTML = '<span class="spinner"></span> migrating local secrets into Vault…';
+  try {
+    const r = await fetch('/api/admin/vault/migrate', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(d.detail || 'failed'); return; }
+    const lines = [];
+    const fmt = (label, res) => {
+      if (!res) return;
+      if (res.migrated === true) lines.push(`✓ ${label}: migrated`);
+      else if (res.ok === false) lines.push(`✕ ${label}: ${escapeHtml(res.error || 'failed')}`);
+      else lines.push(`— ${label}: ${escapeHtml(res.reason || 'nothing to migrate')}`);
+    };
+    fmt('SummitAI', d.itsm);
+    fmt('Active Directory', d.ad);
+    if (d.integrations) {
+      (d.integrations.migrated || []).forEach(k => lines.push(`✓ ${escapeHtml(k)}: migrated`));
+      (d.integrations.skipped || []).forEach(k => lines.push(`— ${escapeHtml(k)}: nothing to migrate`));
+      Object.entries(d.integrations.errors || {}).forEach(([k, e]) => lines.push(`✕ ${escapeHtml(k)}: ${escapeHtml(e)}`));
+    }
+    box.className = 'bulk-result ok';
+    box.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
+    loadVault();
+  } catch (e) { box.className = 'bulk-result err'; box.innerHTML = '✕ ' + escapeHtml(e.message); }
+}
 
 /* ---------- settings: Users & Access (admin) ---------- */
 let ACCESS_ROLES = [], ACCESS_PAGES = [];

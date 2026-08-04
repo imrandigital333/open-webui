@@ -35,16 +35,22 @@ import urllib.request
 
 import yaml
 
+from . import vaultclient
 from .inventory import BASE_DIR
 
 # UI-managed settings live here (chmod 600, gitignored); environment variables
-# act as fallback so env-based deployments keep working.
+# act as fallback so env-based deployments keep working. Once Vault is enabled
+# and this config is migrated, "token"/"change_token" move to Vault instead —
+# see save_config / migrate_to_vault — and only secret_in_vault stays here.
 CONFIG_PATH = BASE_DIR / "itsm.yaml"
+_SECRET_KEYS = ("token", "change_token")
+_VAULT_PATH = "itsm"
 
 DEFAULTS = {
     "api_style": "summit_wcf",          # summit_wcf | rest
     "base_url": "",
     "token": "",                        # API key (wcf) or bearer token (rest)
+    "secret_in_vault": False,           # token/change_token stored in Vault instead of this file
     "verify_tls": True,
     # internal endpoints must NOT be routed via the corporate proxy: the
     # system HTTP(S)_PROXY (set for Claude's internet access) would send
@@ -146,7 +152,9 @@ _ENV_MAP = {
 }
 
 
-def load_config() -> dict:
+def _read_raw() -> dict:
+    """Env + file, with NO Vault resolution — the only safe base for
+    re-writing the file (see integrations._read_raw for why)."""
     cfg = dict(DEFAULTS)
     for key, var in _ENV_MAP.items():
         val = os.environ.get(var)
@@ -180,10 +188,60 @@ def load_config() -> dict:
     return cfg
 
 
+def load_config() -> dict:
+    cfg = _read_raw()
+    if vaultclient.enabled() and cfg.get("secret_in_vault"):
+        try:
+            data = vaultclient.read_secret(_VAULT_PATH) or {}
+            for key in _SECRET_KEYS:
+                cfg[key] = data.get(key, "")
+        except vaultclient.VaultError as exc:
+            for key in _SECRET_KEYS:
+                cfg[key] = ""
+            cfg["vault_error"] = str(exc)
+    return cfg
+
+
 def save_config(cfg: dict) -> None:
-    clean = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    """Persist config. token/change_token go to Vault (instead of the file)
+    once Vault is enabled — a Vault write failure raises rather than silently
+    falling back to plaintext."""
+    clean = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS if k not in _SECRET_KEYS}
+    if vaultclient.enabled():
+        vault_data = {key: str(cfg.get(key) or "") for key in _SECRET_KEYS}
+        if any(vault_data.values()):
+            vaultclient.write_secret(_VAULT_PATH, vault_data)
+        clean["secret_in_vault"] = True
+        for key in _SECRET_KEYS:
+            clean[key] = ""
+    else:
+        clean["secret_in_vault"] = False
+        for key in _SECRET_KEYS:
+            clean[key] = cfg.get(key, DEFAULTS[key])
     CONFIG_PATH.write_text(yaml.safe_dump(clean, sort_keys=False))
-    os.chmod(CONFIG_PATH, 0o600)   # the API key lives in this file
+    os.chmod(CONFIG_PATH, 0o600)   # the API key lives in this file (unless Vault-backed)
+
+
+def migrate_to_vault() -> dict:
+    """Move the locally-stored token/change_token into Vault."""
+    if not vaultclient.enabled():
+        return {"ok": False, "error": "Vault is not configured (VAULT_ADDR / VAULT_TOKEN unset)."}
+    raw = _read_raw()
+    if raw.get("secret_in_vault"):
+        return {"ok": True, "migrated": False, "reason": "already in Vault"}
+    vault_data = {key: raw.get(key, "") for key in _SECRET_KEYS}
+    if not any(vault_data.values()):
+        return {"ok": True, "migrated": False, "reason": "no API key set"}
+    try:
+        vaultclient.write_secret(_VAULT_PATH, vault_data)
+    except vaultclient.VaultError as exc:
+        return {"ok": False, "error": str(exc)}
+    for key in _SECRET_KEYS:
+        raw[key] = ""
+    raw["secret_in_vault"] = True
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False))
+    os.chmod(CONFIG_PATH, 0o600)
+    return {"ok": True, "migrated": True}
 
 
 def configured(cfg: dict | None = None) -> bool:
@@ -1155,15 +1213,13 @@ def status() -> dict:
             "source": "SummitAI" + ("" if ok else " (demo data)")}
 
 
-_SECRET_KEYS = ("token", "change_token")
-
-
 def public_config() -> dict:
     "Config for the settings UI; the API keys never leave the server."
     cfg = load_config()
     return {**{k: cfg[k] for k in DEFAULTS if k not in _SECRET_KEYS},
             "token_set": bool(cfg["token"]),
             "change_token_set": bool(cfg["change_token"]),
+            "vault_error": cfg.get("vault_error", ""),
             "configured": configured(cfg)}
 
 

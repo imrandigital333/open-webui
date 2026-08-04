@@ -17,7 +17,8 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from pydantic import BaseModel, Field
 
 from . import (auth, changeplan, cmdreview, db, discovery, healthprobe,
-               integrations, itsm, knowledge, orchestrator, platform_log, winexec)
+               integrations, itsm, knowledge, orchestrator, platform_log,
+               vaultclient, winexec)
 from .datasources import load_datasources, missing_env_vars, to_public_dict
 from .inventory import (
     load_inventory,
@@ -27,7 +28,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.13.0"
+APP_VERSION = "3.14.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -653,6 +654,54 @@ async def admin_logs_download():
     if not p.exists():
         raise HTTPException(status_code=404, detail="No log file yet.")
     return FileResponse(str(p), filename=p.name, media_type="text/plain")
+
+
+# ---------- secrets vault (HashiCorp Vault) ----------
+# Read-only from the browser's point of view: VAULT_ADDR/VAULT_TOKEN are the
+# app's OWN credentials to Vault and are configured only via environment
+# variables (systemd EnvironmentFile) — never editable here, since typing them
+# into a web form would defeat the point of moving secrets out of reach of the
+# browser. This page shows connectivity + which secrets are Vault-backed vs.
+# still local, and offers a one-click migration of whatever's still local.
+
+@app.get("/api/admin/vault/status")
+async def admin_vault_status():
+    health = await asyncio.to_thread(vaultclient.health)
+    itsm_cfg = await asyncio.to_thread(itsm.public_config)
+    ad_cfg = await asyncio.to_thread(auth.public_ad_config)
+    integ_cfg = await asyncio.to_thread(integrations.public_config)
+    return {
+        "vault": health,
+        "holders": {
+            "itsm": {"label": "SummitAI (ITSM)", "in_vault": bool(itsm_cfg.get("secret_in_vault")),
+                     "has_secret": bool(itsm_cfg.get("token_set") or itsm_cfg.get("change_token_set")),
+                     "error": itsm_cfg.get("vault_error", "")},
+            "ad": {"label": "Active Directory bind password", "in_vault": bool(ad_cfg.get("secret_in_vault")),
+                  "has_secret": ad_cfg.get("bind_password") == "__stored__",
+                  "error": ad_cfg.get("vault_error", "")},
+            "integrations": [
+                {"key": key, "label": next(l["label"] for l in integrations.LAYERS if l["key"] == key),
+                 "in_vault": bool(row.get("secret_in_vault")), "has_secret": row.get("secret") == "__stored__",
+                 "error": row.get("vault_error", "")}
+                for key, row in integ_cfg.items()
+            ],
+        },
+    }
+
+
+@app.post("/api/admin/vault/migrate")
+async def admin_vault_migrate(request: Request):
+    if not vaultclient.enabled():
+        raise HTTPException(status_code=400,
+                            detail="Vault is not configured — set VAULT_ADDR and VAULT_TOKEN "
+                                   "(see systemd/vault.service) and restart the app first.")
+    results = {
+        "itsm": await asyncio.to_thread(itsm.migrate_to_vault),
+        "ad": await asyncio.to_thread(auth.migrate_ad_to_vault),
+        "integrations": await asyncio.to_thread(integrations.migrate_to_vault),
+    }
+    await asyncio.to_thread(db.audit, _actor(request), "secrets_migrated_to_vault", results)
+    return results
 
 
 @app.get("/api/admin/ad-config")

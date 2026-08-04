@@ -1,7 +1,10 @@
 [Unit]
 Description=AI Troubleshooter (Claude Code agentic troubleshooting UI)
-After=network-online.target
+After=network-online.target vault.service
 Wants=network-online.target
+# Ordering only, not a hard dependency: the app falls back to its local
+# chmod-600 config files when Vault is down/sealed/unconfigured, so it should
+# still start (in that fallback mode) even if vault.service isn't up yet.
 
 [Service]
 Type=simple
@@ -14,6 +17,17 @@ Environment=TROUBLESHOOTER_INVENTORY=/opt/ai-troubleshooter/inventory.yaml
 Environment=TROUBLESHOOTER_DATA=/opt/ai-troubleshooter/data/sessions
 Environment=TROUBLESHOOTER_HOST=0.0.0.0
 Environment=TROUBLESHOOTER_PORT=8090
+# Secrets vault (optional) — the app's OWN token to Vault, a narrowly-scoped
+# credential (see README "Secrets vault (HashiCorp Vault)"), never the root
+# token. Put VAULT_ADDR / VAULT_TOKEN in this file instead of Environment=
+# lines here, since this unit file is version-controlled and that one isn't:
+#   printf 'VAULT_ADDR=http://127.0.0.1:8200\nVAULT_TOKEN=hvs.xxxxx\n' \
+#     > /etc/ai-troubleshooter/vault.env
+#   chown aitrouble:aitrouble /etc/ai-troubleshooter/vault.env
+#   chmod 600 /etc/ai-troubleshooter/vault.env
+# The leading '-' means systemd won't fail to start if the file is absent —
+# secrets then simply stay in the local chmod-600 YAML files as before.
+EnvironmentFile=-/etc/ai-troubleshooter/vault.env
 # Optional: pin a model instead of the Claude Code default
 # Environment=TROUBLESHOOTER_MODEL=claude-opus-4-8
 # HTTPS/TLS — set both to serve HTTPS directly (the cert/key must be readable

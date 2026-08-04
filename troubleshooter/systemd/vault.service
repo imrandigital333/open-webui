@@ -1,0 +1,27 @@
+[Unit]
+Description=HashiCorp Vault (secrets store for AI Troubleshooter)
+Documentation=https://developer.hashicorp.com/vault/docs
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/opt/ai-troubleshooter/vault/vault.hcl
+
+[Service]
+Type=notify
+# Dedicated account — do NOT reuse the aitrouble app account, so a compromise
+# of one service doesn't hand over the other's files.
+User=vault
+Group=vault
+ExecStart=/opt/ai-troubleshooter/vault/vault server -config=/opt/ai-troubleshooter/vault/vault.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitMEMLOCK=infinity
+# Lets Vault mlock secret memory (see disable_mlock in vault.hcl) without
+# running as root.
+AmbientCapabilities=CAP_IPC_LOCK
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
