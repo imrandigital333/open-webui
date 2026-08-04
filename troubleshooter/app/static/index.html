@@ -1191,6 +1191,17 @@
   .auth-err { color: var(--err); font-size: 12.5px; min-height: 16px; }
   .auth-who { color: var(--muted); font-size: 12px; margin-left: 6px; }
   .theme-sel { width: auto; padding: 6px 8px; font-size: 12px; margin-left: 6px; }
+  /* confirmation modal (Yes / No) */
+  .ui-modal { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center;
+    justify-content: center; background: rgba(0,0,0,.45); backdrop-filter: blur(2px); }
+  .ui-modal-card { width: 400px; max-width: 92vw; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 24px 26px; box-shadow: 0 24px 70px var(--shadow); text-align: center; }
+  .ui-modal-ic { font-size: 30px; line-height: 1; }
+  .ui-modal-card h3 { margin: 8px 0 6px; font-size: 16px; }
+  .ui-modal-msg { color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 18px; }
+  .ui-modal-btns { display: flex; gap: 10px; justify-content: center; }
+  .primary.danger { background: var(--err); border-color: var(--err); color: #fff; }
+  .primary.danger:hover { filter: brightness(1.08); }
   /* ---- users & access tables ---- */
   .acc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .acc-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
@@ -1213,6 +1224,17 @@
     var s = document.getElementById('themeSel'); if (s) s.value = t;
   }
 </script>
+<div id="uiConfirm" class="ui-modal" style="display:none">
+  <div class="ui-modal-card">
+    <div class="ui-modal-ic">⚠️</div>
+    <h3 id="ucTitle">Are you sure?</h3>
+    <div class="ui-modal-msg" id="ucMsg"></div>
+    <div class="ui-modal-btns">
+      <button class="ghost" id="ucNo" style="width:auto;padding:9px 20px">No</button>
+      <button class="primary danger" id="ucYes" style="width:auto;padding:9px 20px">Yes, delete</button>
+    </div>
+  </div>
+</div>
 <div id="authGate" class="auth-gate" style="display:none">
   <div class="auth-card">
     <div class="auth-logo">◎</div>
@@ -3224,7 +3246,7 @@ async function roleAdd() {
   if (r.ok) loadRolesAdmin(); else alert(d.detail || 'Could not create role.');
 }
 async function roleDelete(name) {
-  if (!confirm(`Delete role “${name}”?`)) return;
+  if (!(await uiConfirm(`Role “${name}” will be removed. Users must not be assigned to it.`, { title: `Delete role “${name}”?` }))) return;
   const r = await fetch('/api/admin/roles/' + encodeURIComponent(name), { method: 'DELETE' });
   const d = await r.json();
   if (r.ok) loadRolesAdmin(); else alert(d.detail || 'Could not delete role.');
@@ -3294,7 +3316,7 @@ async function userReset(id, name) {
   if (r.ok) { loadUsers(); alert('Password reset.'); } else alert(d.detail || 'Failed.');
 }
 async function userDelete(id, name) {
-  if (!confirm(`Delete user “${name}”?`)) return;
+  if (!(await uiConfirm(`The account “${name}” and its active sessions will be removed.`, { title: `Delete user “${name}”?` }))) return;
   const r = await fetch('/api/admin/users/' + id, { method: 'DELETE' });
   const d = await r.json();
   if (r.ok) loadUsers(); else alert(d.detail || 'Could not delete user.');
@@ -3538,7 +3560,8 @@ async function kbShowDesignQuery(query, server, regenerate, auto, broad) {
 // delete a stored design diagram (shared cache — gone for everyone; rebuildable)
 async function kbDeleteDesign(key, label) {
   if (!key) return;
-  if (!confirm(`Delete the stored design${label ? ` for “${label}”` : ''}? It's shared, so it will be removed for everyone. You can regenerate it later.`)) return;
+  if (!(await uiConfirm(`This design is shared, so it will be removed for everyone. You can regenerate it later.`,
+    { title: `Delete design${label ? ` “${label}”` : ''}?` }))) return;
   try {
     const r = await fetch('/api/kb/design-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
     const d = await r.json();
@@ -3668,7 +3691,7 @@ async function kbViewDoc(id) {
 }
 
 async function kbDeleteDoc(id) {
-  if (!confirm('Delete this knowledge entry?')) return;
+  if (!(await uiConfirm('This knowledge entry and its indexed content will be removed.', { title: 'Delete knowledge entry?' }))) return;
   await fetch(`/api/kb/doc/${id}`, { method: 'DELETE' });
   loadKnowledge();
 }
@@ -6003,7 +6026,7 @@ $('saveServerBtn').onclick = async () => {
 };
 
 $('deleteServerBtn').onclick = async () => {
-  if (!editingName || !confirm(`Remove '${editingName}' from the inventory?`)) return;
+  if (!editingName || !(await uiConfirm(`Server '${editingName}' will be removed from the inventory.`, { title: `Remove '${editingName}'?`, yes: 'Yes, remove' }))) return;
   const res = await fetch(`/api/admin/inventory/${encodeURIComponent(editingName)}`, { method: 'DELETE' });
   if (res.ok) {
     $('invFormPanel').style.display = 'none';
@@ -6091,7 +6114,7 @@ async function viewScript(file) {
   $('scriptView').textContent = text;
 }
 async function deleteScript(file) {
-  if (!confirm(`Delete ${file} from the library?`)) return;
+  if (!(await uiConfirm(`Script “${file}” will be removed from the library.`, { title: 'Delete script?' }))) return;
   await fetch(`/api/scripts/${encodeURIComponent(file)}`, { method: 'DELETE' });
   $('scriptView').style.display = 'none';
   loadScripts();
@@ -6805,6 +6828,31 @@ async function onLiveEnd(ev, session, id) {
 
 $('startBtn').onclick = startSession;
 $('panelToggle').onclick = () => $('viewWork').classList.toggle('hide-left');
+
+/* ================= confirm dialog (Yes / No) ================= */
+function uiConfirm(message, opts) {
+  opts = opts || {};
+  return new Promise(resolve => {
+    $('ucTitle').textContent = opts.title || 'Are you sure?';
+    $('ucMsg').textContent = message || '';
+    $('ucYes').textContent = opts.yes || 'Yes, delete';
+    $('ucNo').textContent = opts.no || 'No';
+    $('ucYes').classList.toggle('danger', opts.danger !== false);
+    const m = $('uiConfirm'); m.style.display = 'flex';
+    function done(v) {
+      m.style.display = 'none';
+      $('ucYes').onclick = null; $('ucNo').onclick = null; m.onclick = null;
+      document.removeEventListener('keydown', onKey);
+      resolve(v);
+    }
+    function onKey(e) { if (e.key === 'Escape') done(false); else if (e.key === 'Enter') done(true); }
+    $('ucYes').onclick = () => done(true);
+    $('ucNo').onclick = () => done(false);
+    m.onclick = e => { if (e.target === m) done(false); };   // click backdrop = No
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => $('ucNo').focus(), 40);
+  });
+}
 
 /* ================= authentication & access ================= */
 let AUTH = null;   // { user, is_admin, pages:[...], all_pages:[...] }
