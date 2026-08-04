@@ -678,6 +678,11 @@
   .arch-regen { font: 700 10.5px var(--mono); padding: 4px 9px; border-radius: 999px; cursor: pointer;
     color: var(--accent2); background: rgba(163,113,247,.14); border: 1px solid rgba(163,113,247,.4); }
   .arch-regen:hover { background: rgba(163,113,247,.24); }
+  .arch-regen.del { color: var(--err); background: var(--err-bg); border-color: var(--err-bd); }
+  .arch-regen.del:hover { background: color-mix(in srgb, var(--err) 24%, transparent); }
+  .kb-design-item .dg-del { flex: 0 0 auto; color: var(--muted); opacity: 0; font-size: 12px; cursor: pointer; padding: 0 2px; }
+  .kb-design-item:hover .dg-del { opacity: 1; }
+  .kb-design-item .dg-del:hover { color: var(--err); }
   .kb-design-item { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px;
     cursor: pointer; font-size: 12.5px; }
   .kb-design-item:hover { background: var(--panel2); }
@@ -3374,6 +3379,7 @@ async function kbLoadDesignDocs() {
       <span class="dg-t">${escapeHtml(d.title)}</span>
       ${d.server ? `<span class="dg-srv">${escapeHtml(d.server)}</span>` : ''}
       ${d.has_diagram ? '<span class="dg-badge" title="Diagram already generated">stored</span>' : ''}
+      ${d.has_diagram ? `<span class="dg-del" title="Delete stored diagram" onclick="event.stopPropagation();kbDeleteDesign('doc:'+this.parentNode.dataset.id, this.parentNode.dataset.title)">✕</span>` : ''}
     </div>`).join('');
   } catch (e) { /* offline */ }
 }
@@ -3527,6 +3533,24 @@ async function kbShowDesignQuery(query, server, regenerate, auto, broad) {
       if (regenerate || !g.cached) { const ov = await (await fetch('/api/kb/overview')).json(); kbRenderUsage(ov); }
     }
   } catch (e) { if (!auto) { msg.style.color = 'var(--err)'; msg.textContent = '✕ ' + e.message; } }
+}
+
+// delete a stored design diagram (shared cache — gone for everyone; rebuildable)
+async function kbDeleteDesign(key, label) {
+  if (!key) return;
+  if (!confirm(`Delete the stored design${label ? ` for “${label}”` : ''}? It's shared, so it will be removed for everyone. You can regenerate it later.`)) return;
+  try {
+    const r = await fetch('/api/kb/design-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+    const d = await r.json();
+    if (!r.ok || !d.ok) { alert((d && d.detail) || 'Could not delete the design.'); return; }
+    kbArchData = null; kbArchSelId = null;
+    $('kbArchDetail').style.display = 'none';
+    $('kbArchCanvas').innerHTML = KB_ARCH_PLACEHOLDER;
+    const z = $('kbArchZoomCtl'); if (z) z.style.display = 'none';
+    const m = $('kbArchMsg'); if (m) { m.style.color = 'var(--muted)'; m.textContent = 'Design deleted.'; }
+    $('kbArchNotes').textContent = '';
+    kbLoadDesignDocs();
+  } catch (e) { alert(e.message); }
 }
 
 // whole-organisation architecture: synthesise across everything in the KB
@@ -3835,8 +3859,10 @@ function kbArchHeader(g) {
     ? (when ? '📐 diagram generated ' + escapeHtml(when) : 'design flow diagram')
     : (when ? '📅 captured ' + escapeHtml(when) : (g.source === 'none' ? 'not captured yet' : 'service map'));
   let regen = '';
-  if (isDesign && (g.query !== undefined || g.doc_id))
+  if (isDesign && (g.query !== undefined || g.doc_id)) {
     regen = `<button class="arch-regen" title="Rebuild — you'll be asked how you want it (uses AI)" onclick="kbRegenAsk()">↻ Regenerate</button>`;
+    if (g.query_key) regen += `<button class="arch-regen del" title="Delete this stored diagram (shared — removed for everyone; can be regenerated later)" onclick="kbDeleteDesign(${JSON.stringify(g.query_key)}, ${JSON.stringify(g.server || '')})">🗑 Delete</button>`;
+  }
   return `<div class="arch-topbar">
     <div class="arch-tb-l">
       <span class="arch-tb-ic">${isDesign ? '📐' : '🗺️'}</span>

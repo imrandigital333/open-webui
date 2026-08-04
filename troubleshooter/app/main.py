@@ -26,7 +26,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.6.2"
+APP_VERSION = "3.7.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -993,6 +993,26 @@ async def kb_design_peek(q: str = "", server: str = "", doc_id: str = "",
     one (no AI tokens). {ok:true, exists:false} when nothing is stored yet."""
     return await knowledge.design_peek(q.strip(), server.strip(),
                                        broad=broad, doc_id=doc_id.strip())
+
+
+@app.get("/api/kb/design-list")
+async def kb_design_list():
+    """All stored design diagrams (shared cache) — for management/deletion."""
+    return {"designs": await asyncio.to_thread(db.design_cache_list)}
+
+
+class DesignDeleteRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/kb/design-delete")
+async def kb_design_delete(req: DesignDeleteRequest, request: Request):
+    """Delete a stored design diagram by its cache key (shared, so it's removed
+    for everyone). It can be regenerated later on demand."""
+    ok = await asyncio.to_thread(db.design_cache_delete, req.key.strip())
+    if ok:
+        await asyncio.to_thread(db.audit, _actor(request), "design_deleted", {"key": req.key})
+    return {"ok": ok}
 
 
 @app.get("/api/kb/design-query")

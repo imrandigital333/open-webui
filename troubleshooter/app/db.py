@@ -643,6 +643,20 @@ def design_cache_has(key: str) -> bool:
             select(design_cache_t.c.key).where(design_cache_t.c.key == key)).first() is not None
 
 
+def design_cache_delete(key: str) -> bool:
+    with engine().begin() as conn:
+        r = conn.execute(delete(design_cache_t).where(design_cache_t.c.key == key))
+        return (r.rowcount or 0) > 0
+
+
+def design_cache_list() -> list[dict]:
+    with engine().connect() as conn:
+        rows = list(conn.execute(
+            select(design_cache_t.c.key, design_cache_t.c.title, design_cache_t.c.updated_at)
+            .order_by(design_cache_t.c.updated_at.desc())))
+    return [{"key": r.key, "title": r.title, "updated_at": r.updated_at} for r in rows]
+
+
 # ---------- users / auth sessions / roles ----------
 
 def _user_row(r) -> dict:
