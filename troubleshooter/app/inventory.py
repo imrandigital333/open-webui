@@ -9,6 +9,10 @@ import yaml
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _server_vault_path(name: str) -> str:
+    return f"servers/{name}"
+
+
 @dataclass
 class Server:
     name: str
@@ -110,6 +114,8 @@ def save_inventory(servers: list[dict]) -> None:
 
 
 def load_inventory() -> dict[str, Server]:
+    from . import vaultclient   # local import: avoids a cycle at module load time
+
     path = inventory_path()
     if not path.exists():
         return {}
@@ -117,6 +123,13 @@ def load_inventory() -> dict[str, Server]:
         data = yaml.safe_load(f) or {}
     servers: dict[str, Server] = {}
     for entry in data.get("servers", []):
+        winrm_password = str(entry.get("winrm_password", "") or "")
+        if entry.get("secret_in_vault") and vaultclient.enabled():
+            try:
+                secret = vaultclient.read_secret(_server_vault_path(entry["name"]))
+                winrm_password = (secret or {}).get("winrm_password", "")
+            except vaultclient.VaultError:
+                winrm_password = ""   # fail closed — never fall back to a stale/blank password silently
         server = Server(
             name=entry["name"],
             host=entry["host"],
@@ -129,7 +142,7 @@ def load_inventory() -> dict[str, Server]:
             tags=list(entry.get("tags", [])),
             services=list(entry.get("services", [])),
             log_hints=list(entry.get("log_hints", [])),
-            winrm_password=str(entry.get("winrm_password", "") or ""),
+            winrm_password=winrm_password,
             winrm_transport=str(entry.get("winrm_transport", "ntlm") or "ntlm"),
             winrm_port=int(entry.get("winrm_port", 5985)),
             winrm_scheme=str(entry.get("winrm_scheme", "http") or "http"),

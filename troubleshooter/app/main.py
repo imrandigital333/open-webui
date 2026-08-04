@@ -28,7 +28,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.14.0"
+APP_VERSION = "3.15.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -664,12 +664,44 @@ async def admin_logs_download():
 # browser. This page shows connectivity + which secrets are Vault-backed vs.
 # still local, and offers a one-click migration of whatever's still local.
 
+def _migrate_inventory_to_vault() -> dict:
+    """Move every Windows server's locally-stored WinRM password into Vault."""
+    if not vaultclient.enabled():
+        return {"ok": False, "error": "Vault is not configured (VAULT_ADDR / VAULT_TOKEN unset)."}
+    servers = load_raw_inventory()
+    migrated, skipped, errors = [], [], {}
+    changed = False
+    for s in servers:
+        if str(s.get("platform", "linux")) != "windows":
+            continue
+        if s.get("secret_in_vault"):
+            skipped.append(s["name"])
+            continue
+        pw = s.get("winrm_password")
+        if not pw:
+            skipped.append(s["name"])
+            continue
+        try:
+            vaultclient.write_secret(_server_vault_path(s["name"]), {"winrm_password": pw})
+            s["winrm_password"] = ""
+            s["secret_in_vault"] = True
+            migrated.append(s["name"])
+            changed = True
+        except vaultclient.VaultError as exc:
+            errors[s["name"]] = str(exc)
+    if changed:
+        save_inventory(servers)
+    return {"ok": True, "migrated": migrated, "skipped": skipped, "errors": errors}
+
+
 @app.get("/api/admin/vault/status")
 async def admin_vault_status():
     health = await asyncio.to_thread(vaultclient.health)
     itsm_cfg = await asyncio.to_thread(itsm.public_config)
     ad_cfg = await asyncio.to_thread(auth.public_ad_config)
     integ_cfg = await asyncio.to_thread(integrations.public_config)
+    raw_servers = await asyncio.to_thread(load_raw_inventory)
+    win_servers = [s for s in _redact_inventory(raw_servers) if str(s.get("platform", "linux")) == "windows"]
     return {
         "vault": health,
         "holders": {
@@ -685,6 +717,12 @@ async def admin_vault_status():
                  "error": row.get("vault_error", "")}
                 for key, row in integ_cfg.items()
             ],
+            "servers": [
+                {"key": s["name"], "label": f"{s['name']} (WinRM)",
+                 "in_vault": bool(s.get("secret_in_vault")),
+                 "has_secret": s.get("winrm_password") == "__stored__", "error": ""}
+                for s in win_servers
+            ],
         },
     }
 
@@ -699,6 +737,7 @@ async def admin_vault_migrate(request: Request):
         "itsm": await asyncio.to_thread(itsm.migrate_to_vault),
         "ad": await asyncio.to_thread(auth.migrate_ad_to_vault),
         "integrations": await asyncio.to_thread(integrations.migrate_to_vault),
+        "inventory": await asyncio.to_thread(_migrate_inventory_to_vault),
     }
     await asyncio.to_thread(db.audit, _actor(request), "secrets_migrated_to_vault", results)
     return results
@@ -2048,10 +2087,14 @@ def _redact_inventory(servers: list[dict]) -> list[dict]:
     out = []
     for s in servers:
         s = dict(s)
-        if s.get("winrm_password"):
+        if s.get("winrm_password") or s.get("secret_in_vault"):
             s["winrm_password"] = _SECRET_KEPT
         out.append(s)
     return out
+
+
+def _server_vault_path(name: str) -> str:
+    return f"servers/{name}"
 
 
 @app.get("/api/admin/inventory")
@@ -2066,9 +2109,28 @@ async def upsert_server(name: str, entry: ServerEntry, request: Request):
     prior = next((s for s in servers if s.get("name") == name), None)
     yaml_dict = entry.to_yaml_dict()
     if entry.platform == "windows":
-        # preserve the stored password when the UI echoes the sentinel back
-        if entry.winrm_password and entry.winrm_password != _SECRET_KEPT:
-            yaml_dict["winrm_password"] = entry.winrm_password
+        new_pw = entry.winrm_password
+        if new_pw and new_pw != _SECRET_KEPT:
+            # a real new password was supplied — store it (Vault when enabled,
+            # a Vault write failure raises rather than silently falling back)
+            if vaultclient.enabled():
+                await asyncio.to_thread(vaultclient.write_secret,
+                                        _server_vault_path(entry.name), {"winrm_password": new_pw})
+                yaml_dict["secret_in_vault"] = True
+                if name != entry.name:
+                    await asyncio.to_thread(vaultclient.delete_secret, _server_vault_path(name))
+            else:
+                yaml_dict["winrm_password"] = new_pw
+        elif prior and prior.get("secret_in_vault"):
+            # keep the existing Vault-backed secret; if renamed, move it to the new path
+            yaml_dict["secret_in_vault"] = True
+            if name != entry.name and vaultclient.enabled():
+                with contextlib.suppress(vaultclient.VaultError):
+                    data = await asyncio.to_thread(vaultclient.read_secret, _server_vault_path(name))
+                    if data:
+                        await asyncio.to_thread(vaultclient.write_secret,
+                                                _server_vault_path(entry.name), data)
+                        await asyncio.to_thread(vaultclient.delete_secret, _server_vault_path(name))
         elif prior and prior.get("winrm_password"):
             yaml_dict["winrm_password"] = prior["winrm_password"]
     # remove the entry being edited (by its original name) and any entry that
@@ -2228,7 +2290,17 @@ async def inventory_bulk(request: Request, file: UploadFile = File(...)):
             continue
         yaml_dict = entry.to_yaml_dict()
         if entry.platform == "windows" and entry.winrm_password:
-            yaml_dict["winrm_password"] = entry.winrm_password
+            if vaultclient.enabled():
+                try:
+                    await asyncio.to_thread(vaultclient.write_secret,
+                                            _server_vault_path(entry.name),
+                                            {"winrm_password": entry.winrm_password})
+                    yaml_dict["secret_in_vault"] = True
+                except vaultclient.VaultError as exc:
+                    failed.append({"row": i, "name": nm, "error": f"Vault write failed: {exc}"[:160]})
+                    continue
+            else:
+                yaml_dict["winrm_password"] = entry.winrm_password
         servers.append(yaml_dict)
         existing.add(entry.name)
         added += 1
@@ -2248,10 +2320,14 @@ async def inventory_bulk(request: Request, file: UploadFile = File(...)):
 @app.delete("/api/admin/inventory/{name}")
 async def delete_server(name: str, request: Request):
     servers = load_raw_inventory()
+    removed = next((s for s in servers if s.get("name") == name), None)
     remaining = [s for s in servers if s.get("name") != name]
-    if len(remaining) == len(servers):
+    if removed is None:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     save_inventory(remaining)
+    if removed.get("secret_in_vault") and vaultclient.enabled():
+        with contextlib.suppress(vaultclient.VaultError):
+            await asyncio.to_thread(vaultclient.delete_secret, _server_vault_path(name))
     await asyncio.to_thread(db.audit, _actor(request), "inventory_delete", {"name": name})
     return {"ok": True}
 

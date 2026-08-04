@@ -3590,6 +3590,7 @@ async function loadVault() {
     if (h.itsm) rows.push([h.itsm.label, h.itsm.in_vault, h.itsm.has_secret, h.itsm.error]);
     if (h.ad) rows.push([h.ad.label, h.ad.in_vault, h.ad.has_secret, h.ad.error]);
     (h.integrations || []).forEach(r => rows.push([r.label, r.in_vault, r.has_secret, r.error]));
+    (h.servers || []).forEach(r => rows.push([r.label, r.in_vault, r.has_secret, r.error]));
     holders.innerHTML = rows.map(([label, inVault, hasSecret, err]) => `
       <div class="vault-holder"><span class="vh-label">${escapeHtml(label)}</span>${vaultBadge(inVault, hasSecret, err)}</div>
     `).join('') || '<div class="empty">No secret-holding config yet.</div>';
@@ -3618,6 +3619,13 @@ async function vaultMigrate() {
       (d.integrations.migrated || []).forEach(k => lines.push(`✓ ${escapeHtml(k)}: migrated`));
       (d.integrations.skipped || []).forEach(k => lines.push(`— ${escapeHtml(k)}: nothing to migrate`));
       Object.entries(d.integrations.errors || {}).forEach(([k, e]) => lines.push(`✕ ${escapeHtml(k)}: ${escapeHtml(e)}`));
+    }
+    if (d.inventory) {
+      if (d.inventory.ok === false) lines.push(`✕ Server passwords: ${escapeHtml(d.inventory.error || 'failed')}`);
+      else {
+        (d.inventory.migrated || []).forEach(k => lines.push(`✓ ${escapeHtml(k)} (WinRM): migrated`));
+        Object.entries(d.inventory.errors || {}).forEach(([k, e]) => lines.push(`✕ ${escapeHtml(k)} (WinRM): ${escapeHtml(e)}`));
+      }
     }
     box.className = 'bulk-result ok';
     box.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
