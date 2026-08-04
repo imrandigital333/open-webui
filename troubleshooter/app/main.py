@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -26,7 +27,7 @@ from .inventory import (
 )
 from .scriptlib import SCRIPTLIB_DIR, list_scripts
 
-APP_VERSION = "3.12.0"
+APP_VERSION = "3.13.0"
 
 app = FastAPI(title="AI Troubleshooter", version=APP_VERSION)
 
@@ -70,6 +71,7 @@ _PUBLIC_PATHS = {"/", "/api/version", "/api/auth/login", "/favicon.ico",
                  "/openapi.json", "/docs", "/redoc"}
 # endpoints a user with must_change=1 may still call (to change their password)
 _MUST_CHANGE_OK = {"/api/auth/me", "/api/auth/logout", "/api/auth/change-password"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 @app.middleware("http")
@@ -86,6 +88,14 @@ async def _auth_gate(request: Request, call_next):
         return JSONResponse({"error": "authentication required", "code": "unauthenticated"},
                             status_code=401)
     request.state.user = user
+
+    # CSRF: every authenticated, state-changing request must echo the CSRF
+    # cookie (set at login) back as a header — see auth.verify_csrf.
+    if request.method not in _SAFE_METHODS:
+        presented = request.headers.get(auth.CSRF_HEADER_NAME, "")
+        if not auth.verify_csrf(token, presented):
+            return JSONResponse({"error": "CSRF validation failed — refresh and try again",
+                                 "code": "csrf_failed"}, status_code=403)
 
     if user.get("must_change") and path not in _MUST_CHANGE_OK:
         return JSONResponse({"error": "password change required", "code": "must_change"},
@@ -154,6 +164,98 @@ async def _request_log(request: Request, call_next):
                         "status": status, "duration_ms": dur_ms})
 
 
+# ---------- rate limiting (in-memory sliding window, per client IP) ----------
+# Single-process limiter — fine for this deployment (one systemd-run instance);
+# scaling to multiple workers/instances would need a shared store (e.g. Redis).
+_RATE_WINDOW = 60.0
+GENERAL_RATE_LIMIT = int(os.environ.get("TROUBLESHOOTER_RATE_LIMIT_PER_MIN", "240"))
+LOGIN_RATE_LIMIT = int(os.environ.get("TROUBLESHOOTER_LOGIN_RATE_LIMIT_PER_MIN", "15"))
+_general_hits: dict[str, deque] = defaultdict(deque)
+_login_hits: dict[str, deque] = defaultdict(deque)
+
+
+def _rate_check(buckets: dict[str, deque], key: str, limit: int) -> tuple[bool, float]:
+    now = time.monotonic()
+    dq = buckets[key]
+    while dq and now - dq[0] > _RATE_WINDOW:
+        dq.popleft()
+    if len(dq) >= limit:
+        return False, dq[0] + _RATE_WINDOW - now
+    dq.append(now)
+    return True, 0.0
+
+
+# Only trust X-Forwarded-For if this instance sits behind a reverse proxy that
+# overwrites/strips client-supplied values (nginx/F5/etc.) — otherwise a client
+# can spoof the header and get a fresh rate-limit bucket on every request.
+_TRUST_PROXY_HEADERS = os.environ.get("TROUBLESHOOTER_TRUST_PROXY_HEADERS", "").lower() in \
+    ("1", "true", "yes")
+
+
+def _rate_client(request: Request) -> str:
+    if _TRUST_PROXY_HEADERS:
+        fwd = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if fwd:
+            return fwd
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    client = _rate_client(request)
+    if path == "/api/auth/login":
+        ok, retry = _rate_check(_login_hits, client, LOGIN_RATE_LIMIT)
+        if not ok:
+            with contextlib.suppress(Exception):
+                platform_log.event("auth", f"login rate-limited ({client})",
+                                   level="WARNING", actor=client)
+            return JSONResponse(
+                {"error": "Too many login attempts — try again shortly.", "code": "rate_limited"},
+                status_code=429, headers={"Retry-After": str(max(1, int(retry) + 1))})
+    ok, retry = _rate_check(_general_hits, client, GENERAL_RATE_LIMIT)
+    if not ok:
+        with contextlib.suppress(Exception):
+            platform_log.event("api", f"rate limit exceeded ({client}) {path}",
+                               level="WARNING", actor=client)
+        return JSONResponse(
+            {"error": "Rate limit exceeded — slow down.", "code": "rate_limited"},
+            status_code=429, headers={"Retry-After": str(max(1, int(retry) + 1))})
+    return await call_next(request)
+
+
+def _prune_rate_buckets() -> None:
+    now = time.monotonic()
+    for buckets in (_general_hits, _login_hits):
+        for key in [k for k, dq in buckets.items()
+                   if not dq or now - dq[-1] > _RATE_WINDOW * 5]:
+            del buckets[key]
+
+
+# ---------- security headers (defense in depth for a single-page app that
+# loads no external scripts/styles/fonts/images — see index.html) ----------
+_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
+       "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
+       "form-action 'self'; object-src 'none'")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=()")
+    response.headers["Content-Security-Policy"] = _CSP
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 @app.on_event("startup")
 async def _startup():
     await asyncio.to_thread(platform_log.configure)
@@ -170,6 +272,14 @@ async def _startup():
                     if result["sessions_purged"]:
                         await asyncio.to_thread(db.audit, "system", "retention_purge", result)
             await asyncio.sleep(24 * 3600)
+
+    async def rate_bucket_prune_loop():
+        while True:
+            await asyncio.sleep(600)
+            with contextlib.suppress(Exception):
+                _prune_rate_buckets()
+
+    asyncio.get_running_loop().create_task(rate_bucket_prune_loop())
 
     asyncio.get_running_loop().create_task(retention_loop())
 
@@ -231,8 +341,14 @@ async def auth_login(req: LoginRequest, request: Request):
     token = await asyncio.to_thread(auth.create_session, user["id"], ip)
     await asyncio.to_thread(db.audit, user["username"], "login", {"ip": ip})
     resp = JSONResponse(_me_payload(user))
+    secure = request.url.scheme == "https"
     resp.set_cookie(auth.COOKIE_NAME, token, httponly=True, samesite="lax",
-                    secure=(request.url.scheme == "https"), max_age=auth.SESSION_TTL, path="/")
+                    secure=secure, max_age=auth.SESSION_TTL, path="/")
+    # readable (non-httponly) so the SPA can echo it back as the CSRF header;
+    # it's useless to an attacker without the httponly session cookie to HMAC against
+    resp.set_cookie(auth.CSRF_COOKIE_NAME, auth.csrf_token_for_session(token),
+                    httponly=False, samesite="lax", secure=secure,
+                    max_age=auth.SESSION_TTL, path="/")
     return resp
 
 
@@ -242,6 +358,7 @@ async def auth_logout(request: Request):
     await asyncio.to_thread(auth.destroy_session, token)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(auth.COOKIE_NAME, path="/")
+    resp.delete_cookie(auth.CSRF_COOKIE_NAME, path="/")
     return resp
 
 

@@ -2045,6 +2045,29 @@
 <button id="rcMapMini" title="Remediation Steps — click to restore"></button>
 
 <script>
+// CSRF: transparently echo the ai_csrf cookie (set at login) back as a header
+// on every same-origin, state-changing fetch — see auth.verify_csrf server-side.
+(function () {
+  function csrfToken() {
+    const m = document.cookie.match(/(?:^|; )ai_csrf=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  const nativeFetch = window.fetch;
+  window.fetch = function (url, init) {
+    init = init || {};
+    const method = (init.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.startsWith('/')) {
+      const tok = csrfToken();
+      if (tok) {
+        const headers = new Headers(init.headers || {});
+        headers.set('X-CSRF-Token', tok);
+        init = Object.assign({}, init, { headers });
+      }
+    }
+    return nativeFetch.call(window, url, init);
+  };
+})();
+
 let inventory = [], datasources = [], sessionsCache = [];
 let currentSession = null, currentSessionInfo = null, eventSource = null, selectedDepth = 'standard';
 

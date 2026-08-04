@@ -40,6 +40,8 @@ PAGE_KEYS = [p["key"] for p in PAGES]
 
 SESSION_TTL = int(os.environ.get("TROUBLESHOOTER_SESSION_TTL", str(12 * 3600)))
 COOKIE_NAME = "ai_sid"
+CSRF_COOKIE_NAME = "ai_csrf"
+CSRF_HEADER_NAME = "X-CSRF-Token"
 MAX_FAILED = 5                     # lock the account after this many bad passwords
 LOCK_SECONDS = 15 * 60
 
@@ -226,6 +228,55 @@ def user_from_token(token: str) -> dict | None:
 def destroy_session(token: str) -> None:
     if token:
         db.auth_session_delete(token)
+
+
+# ---------- CSRF (signed double-submit cookie) ----------
+# The session cookie (ai_sid) is httponly + SameSite=Lax, which already blocks
+# cross-site form/fetch POSTs in modern browsers. This adds a second,
+# defense-in-depth layer that enterprise security reviews expect explicitly: a
+# token derived from HMAC(server secret, session token) is set in a *readable*
+# cookie at login; the SPA echoes it back as a header on every mutating
+# request; the server recomputes the HMAC from the (httponly, unspoofable)
+# session cookie and compares. An attacker who can't read ai_sid can't forge
+# a matching token even if they can plant an arbitrary ai_csrf cookie value.
+
+_CSRF_SECRET_PATH = BASE_DIR / "data" / ".csrf_secret"
+_csrf_secret_cache: bytes | None = None
+
+
+def _csrf_secret() -> bytes:
+    global _csrf_secret_cache
+    if _csrf_secret_cache is not None:
+        return _csrf_secret_cache
+    try:
+        _CSRF_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _CSRF_SECRET_PATH.exists():
+            data = _CSRF_SECRET_PATH.read_bytes()
+            if data:
+                _csrf_secret_cache = data
+                return data
+        secret = secrets.token_bytes(32)
+        _CSRF_SECRET_PATH.write_bytes(secret)
+        os.chmod(_CSRF_SECRET_PATH, 0o600)
+        _csrf_secret_cache = secret
+        return secret
+    except OSError:
+        # last resort: an in-memory-only secret keeps CSRF protection working
+        # for this process's lifetime even if the data dir isn't writable
+        _csrf_secret_cache = secrets.token_bytes(32)
+        return _csrf_secret_cache
+
+
+def csrf_token_for_session(session_token: str) -> str:
+    if not session_token:
+        return ""
+    return hmac.new(_csrf_secret(), session_token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_csrf(session_token: str, presented: str) -> bool:
+    if not session_token or not presented:
+        return False
+    return hmac.compare_digest(csrf_token_for_session(session_token), presented)
 
 
 # ---------- roles / authorization ----------
